@@ -29,6 +29,10 @@ var _sky_mat: ProceduralSkyMaterial
 var _environment: Environment
 var _day_night: DayNight
 
+# Cząsteczki ambient (Faza 1C): pył w dzień, świetliki nocą.
+var _ambient_day: GPUParticles3D
+var _fireflies: GPUParticles3D
+
 # HUD walki + licznik żywych wrogów.
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
@@ -46,6 +50,7 @@ func _ready() -> void:
 	_spawn_enemies()       # 3 wrogów blisko gracza (po prime() terenu wokół spawnu)
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
+	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
 	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE != "" — normalne F5 gra bez sondy.
 	if OS.get_environment("VOXEL_PROBE") != "":
 		_probe_shot()
@@ -63,11 +68,60 @@ func _setup_vignette() -> void:
 	layer.add_child(cr)
 	add_child(layer)
 
+# --- Faza 1C: cząsteczki ambient (świetliki nocą + pył w dzień), podążają za graczem ---
+func _setup_ambient_fx() -> void:
+	_fireflies = _make_particles(44, Vector3(14, 7, 14), 0.22, Color(0.85, 1.0, 0.45), 7.0, 0.05, 0.22, 5.0)
+	_ambient_day = _make_particles(46, Vector3(15, 9, 15), 0.05, Color(1.0, 0.95, 0.8), 1.2, 0.04, 0.18, 8.0)
+
+func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: float, vmin: float, vmax: float, life: float) -> GPUParticles3D:
+	var p := GPUParticles3D.new()
+	p.amount = amount
+	p.lifetime = life
+	p.local_coords = false   # cząsteczki zostają w świecie, gdy emiter (gracz) się rusza
+	p.preprocess = life      # od razu widoczne (nie czekamy na spawn)
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = box
+	pm.gravity = Vector3.ZERO
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 180.0
+	pm.initial_velocity_min = vmin
+	pm.initial_velocity_max = vmax
+	pm.scale_min = 0.5
+	pm.scale_max = 1.0
+	p.process_material = pm
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(msize, msize)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = col
+	mat.emission_enabled = true
+	mat.emission = col
+	mat.emission_energy_multiplier = emis
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mesh.material = mat
+	p.draw_pass_1 = mesh
+	add_child(p)
+	return p
+
+func _process(_delta: float) -> void:
+	if _player_ref == null or _fireflies == null:
+		return
+	var pos := _player_ref.global_position
+	_fireflies.global_position = pos
+	_ambient_day.global_position = pos
+	var t: float = _day_night.time_of_day if _day_night else 0.5
+	var night := t < 0.18 or t > 0.82
+	_fireflies.emitting = night
+	_ambient_day.emitting = not night
+
 # TYMCZASOWE: stała sceneria do porównań before/after (stała pora + kąt kamery), zrzut, wyjście.
 func _probe_shot() -> void:
 	DisplayServer.window_set_size(Vector2i(1280, 720))
 	_day_night.running = false
-	_day_night.set_time(0.40)
+	_day_night.set_time(0.0 if OS.get_environment("VOXEL_PROBE") == "night" else 0.40)
 	var mode := OS.get_environment("VOXEL_PROBE")
 
 	# Tryb "water": przenieś gracza nad najniższy punkt terenu w okolicy (tam stoi woda).
@@ -142,7 +196,7 @@ func _setup_environment() -> void:
 	fill.name = "FillLight"
 	fill.rotation_degrees = Vector3(-30.0, 60.0, 0.0)
 	fill.light_color = Color(0.60, 0.72, 0.95)
-	fill.light_energy = 0.18
+	fill.light_energy = 0.12
 	fill.shadow_enabled = false
 	add_child(fill)
 
