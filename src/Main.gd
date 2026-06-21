@@ -46,8 +46,8 @@ func _ready() -> void:
 	_spawn_enemies()       # 3 wrogów blisko gracza (po prime() terenu wokół spawnu)
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
-	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE=1 — normalne F5 gra bez sondy.
-	if OS.get_environment("VOXEL_PROBE") == "1":
+	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE != "" — normalne F5 gra bez sondy.
+	if OS.get_environment("VOXEL_PROBE") != "":
 		_probe_shot()
 
 # Winieta — pełnoekranowy ColorRect z shaderem, pod HUD-em walki.
@@ -68,27 +68,50 @@ func _probe_shot() -> void:
 	DisplayServer.window_set_size(Vector2i(1280, 720))
 	_day_night.running = false
 	_day_night.set_time(0.40)
-	await get_tree().create_timer(5.0).timeout
+	var mode := OS.get_environment("VOXEL_PROBE")
+
+	# Tryb "water": przenieś gracza nad najniższy punkt terenu w okolicy (tam stoi woda).
+	var water_yaw_deg := 35.0   # domyślny yaw kamery (tryb nie-woda)
+	if mode == "water":
+		# Szukamy BRZEGU: ląd tuż nad poziomem morza, z wodą w sąsiedztwie — gracz stoi
+		# na lądzie, a kamera patrzy W STRONĘ wody pod małym kątem (grazing → fresnel/piana).
+		var sea := 24  # SEA_LEVEL w voxelach
+		var spot := Vector2.ZERO
+		var spot_y := 20.0
+		var wdir := Vector2(1, 0)
+		var found := false
+		for gx in range(-256, 257, 6):
+			for gz in range(-256, 257, 6):
+				var sv := _world.surface_height(gx, gz)
+				if sv > sea and sv <= sea + 4:
+					if _world.surface_height(gx + 4, gz) < sea: wdir = Vector2(1, 0)
+					elif _world.surface_height(gx - 4, gz) < sea: wdir = Vector2(-1, 0)
+					elif _world.surface_height(gx, gz + 4) < sea: wdir = Vector2(0, 1)
+					elif _world.surface_height(gx, gz - 4) < sea: wdir = Vector2(0, -1)
+					else: continue
+					spot = Vector2(gx, gz)
+					spot_y = _world.height_at(float(gx), float(gz))
+					found = true
+					break
+			if found:
+				break
+		# Stań nieco cofnięty od wody; yaw kamery skierowany na wodę (przód = -Z).
+		_player_ref.global_position = Vector3(spot.x - wdir.x * 1.0, spot_y + 2.0, spot.y - wdir.y * 1.0)
+		_world.prime(_world.world_to_chunk(_player_ref.global_position), 3)
+		water_yaw_deg = rad_to_deg(atan2(-wdir.x, -wdir.y))
+		print("[PROBE] shore spot=", spot, " surface_y=", spot_y, " wdir=", wdir, " found=", found)
+
+	await get_tree().create_timer(6.0).timeout
 	var spring := _find_node_of_type(_player_ref, "SpringArm3D")
 	if spring:
-		spring.spring_length = 7.0
-		spring.rotation.x = deg_to_rad(-20.0)
+		spring.spring_length = 6.0 if mode == "water" else 7.0
+		spring.rotation.x = deg_to_rad(-28.0) if mode == "water" else deg_to_rad(-20.0)
 		var pivot := spring.get_parent()
-		if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(35.0)
+		if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
 	await get_tree().create_timer(0.6).timeout
-	# Zrzut STATYCZNY (kadrowanie odpiętej kamery) — przed testem ruchu.
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")
 	print("[PROBE] shot saved")
-	# Test ruchu (czy akceleracja/odpięta kamera nie zepsuły chodzenia).
-	var p0 := _player_ref.global_position
-	var ev := InputEventKey.new()
-	ev.physical_keycode = KEY_W
-	ev.pressed = true
-	Input.parse_input_event(ev)
-	await get_tree().create_timer(1.5).timeout
-	var moved := Vector2(_player_ref.global_position.x - p0.x, _player_ref.global_position.z - p0.z).length()
-	print("[PROBE] moved=", moved, " m")
 	get_tree().quit()
 
 func _find_node_of_type(n: Node, type_name: String) -> Node:

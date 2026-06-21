@@ -39,7 +39,7 @@ const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 # się pojawiły, zachowując czytelną proporcję metrów:
 #   surface_y ∈ [24, 88] voxeli  ->  realnie 12..44 m terenu nad y=0
 #   BEACH ≤ 26 (13 m), ROCK ≥ 56 (28 m), SNOW ≥ 68 (34 m) — wszystkie osiągalne.
-const BASE_HEIGHT: float = 24.0          # 24 voxele × 0,5 = 12 m (poziom morza)
+const BASE_HEIGHT: float = 14.0          # z kontrastem szumu daje jeziora (doliny) i szczyty (śnieg)
 const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m (szczyty ~44 m)
 # KILL_PLANE_Y jest w METRACH (dno świata to y=0 m niezależnie od VOXEL_SIZE) — NIE podwajać.
 const KILL_PLANE_Y: float = -8.0         # poniżej tego Y „ratujemy” gracza
@@ -67,7 +67,7 @@ var _last_center: Vector2i = Vector2i(2147483647, 2147483647)
 
 # Współdzielone materiały (tworzone raz).
 var solid_material: ShaderMaterial
-var water_material: StandardMaterial3D
+var water_material: ShaderMaterial
 var props_material: ShaderMaterial
 
 
@@ -105,14 +105,10 @@ func _setup_materials() -> void:
 	solid_material.shader = load("res://src/world/terrain.gdshader")
 
 	# Woda: półprzezroczysta, lekko błyszcząca; albedo_color.a mnoży kolor wierzchołka.
-	water_material = StandardMaterial3D.new()
-	water_material.vertex_color_use_as_albedo = true
-	water_material.vertex_color_is_srgb = true
-	water_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	water_material.albedo_color = Color(1.0, 1.0, 1.0, 0.7)
-	water_material.roughness = 0.1
-	water_material.metallic = 0.0
-	water_material.cull_mode = BaseMaterial3D.CULL_DISABLED  # tafla wody widoczna z obu stron
+	# Woda: stylizowany ShaderMaterial (Faza 1B) — głębia/piana z DEPTH_TEXTURE, fresnel,
+	# animowana tafla. Przezroczystość i double-sided ustawia sam shader (ALPHA + cull_disabled).
+	water_material = ShaderMaterial.new()
+	water_material.shader = load("res://src/world/water.gdshader")
 
 	# Propy (drobne kostki: trawa/kwiaty/grzyby): jak solid, ale to OSOBNY materiał,
 	# żeby cały świat collektował się w jednym batchu propów (1 draw call/chunk).
@@ -140,8 +136,11 @@ func get_loaded_count() -> int:
 ## surface_y ∈ [24, 88] voxeli × 0,5 m = 12..44 m. Dzięki temu ROCK (56=28 m) i
 ## SNOW (68=34 m) są realnie osiągalne (wcześniej max był 60 voxeli => brak śniegu).
 func surface_height(world_x: int, world_z: int) -> int:
-	# get_noise_2d zwraca ~[-1,1]; mapujemy do [0,1] i skalujemy.
-	var n := (_noise.get_noise_2d(float(world_x), float(world_z)) * 0.5) + 0.5
+	# FBM ma realnie wąski zakres (~[-0.45,0.45]); mnożymy przez kontrast, by teren
+	# schodził pod poziom morza (jeziora) i wybijał w szczyty (śnieg), zamiast skupiać
+	# się wokół środka. clampf tworzy płaskie dna jezior i płaskowyże szczytów (OK stylistycznie).
+	var raw := _noise.get_noise_2d(float(world_x), float(world_z))
+	var n := clampf(raw * 1.6 + 0.5, 0.0, 1.0)
 	var h := int(round(BASE_HEIGHT + n * HEIGHT_AMPLITUDE))
 	return clampi(h, 1, WORLD_HEIGHT - 1)
 
