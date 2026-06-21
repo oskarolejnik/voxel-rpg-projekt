@@ -1,0 +1,31 @@
+# --- Ogólne ---
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Tymczasowe zrzuty sondy weryfikacyjnej (before/after, _shot itp.) ---
+_*.png
+_*.png.import
+
+# --- Godot 4 (jeśli wybierzemy Godot) ---
+.godot/
+/android/
+/build/
+export_presets.cfg
+*.translation
+
+# --- Web / Node (jeśli wybierzemy prototyp web) ---
+node_modules/
+dist/
+.vite/
+*.local
+
+# --- Rust / Bevy (jeśli wybierzemy Bevy) ---
+/target/
+Cargo.lock
+
+# --- Pliki źródłowe assetów: TRZYMAMY w repo (dowód autorstwa) ---
+# NIE ignorujemy .vox / .blend / projektów audio — to nasz łańcuch praw.
