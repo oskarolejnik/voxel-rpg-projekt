@@ -121,7 +121,8 @@ func _process(_delta: float) -> void:
 func _probe_shot() -> void:
 	DisplayServer.window_set_size(Vector2i(1280, 720))
 	_day_night.running = false
-	_day_night.set_time(0.0 if OS.get_environment("VOXEL_PROBE") == "night" else 0.40)
+	var _pt := OS.get_environment("VOXEL_PROBE")
+	_day_night.set_time(0.0 if _pt == "night" else (0.76 if _pt == "gold" else 0.40))
 	var mode := OS.get_environment("VOXEL_PROBE")
 
 	# Tryb "water": przenieś gracza nad najniższy punkt terenu w okolicy (tam stoi woda).

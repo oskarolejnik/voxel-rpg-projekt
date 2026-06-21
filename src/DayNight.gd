@@ -81,6 +81,13 @@ const _FOG: Array[Color] = [
 	Color(0.05, 0.07, 0.16),   # NOC
 ]
 
+# (h) GĘSTOŚĆ mgły wolumetrycznej — gęściej o świcie/zachodzie (god rays + poranna mgła), cienko w dzień.
+const _FOG_DENSITY: Array[float] = [ 0.0030, 0.0050, 0.0015, 0.0050, 0.0030 ]
+# (i) ANIZOTROPIA mgły — silne rozpraszanie do przodu o złotej godzinie => promienie słońca (god rays).
+const _FOG_ANISO: Array[float] = [ 0.20, 0.75, 0.35, 0.75, 0.20 ]
+# (j) NASYCENIE (color grade) — soczyściej o złotej godzinie, spokojniej nocą.
+const _SATURATION: Array[float] = [ 1.05, 1.22, 1.12, 1.25, 1.05 ]
+
 
 ## Wstrzykuje referencje, ustawia porę startową i robi pierwszy _apply,
 ## żeby scena była poprawna już w klatce 0 (bez „mignięcia” wartości z Main).
@@ -159,5 +166,10 @@ func _apply(t: float) -> void:
 	# (e) ambient.
 	_env.ambient_light_energy = lerpf(_AMBIENT[i], _AMBIENT[j], f)
 
-	# (f) mgła wolumetryczna.
+	# (f) mgła wolumetryczna — kolor + gęstość + anizotropia (god rays o złotej godzinie).
 	_env.volumetric_fog_albedo = _FOG[i].lerp(_FOG[j], f)
+	_env.volumetric_fog_density = lerpf(_FOG_DENSITY[i], _FOG_DENSITY[j], f)
+	_env.volumetric_fog_anisotropy = lerpf(_FOG_ANISO[i], _FOG_ANISO[j], f)
+
+	# (g) color grade — nasycenie zależne od pory doby (Faza 1D).
+	_env.adjustment_saturation = lerpf(_SATURATION[i], _SATURATION[j], f)
