@@ -64,8 +64,41 @@ func _ready() -> void:
 	if OS.get_environment("VOXEL_PROBE") != "":
 		if OS.get_environment("VOXEL_PROBE") == "stress":
 			_stress_run()   # test wątkowego streamingu pod ruchem (FPS + wycieki chunków)
+		elif OS.get_environment("VOXEL_PROBE") == "walk":
+			_walk_test()    # test traversalu: wciska W, loguje pozycję (utykanie / wchodzenie na progi)
 		else:
 			_probe_shot()
+
+## Test traversalu terenu: wstrzykuje wciśnięcie W i loguje pozycję — weryfikuje, czy postać
+## PŁYNNIE idzie po voxelowych schodkach (movedXZ>0, Y rośnie) bez utykania i bez skakania.
+func _walk_test() -> void:
+	_day_night.running = false
+	for e in get_tree().get_nodes_in_group("enemies"):
+		e.queue_free()
+	await get_tree().create_timer(2.0).timeout   # prime terenu wokół spawnu
+	var ev := InputEventKey.new()
+	ev.physical_keycode = KEY_W
+	ev.pressed = true
+	Input.parse_input_event(ev)   # „trzymaj W" — gracz idzie w -Z (yaw kamery = 0)
+	var t0 := Time.get_ticks_msec()
+	var last_pos := _player_ref.global_position
+	var stuck := 0
+	var max_stuck := 0
+	for i in 24:
+		for _f in 12:
+			await get_tree().process_frame
+		var p := _player_ref.global_position
+		var moved := Vector2(p.x - last_pos.x, p.z - last_pos.z).length()
+		if moved < 0.03:
+			stuck += 1; max_stuck = maxi(max_stuck, stuck)
+		else:
+			stuck = 0
+		print("[WALK] t=%.1f pos=(%.1f,%.1f,%.1f) movedXZ=%.2f floor=%s vy=%.2f stuck=%d" % [
+			float(Time.get_ticks_msec() - t0) / 1000.0, p.x, p.y, p.z, moved,
+			str(_player_ref.is_on_floor()), _player_ref.velocity.y, stuck])
+		last_pos = p
+	print("[WALK] DONE max_kolejnych_stuck=", max_stuck)
+	get_tree().quit()
 
 ## Test 2A: teleportuje gracza przez świat (wymusza streaming w ruchu) i loguje FPS +
 ## liczbę chunków loaded/pending/abandoned. Wyciek = monotoniczny wzrost loaded/abandoned.

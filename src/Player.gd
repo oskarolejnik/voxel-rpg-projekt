@@ -161,6 +161,12 @@ func _ready() -> void:
 	# a chód/auto-podskok po terenie zostają nienaruszone.
 	collision_layer = 1 << 1        # warstwa 2 (bit 1) = gracz
 	collision_mask = 1              # maska = tylko teren (warstwa 1, bit 0)
+	# Gładkie poruszanie po schodkach voxela (0,5 m): snap do podłoża przy SCHODZENIU (bez
+	# odrywania się/odpalania lądowania co stopień). floor_max_angle 50° (wierzchy voxeli płaskie;
+	# pionowe ściany to wciąż ściany). floor_constant_speed = stała prędkość na zboczach.
+	floor_snap_length = 0.6
+	floor_max_angle = deg_to_rad(50.0)
+	floor_constant_speed = true
 	hp = max_hp
 	stamina = max_stamina
 	# Punkt odrodzenia = miejsce startu. Main ustawia position PRZED add_child, więc w _ready()
@@ -877,16 +883,8 @@ func _physics_process(delta: float) -> void:
 	velocity.x = _move_vel.x + _knockback.x
 	velocity.z = _move_vel.z + _knockback.z
 
-	# 5a) AUTO-STEP (naprawione): wejdź TYLKO na niski próg (~1 voxel), NIE na strome ściany.
-	# Test: podnieś transform o step_height i sprawdź, czy ruch w przód jest WOLNY. Jeśli tak =>
-	# to niski stopień => mały impuls w górę. Jeśli wciąż blokuje => ściana => brak podskoku
-	# (postać się zatrzyma, zamiast „wspinać się" po terenie, gdzie nie powinna).
-	if is_on_floor() and is_on_wall() and moving and _knockback.y <= 0.0 and _dodge_t <= 0.0:
-		var probe := direction * 0.35   # jak daleko w przód sprawdzamy kolizję progu
-		var raised := global_transform
-		raised.origin.y += step_height
-		if not test_move(raised, probe):
-			velocity.y = maxf(velocity.y, step_boost)
+	# (AUTO-STEP wykonujemy PO move_and_slide — _try_step_up() algorytmem góra->przód->dół.
+	#  Niezawodne wchodzenie na schodki voxela 0,5 m bez skakania, BEZ wspinania po ścianach.)
 
 	# Sprint pobiera staminę tylko gdy faktycznie biegniemy i się ruszamy:
 	if can_sprint and moving and stamina > 0.0:
@@ -919,6 +917,11 @@ func _physics_process(delta: float) -> void:
 	var pre_vy := velocity.y
 	move_and_slide()
 
+	# 6a) AUTO-STEP po ruchu: jeśli zablokował nas NISKI próg (schodek voxela), wnieś postać
+	# na niego płynnie (góra->przód->dół). Wysokie ściany/strome zbocza => brak (postać staje).
+	if moving and is_on_floor() and not is_dead and _dodge_t <= 0.0:
+		_try_step_up(direction, current_speed, delta)
+
 	# Lądowanie (0C + JUICE): trzask kamery + przysiad (squash) + pył, skalowane prędkością upadku.
 	if is_on_floor() and not _was_on_floor and pre_vy < -3.0:
 		var fall := -pre_vy
@@ -929,6 +932,35 @@ func _physics_process(delta: float) -> void:
 		if fall > 5.0:
 			_spawn_land_dust(clampf(fall / 16.0, 0.0, 1.0))
 	_was_on_floor = is_on_floor()
+
+## Gładkie wchodzenie na NISKIE progi (schodki voxela ~0,5 m) bez skakania — algorytm
+## góra->przód->dół. Jeśli w przód blokuje, a po podniesieniu o step_height przód jest WOLNY
+## i pod spodem jest grunt, podnosimy postać na próg. Wyższa ściana/strome zbocze => nic
+## (postać się zatrzymuje — koniec „wspinania się tam, gdzie nie powinna" i „ciągłego skakania").
+func _try_step_up(dir: Vector3, spd: float, delta: float) -> void:
+	var flat := Vector3(dir.x, 0.0, dir.z)
+	if flat.length() < 0.01:
+		return
+	var horiz := flat.normalized() * maxf(spd * delta + 0.06, 0.12)   # jak daleko w przód testujemy
+	# 1) Czy w przód na OBECNEJ wysokości coś blokuje? Jeśli nie — nie ma progu, koniec.
+	if not test_move(global_transform, horiz):
+		return
+	# 2) Podniesiony o step_height: czy w przód WOLNO? Jeśli nie => ściana, NIE wchodzimy.
+	var up_t := global_transform
+	up_t.origin += Vector3.UP * step_height
+	if test_move(up_t, horiz):
+		return
+	# 3) Z przodu-na-górze rzut w DÓŁ — znajdź wierzch progu (musi być grunt, nie przepaść).
+	var fwd_t := up_t
+	fwd_t.origin += horiz
+	var down := KinematicCollision3D.new()
+	if not test_move(fwd_t, Vector3.DOWN * (step_height + 0.05), down):
+		return   # brak gruntu pod progiem => krawędź/dziura, nie wnosimy w powietrze
+	var rise := step_height - down.get_travel().length()
+	if rise > 0.02:
+		global_position.y += rise          # wejdź na próg (move_and_slide w nast. klatce niesie w przód)
+		if velocity.y < 0.0:
+			velocity.y = 0.0               # nie „spadaj" w tej klatce po wejściu
 
 # ============================================================================
 #  WALKA — ATAK
