@@ -93,12 +93,30 @@ var _spring: SpringArm3D  # ramię kamery: pochylenie (pitch) + automatyczna kol
 var _camera: Camera3D
 
 # Model i pivoty kończyn (zawiasy bark/biodro) — animacja chodu + obrót w kierunku ruchu.
-var _model: Node3D
-var _arm_l: Node3D
-var _arm_r: Node3D
-var _leg_l: Node3D
-var _leg_r: Node3D
+# KOŃCZYNY 2-SEGMENTOWE: górny pivot (bark/biodro) trzyma dolny pivot (łokieć/kolano)
+# zagnieżdżony, więc rotation.x dolnego zgina kończynę w stawie. Górny segment (ramię/udo)
+# wisi pod górnym pivotem; dolny segment (przedramię+dłoń / łydka+but) pod dolnym pivotem.
+var _model: Node3D            # cały model (obrót yaw w kierunku ruchu)
+var _torso: Node3D            # tułów+głowa razem — dla body-bob / lean / twist
+var _head: Node3D             # sama głowa — stabilizacja/oscylacja niezależna od tułowia
+var _arm_l: Node3D            # pivot barku L
+var _arm_r: Node3D            # pivot barku R
+var _arm_l_lo: Node3D         # pivot łokcia L (dziecko _arm_l)
+var _arm_r_lo: Node3D         # pivot łokcia R (dziecko _arm_r)
+var _leg_l: Node3D            # pivot biodra L
+var _leg_r: Node3D            # pivot biodra R
+var _leg_l_lo: Node3D         # pivot kolana L (dziecko _leg_l)
+var _leg_r_lo: Node3D         # pivot kolana R (dziecko _leg_r)
 var _walk_phase: float = 0.0
+# Stan animacji proceduralnej (frame-rate independent, wygładzane lerpami).
+var _idle_phase: float = 0.0  # niezależny zegar dla oddychania/weight-shift w idle
+var _anim_bob: float = 0.0    # bieżący pionowy bob tułowia (m), wygładzany
+var _land_squash: float = 0.0 # 0..1 chwilowy „przysiad" przy lądowaniu, gaśnie
+# Logiczne wysokości pivotów (w voxelach) — używane przy budowie i do anim offsetów.
+const _HIP_Y: int = 8
+const _KNEE_Y: int = 4
+const _SHOULDER_Y: int = 14
+const _ELBOW_Y: int = 10
 
 # --- GAME FEEL (Faza 0C) ---
 @export var ground_accel: float = 55.0     # przyspieszenie na ziemi (m/s^2)
@@ -123,6 +141,14 @@ var _shake_time: float = 0.0
 var _shake_noise: FastNoiseLite
 var _was_on_floor: bool = true
 var _hitstop_active: bool = false
+
+# --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
+@export var base_fov: float = 75.0          # bazowe FOV kamery
+@export var sprint_fov_add: float = 9.0     # ile FOV dokładamy przy biegu
+@export var fov_lerp: float = 8.0           # szybkość zmiany FOV
+@export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
+var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
+var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reuse wzorca z Main)
 
 func _ready() -> void:
 	_build_body()     # kształt kolizji + widoczny model (kapsuła)
@@ -169,16 +195,17 @@ func _build_body() -> void:
 # `as StandardMaterial3D`) działał dalej, a kolory były wbudowane w jeden materiał.
 #
 # Skala: VS = 0.09 m/voxel (~5.5× drobniej niż teren 0,5 m) => kontrast Cube World.
-# Siatka logiczna (Vector3i, oś Y od stóp): najwyższy voxel (czapa włosów) to logiczne
-# y=24, więc realna wysokość modelu ≈ 24 × 0,09 ≈ 2,16 m. Kapsuła kolizji ma height=2.0
-# (środek y=1.0 => biegun na y=2.0), więc CZUBEK GŁOWY wystaje ~0,16 m PONAD kapsułę.
-# To CELOWE i bezpieczne: kapsuła służy tylko kolizji (stopy poprawnie na y=0, postać nie
-# wnika w teren); jedynie pod bardzo niskim nawisem czubek włosów mógłby wizualnie przeniknąć
-# sufit. Chcąc pełnego zamknięcia w kapsule: zbij VS do ~0.083 (24×0.083≈1,99 m) albo
-# podnieś capsule.height=2.2 i shape.position.y=1.1 w _build_body().
+# Siatka logiczna (Vector3i, oś Y od stóp): najwyższy voxel to „ahoge" na logicznym y=25
+# (czapa włosów sięga y=24), więc górna ściana modelu = 26 × VS = 26 × 0,09 ≈ 2,34 m. Kapsuła
+# kolizji ma height=2.0 (środek y=1.0 => biegun na y=2.0), więc CZUBEK GŁOWY wystaje ~0,34 m
+# PONAD kapsułę. To CELOWE i bezpieczne: kapsuła służy tylko kolizji (stopy poprawnie na y=0,
+# postać nie wnika w teren); jedynie pod bardzo niskim nawisem czubek włosów mógłby wizualnie
+# przeniknąć sufit. Chcąc pełnego zamknięcia w kapsule: ustaw capsule.height=2.4 i
+# shape.position.y=1.2 w _build_body(), albo zbij VS do ~0.077 (26×0.077≈2,00 m).
 const VS: float = 0.09
 
-# Buduje voxelową postać. Tułów/głowa statyczne; ręce i nogi na pivotach do animacji chodu.
+# Buduje voxelową postać. Tułów+głowa na _torso/_head (anim bob/lean/twist + stabilizacja głowy);
+# ręce i nogi jako 2-segmentowe łańcuchy pivotów (bark->łokieć, biodro->kolano).
 func _build_voxel_character() -> void:
 	_model = Node3D.new()
 	_model.name = "Model"
@@ -186,29 +213,52 @@ func _build_voxel_character() -> void:
 
 	var mat := _make_char_material()
 
-	# --- Statyczne: głowa + tułów -> jeden mesh dziecko _model ---
-	var body := VoxelModel.VoxelDef.new()
-	_sculpt_head(body)
-	_sculpt_torso(body)
-	_add_model_mesh(_model, body, mat, Vector3i.ZERO)
+	# --- TUŁÓW (węzeł animowany: bob/lean/twist) — pivot w pasie (y=_HIP_Y), by lean/twist
+	#     obracał się od bioder, a głowa siedziała wyżej. Geometria tułowia bake'owana z
+	#     offsetem -_HIP_Y, więc pas leży w (0,0,0) węzła _torso.
+	_torso = _make_pivot(_model, Vector3(0.0, float(_HIP_Y) * VS, 0.0))
+	var torso := VoxelModel.VoxelDef.new()
+	_sculpt_torso(torso)
+	_add_model_mesh(_torso, torso, mat, Vector3i(0, _HIP_Y, 0))
 
-	# --- Nogi: pivoty (zawiasy) w biodrach (logiczny y=8), kończyny schodzą w -Y, stopy na y=0 ---
-	# Pivot w METRACH = pivot_voxel * VS. Geometria każdej grupy przesuwana o -pivot przy
-	# bake'u, więc zawias ląduje w (0,0,0) węzła -> rotation.x zgina od biodra/barku.
-	_leg_l = _make_pivot(_model, Vector3(-2.0 * VS, 8.0 * VS, 0.0))
-	_leg_r = _make_pivot(_model, Vector3( 2.0 * VS, 8.0 * VS, 0.0))
-	var leg_l := VoxelModel.VoxelDef.new(); _sculpt_leg(leg_l, -1)
-	var leg_r := VoxelModel.VoxelDef.new(); _sculpt_leg(leg_r, 1)
-	_add_model_mesh(_leg_l, leg_l, mat, Vector3i(-2, 8, 0))
-	_add_model_mesh(_leg_r, leg_r, mat, Vector3i( 2, 8, 0))
+	# --- GŁOWA (osobny węzeł na szczycie tułowia: stabilizacja/oscylacja) — pivot u nasady
+	#     szyi (y=_SHOULDER_Y), dziecko _torso, więc dziedziczy bob/lean, a dokłada własny ruch.
+	_head = _make_pivot(_torso, Vector3(0.0, float(_SHOULDER_Y - _HIP_Y) * VS, 0.0))
+	var head := VoxelModel.VoxelDef.new()
+	_sculpt_head(head)
+	_add_model_mesh(_head, head, mat, Vector3i(0, _SHOULDER_Y, 0))
 
-	# --- Ręce: pivoty (zawiasy) w barkach (logiczny y=14), kończyny zwisają ---
-	_arm_l = _make_pivot(_model, Vector3(-5.0 * VS, 14.0 * VS, 0.0))
-	_arm_r = _make_pivot(_model, Vector3( 5.0 * VS, 14.0 * VS, 0.0))
-	var arm_l := VoxelModel.VoxelDef.new(); _sculpt_arm(arm_l, -1)
-	var arm_r := VoxelModel.VoxelDef.new(); _sculpt_arm(arm_r, 1)
-	_add_model_mesh(_arm_l, arm_l, mat, Vector3i(-5, 14, 0))
-	_add_model_mesh(_arm_r, arm_r, mat, Vector3i( 5, 14, 0))
+	# --- NOGI (2 segmenty): biodro (y=_HIP_Y) -> kolano (y=_KNEE_Y zagnieżdżony) ---
+	# Udo bake'owane pod biodrem (offset -_HIP_Y). Łydka+but pod kolanem (offset -_KNEE_Y),
+	# a sam pivot kolana jest dzieckiem biodra na wysokości (_KNEE_Y-_HIP_Y)*VS poniżej.
+	_leg_l = _make_pivot(_model, Vector3(-2.0 * VS, float(_HIP_Y) * VS, 0.0))
+	_leg_r = _make_pivot(_model, Vector3( 2.0 * VS, float(_HIP_Y) * VS, 0.0))
+	_leg_l_lo = _make_pivot(_leg_l, Vector3(0.0, float(_KNEE_Y - _HIP_Y) * VS, 0.0))
+	_leg_r_lo = _make_pivot(_leg_r, Vector3(0.0, float(_KNEE_Y - _HIP_Y) * VS, 0.0))
+	var thigh_l := VoxelModel.VoxelDef.new(); _sculpt_thigh(thigh_l, -1)
+	var thigh_r := VoxelModel.VoxelDef.new(); _sculpt_thigh(thigh_r, 1)
+	var shin_l := VoxelModel.VoxelDef.new(); _sculpt_shin(shin_l, -1)
+	var shin_r := VoxelModel.VoxelDef.new(); _sculpt_shin(shin_r, 1)
+	# Udo: geometria liczona w globalnych X (x0 zależny od side), więc pivot w X przesuwamy
+	#      kompensacyjnie — patrz offset z PEŁNYM Vector3i (x = ±2) by zawias leżał w osi nogi.
+	_add_model_mesh(_leg_l, thigh_l, mat, Vector3i(-2, _HIP_Y, 0))
+	_add_model_mesh(_leg_r, thigh_r, mat, Vector3i( 2, _HIP_Y, 0))
+	_add_model_mesh(_leg_l_lo, shin_l, mat, Vector3i(-2, _KNEE_Y, 0))
+	_add_model_mesh(_leg_r_lo, shin_r, mat, Vector3i( 2, _KNEE_Y, 0))
+
+	# --- RĘCE (2 segmenty): bark (y=_SHOULDER_Y) -> łokieć (y=_ELBOW_Y zagnieżdżony) ---
+	_arm_l = _make_pivot(_model, Vector3(-5.0 * VS, float(_SHOULDER_Y) * VS, 0.0))
+	_arm_r = _make_pivot(_model, Vector3( 5.0 * VS, float(_SHOULDER_Y) * VS, 0.0))
+	_arm_l_lo = _make_pivot(_arm_l, Vector3(0.0, float(_ELBOW_Y - _SHOULDER_Y) * VS, 0.0))
+	_arm_r_lo = _make_pivot(_arm_r, Vector3(0.0, float(_ELBOW_Y - _SHOULDER_Y) * VS, 0.0))
+	var uarm_l := VoxelModel.VoxelDef.new(); _sculpt_upper_arm(uarm_l, -1)
+	var uarm_r := VoxelModel.VoxelDef.new(); _sculpt_upper_arm(uarm_r, 1)
+	var farm_l := VoxelModel.VoxelDef.new(); _sculpt_forearm(farm_l, -1)
+	var farm_r := VoxelModel.VoxelDef.new(); _sculpt_forearm(farm_r, 1)
+	_add_model_mesh(_arm_l, uarm_l, mat, Vector3i(-5, _SHOULDER_Y, 0))
+	_add_model_mesh(_arm_r, uarm_r, mat, Vector3i( 5, _SHOULDER_Y, 0))
+	_add_model_mesh(_arm_l_lo, farm_l, mat, Vector3i(-5, _ELBOW_Y, 0))
+	_add_model_mesh(_arm_r_lo, farm_r, mat, Vector3i( 5, _ELBOW_Y, 0))
 
 # Bakuje JEDNĄ grupę voxeli do zbatchowanego ArrayMesh i wiesza pod 'parent'.
 # pivot_vox = logiczny punkt obrotu (w voxelach); geometrię przesuwamy o -pivot*VS,
@@ -216,12 +266,15 @@ func _build_voxel_character() -> void:
 func _add_model_mesh(parent: Node3D, def: VoxelModel.VoxelDef, mat: Material, pivot_vox: Vector3i) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelModel.build_mesh(def, VS, -Vector3(pivot_vox) * VS)
-	mi.material_override = mat
+	# KAŻDY segment dostaje WŁASNĄ kopię materiału (duplicate) — zgodnie z kontraktem opisanym
+	# przy _make_char_material(). _flash_hit() i tak iteruje per mesh (idempotentnie), ale własna
+	# kopia umożliwia per-segment albedo/emisję (np. tint jednej kończyny) bez wpływu na resztę.
+	mi.material_override = mat.duplicate()
 	parent.add_child(mi)
 
-# Materiał postaci: vertex-color jako albedo, matowy. KAŻDA grupa dostaje WŁASNĄ kopię,
-# bo _flash_hit() modyfikuje material_override per mesh (gdyby był współdzielony, błysk
-# by się zdublował na tym samym obiekcie — niegroźne, ale duplicate() jest czystsze).
+# Materiał postaci: vertex-color jako albedo, matowy. To WZORZEC — _add_model_mesh() robi
+# .duplicate() na każdy segment, więc KAŻDA grupa ma WŁASNĄ kopię materiału (per-mesh albedo/
+# emisja możliwe niezależnie; _flash_hit() ustawia emisję per mesh).
 func _make_char_material() -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
@@ -259,79 +312,138 @@ const _C_PANTS   := Color(0.28, 0.32, 0.50)
 const _C_PANTS_SH := Color(0.22, 0.25, 0.40)
 const _C_BOOTS   := Color(0.26, 0.18, 0.12)
 const _C_BOOTS_HI := Color(0.36, 0.26, 0.17)
+const _C_SOLE    := Color(0.16, 0.12, 0.09)   # ciemna podeszwa (czytelny styk z ziemią)
+const _C_CAPE    := Color(0.62, 0.20, 0.22)   # peleryna (akcent koloru z tyłu)
+const _C_CAPE_SH := Color(0.48, 0.14, 0.16)
+const _C_LEATHER := Color(0.45, 0.30, 0.18)   # rękawice/naramiennik skórzany
+const _C_EAR     := _C_SKIN
 
-# GŁOWA (chibi: duża) — czaszka + włosy + twarz. Logiczny y 14..25.
+# GŁOWA (chibi-Veloren: duża, wyrazista) — czaszka + włosy + uszy + twarz. Logiczny y 14..26.
 func _sculpt_head(d: VoxelModel.VoxelDef) -> void:
 	# Czaszka 9×9×9 (x[-4..4], y[15..23], z[-4..4]).
 	d.fill_box(Vector3i(-4, 15, -4), Vector3i(5, 24, 5), _C_SKIN)
 	# Szyja (krótka, ciemniejsza skóra) łączy z tułowiem.
 	d.fill_box(Vector3i(-2, 14, -2), Vector3i(2, 15, 2), _C_SKIN_SH)
-	# Ścięcie górnych rogów czaszki (mniej „pudełkowo").
+	# Ścięcie 4 górnych rogów + dolnych przednich rogów szczęki (mniej „pudełkowo", lekki podbródek).
 	for cx in [-4, 4]:
 		for cz in [-4, 4]:
 			d.cells.erase(Vector3i(cx, 23, cz))
-	# WŁOSY: czapa na górze + boki/tył + grzywka.
+	for cx in [-4, 4]:
+		d.cells.erase(Vector3i(cx, 15, -4))   # zwężenie szczęki u dołu z przodu
+	# USZY (boczne, skóra) — 1 voxel wystający na y17..18, czytelny zarys.
+	d.set_voxel(Vector3i(-5, 17, 0), _C_EAR); d.set_voxel(Vector3i(-5, 18, 0), _C_EAR)
+	d.set_voxel(Vector3i( 5, 17, 0), _C_EAR); d.set_voxel(Vector3i( 5, 18, 0), _C_EAR)
+	# WŁOSY: czapa na górze + boki/tył + grzywka warstwowa + 1 kosmyk „ahoge".
 	d.fill_box(Vector3i(-4, 22, -4), Vector3i(5, 25, 5), _C_HAIR)   # czapa (y22..24)
-	d.fill_box(Vector3i(-4, 16, 3), Vector3i(5, 23, 5), _C_HAIR)    # tył (+Z)
-	d.fill_box(Vector3i(-4, 16, -4), Vector3i(-3, 23, 5), _C_HAIR)  # lewy bok
-	d.fill_box(Vector3i(4, 16, -4), Vector3i(5, 23, 5), _C_HAIR)    # prawy bok
-	d.fill_box(Vector3i(-4, 21, -5), Vector3i(5, 23, -4), _C_HAIR)  # grzywka na czole (front -Z)
-	for hx in [-4, -2, 0, 2, 4]:
-		d.set_voxel(Vector3i(hx, 21, -5), _C_HAIR_HI)               # opadające kosmyki (y21, by nie kolidowały z brwiami y20)
+	d.fill_box(Vector3i(-4, 16, 3), Vector3i(5, 24, 5), _C_HAIR)    # tył (+Z), aż pod czapę
+	d.fill_box(Vector3i(-4, 16, -4), Vector3i(-3, 24, 5), _C_HAIR)  # lewy bok
+	d.fill_box(Vector3i(4, 16, -4), Vector3i(5, 24, 5), _C_HAIR)    # prawy bok
+	d.fill_box(Vector3i(-4, 20, -5), Vector3i(5, 23, -4), _C_HAIR)  # grzywka na czole (front -Z)
+	# Warstwowe kosmyki grzywki (nierówny dolny brzeg = mniej „kask").
+	for hx in [-4, -1, 3]:
+		d.set_voxel(Vector3i(hx, 19, -5), _C_HAIR)                  # dłuższe kosmyki opadające niżej
+	for hx in [-3, 0, 2, 4]:
+		d.set_voxel(Vector3i(hx, 20, -5), _C_HAIR_HI)              # rozjaśnione pasemka (połysk)
+	d.set_voxel(Vector3i(0, 25, -1), _C_HAIR_HI)                   # ahoge — pojedynczy kosmyk na czubku
+	# Połysk na czubku czapy (kierunek światła z góry-przodu).
+	for hx in [-2, 0, 2]:
+		d.set_voxel(Vector3i(hx, 24, -3), _C_HAIR_HI)
 	# TWARZ (front -Z, warstwa z=-5 jako „naklejka" na lico z=-4).
-	# Oczy duże (sygnatura chibi): białko 2×2 na y18..19.
+	# Oczy duże (sygnatura chibi): białko 2×szer na y17..19 z górną kreską rzęs.
 	for ex in [-3, 2]:
-		d.fill_box(Vector3i(ex, 18, -5), Vector3i(ex + 2, 20, -4), _C_EYE_W)
-	# Tęczówki + źrenice (patrzą lekko do środka).
-	d.set_voxel(Vector3i(-2, 18, -5), _C_IRIS); d.set_voxel(Vector3i(-2, 19, -5), _C_PUPIL)
-	d.set_voxel(Vector3i( 2, 18, -5), _C_IRIS); d.set_voxel(Vector3i( 2, 19, -5), _C_PUPIL)
-	# Brwi (kreska włosów nad oczami).
+		d.fill_box(Vector3i(ex, 17, -5), Vector3i(ex + 2, 20, -4), _C_EYE_W)
+	# Tęczówki (2 wys.) + źrenice + górne podkreślenie (rzęsy). Patrzą lekko do środka.
+	d.set_voxel(Vector3i(-2, 17, -5), _C_IRIS); d.set_voxel(Vector3i(-2, 18, -5), _C_PUPIL)
+	d.set_voxel(Vector3i( 2, 17, -5), _C_IRIS); d.set_voxel(Vector3i( 2, 18, -5), _C_PUPIL)
+	d.set_voxel(Vector3i(-2, 19, -5), _C_PUPIL); d.set_voxel(Vector3i(2, 19, -5), _C_PUPIL)  # kreska rzęs (góra oka)
+	# Brwi (kreska włosów nad oczami, lekko uniesione = przyjazny wyraz).
 	d.set_voxel(Vector3i(-3, 20, -5), _C_HAIR); d.set_voxel(Vector3i(-2, 20, -5), _C_HAIR)
 	d.set_voxel(Vector3i( 2, 20, -5), _C_HAIR); d.set_voxel(Vector3i( 3, 20, -5), _C_HAIR)
-	# Rumieńce.
-	d.set_voxel(Vector3i(-3, 17, -5), _C_BLUSH); d.set_voxel(Vector3i(3, 17, -5), _C_BLUSH)
-	# Nos (1 voxel) i usta (2 voxele).
-	d.set_voxel(Vector3i(0, 17, -5), _C_SKIN_SH)
-	d.set_voxel(Vector3i(-1, 16, -5), _C_MOUTH); d.set_voxel(Vector3i(0, 16, -5), _C_MOUTH)
+	# Rumieńce (pod oczami, na policzkach).
+	d.set_voxel(Vector3i(-3, 16, -5), _C_BLUSH); d.set_voxel(Vector3i(3, 16, -5), _C_BLUSH)
+	# NOS: grzbiet 2 voxele (y16..17) z cieniem — daje głębię profilu.
+	d.set_voxel(Vector3i(0, 17, -5), _C_SKIN); d.set_voxel(Vector3i(0, 16, -5), _C_SKIN_SH)
+	# USTA: lekki uśmiech (3 voxele, środek niżej).
+	d.set_voxel(Vector3i(-1, 15, -5), _C_MOUTH); d.set_voxel(Vector3i(1, 15, -5), _C_MOUTH)
+	d.set_voxel(Vector3i(0, 15, -5), _C_MOUTH)
 
-# TUŁÓW (tunika + pasek + lamówka). Logiczny y 8..15.
+# TUŁÓW (tunika + pasek + lamówka + naramienniki + peleryna). Logiczny y 8..15.
 func _sculpt_torso(d: VoxelModel.VoxelDef) -> void:
 	# Tunika x[-4..4] (9 voxeli, środek 0 — symetria z głową), y[8..14], z[-2..1].
 	d.fill_box(Vector3i(-4, 8, -2), Vector3i(5, 15, 2), _C_TUNIC)
+	# Zwężenie w pasie (talia): ścinamy skrajne X w dolnym rzędzie -> sylwetka „klepsydra".
+	for cz in range(-2, 2):
+		d.cells.erase(Vector3i(-4, 8, cz)); d.cells.erase(Vector3i(4, 8, cz))
+	# Klatka szersza u góry: dołóż barki (y13..14) na pełną szerokość rękawów.
+	d.fill_box(Vector3i(-5, 13, -2), Vector3i(6, 15, 2), _C_TUNIC)
 	# Cień/fałdy (bryła nie jest płaska).
 	d.fill_box(Vector3i(-4, 8, 1), Vector3i(5, 15, 2), _C_TUNIC_SH)    # plecy (+Z)
-	d.fill_box(Vector3i(-4, 8, -2), Vector3i(-3, 15, 2), _C_TUNIC_SH)  # lewy bok (x=-4)
-	d.fill_box(Vector3i(4, 8, -2), Vector3i(5, 15, 2), _C_TUNIC_SH)    # prawy bok (x=4, symetrycznie)
-	# Złota lamówka pod szyją (dekolt) + 2 guziki na froncie (z=-3 „nakładka").
-	d.fill_box(Vector3i(-2, 14, -3), Vector3i(2, 15, -2), _C_TRIM)
+	d.fill_box(Vector3i(-4, 8, -2), Vector3i(-3, 13, 2), _C_TUNIC_SH)  # lewy bok
+	d.fill_box(Vector3i(4, 8, -2), Vector3i(5, 13, 2), _C_TUNIC_SH)    # prawy bok
+	# Złota lamówka pod szyją (dekolt w V) + rząd 3 guzików na froncie (z=-3 „nakładka").
+	d.fill_box(Vector3i(-2, 14, -3), Vector3i(3, 15, -2), _C_TRIM)
 	d.set_voxel(Vector3i(0, 13, -3), _C_TRIM)
+	d.set_voxel(Vector3i(0, 12, -3), _C_TRIM)
 	d.set_voxel(Vector3i(0, 11, -3), _C_TRIM)
-	# Pasek (y8) dookoła + klamra na froncie. x[-4..4] spójnie z tuniką.
-	d.fill_box(Vector3i(-4, 8, -3), Vector3i(5, 9, 2), _C_BELT)
+	# Naramienniki (złoto na szczycie barków, y14) — akcent „zbroja lekka".
+	d.fill_box(Vector3i(-5, 14, -2), Vector3i(-3, 15, 2), _C_TRIM)
+	d.fill_box(Vector3i(3, 14, -2), Vector3i(5, 15, 2), _C_TRIM)
+	# Pasek (y8..9) dookoła + klamra na froncie. x[-3..3] (po zwężeniu talii).
+	d.fill_box(Vector3i(-3, 8, -3), Vector3i(4, 9, 2), _C_BELT)
 	d.set_voxel(Vector3i(0, 8, -3), _C_BUCKLE)
 	d.set_voxel(Vector3i(-1, 8, -3), _C_BUCKLE)
+	# PELERYNKA: warstwa na plecach (+Z), od barków w dół, akcent koloru i ruch sylwetki.
+	d.fill_box(Vector3i(-4, 8, 2), Vector3i(5, 15, 3), _C_CAPE)
+	d.fill_box(Vector3i(-4, 8, 2), Vector3i(-2, 15, 3), _C_CAPE_SH)    # cień fałdy (lewa)
+	d.fill_box(Vector3i(2, 8, 2), Vector3i(5, 15, 3), _C_CAPE_SH)      # cień fałdy (prawa)
+	# Zapinka peleryny na barkach (złoto).
+	d.set_voxel(Vector3i(-3, 14, 2), _C_TRIM); d.set_voxel(Vector3i(3, 14, 2), _C_TRIM)
 
-# NOGA (udo/łydka w spodniach + but). side = -1 (lewa) / +1 (prawa). Logiczny y 0..8.
-# X-zakres: lewa [-3..-1], prawa [1..2] -> 2 voxele szer.
-func _sculpt_leg(d: VoxelModel.VoxelDef, side: int) -> void:
+# UDO (górny segment nogi, w spodniach). side = -1 (lewa) / +1 (prawa). Logiczny y 4..8.
+# X-zakres: lewa [-3..-1], prawa [1..2] -> 2 voxele szer. (spójnie z biodrem/kolanem).
+func _sculpt_thigh(d: VoxelModel.VoxelDef, side: int) -> void:
 	var x0 := (-3 if side < 0 else 1)
-	# Nogawka spodni: y1..7 (stopa nad podeszwą buta).
-	d.fill_box(Vector3i(x0, 1, -1), Vector3i(x0 + 2, 8, 2), _C_PANTS)
-	d.fill_box(Vector3i(x0, 1, 1), Vector3i(x0 + 2, 8, 2), _C_PANTS_SH)   # cień z tyłu
-	# But: y0..1, dłuższy w przód (czubek na -Z); podeszwa (y0) najjaśniejsza.
-	d.fill_box(Vector3i(x0, 0, -2), Vector3i(x0 + 2, 2, 2), _C_BOOTS)
-	d.fill_box(Vector3i(x0, 0, -2), Vector3i(x0 + 2, 1, 2), _C_BOOTS_HI)
+	# Udo: y4..7 (zwęża się ku kolanu — przednia ściana pełna, tył w cieniu).
+	d.fill_box(Vector3i(x0, 4, -1), Vector3i(x0 + 2, 8, 2), _C_PANTS)
+	d.fill_box(Vector3i(x0, 4, 1), Vector3i(x0 + 2, 8, 2), _C_PANTS_SH)   # cień z tyłu
+	# Boczna kieszeń/fałda (1 voxel akcentu na zewnętrznej stronie uda).
+	var outer := (x0 if side < 0 else x0 + 1)
+	d.set_voxel(Vector3i(outer, 6, -1), _C_PANTS_SH)
 
-# RĘKA (rękaw tuniki + naramiennik + dłoń). side = -1/+1. Logiczny y 6..14.
+# ŁYDKA + BUT (dolny segment nogi). side = -1/+1. Logiczny y 0..4 (kolano u góry).
+func _sculpt_shin(d: VoxelModel.VoxelDef, side: int) -> void:
+	var x0 := (-3 if side < 0 else 1)
+	# Łydka w spodniach: y2..3 (nad cholewką buta).
+	d.fill_box(Vector3i(x0, 2, -1), Vector3i(x0 + 2, 4, 2), _C_PANTS)
+	d.fill_box(Vector3i(x0, 2, 1), Vector3i(x0 + 2, 4, 2), _C_PANTS_SH)   # cień z tyłu
+	# But: y0..2, dłuższy w przód (czubek na -Z, palce); cholewka (y2) ciemniejsza.
+	d.fill_box(Vector3i(x0, 1, -2), Vector3i(x0 + 2, 3, 2), _C_BOOTS)
+	d.fill_box(Vector3i(x0, 2, -1), Vector3i(x0 + 2, 3, 2), _C_BOOTS_HI)   # rant cholewki (połysk)
+	d.fill_box(Vector3i(x0, 1, -2), Vector3i(x0 + 2, 2, -1), _C_BOOTS_HI)  # czubek buta (palce)
+	# Podeszwa (y0) — ciemna, czytelny styk z gruntem (foot-plant feel).
+	d.fill_box(Vector3i(x0, 0, -2), Vector3i(x0 + 2, 1, 2), _C_SOLE)
+
+# RAMIĘ górne (rękaw tuniki + naramiennik). side = -1/+1. Logiczny y 10..14 (bark u góry).
 # X tuż obok tułowia: lewa [-6..-5], prawa [4..5].
-func _sculpt_arm(d: VoxelModel.VoxelDef, side: int) -> void:
+func _sculpt_upper_arm(d: VoxelModel.VoxelDef, side: int) -> void:
 	var x0 := (-6 if side < 0 else 4)
-	# Rękaw tuniki: y8..13 (zwisa od barku w dół).
-	d.fill_box(Vector3i(x0, 8, -1), Vector3i(x0 + 2, 14, 2), _C_TUNIC)
-	d.fill_box(Vector3i(x0, 8, 1), Vector3i(x0 + 2, 14, 2), _C_TUNIC_SH)   # cień rękawa
+	# Rękaw tuniki: y10..13 (od barku do łokcia).
+	d.fill_box(Vector3i(x0, 10, -1), Vector3i(x0 + 2, 14, 2), _C_TUNIC)
+	d.fill_box(Vector3i(x0, 10, 1), Vector3i(x0 + 2, 14, 2), _C_TUNIC_SH)  # cień rękawa
 	d.fill_box(Vector3i(x0, 13, -2), Vector3i(x0 + 2, 14, 2), _C_TRIM)     # naramiennik (złoto)
-	# Dłoń (skóra): y6..7.
+
+# PRZEDRAMIĘ + DŁOŃ (dolny segment ręki). side = -1/+1. Logiczny y 6..10 (łokieć u góry).
+func _sculpt_forearm(d: VoxelModel.VoxelDef, side: int) -> void:
+	var x0 := (-6 if side < 0 else 4)
+	# Przedramię w skórzanym karwaszu: y8..9.
+	d.fill_box(Vector3i(x0, 8, -1), Vector3i(x0 + 2, 10, 2), _C_LEATHER)
+	d.fill_box(Vector3i(x0, 8, 1), Vector3i(x0 + 2, 10, 2), _C_TUNIC_SH)   # cień z tyłu
+	# DŁOŃ (skóra): y6..8, z zarysem KCIUKA (1 voxel po wewnętrznej stronie, ku tułowiu).
 	d.fill_box(Vector3i(x0, 6, -1), Vector3i(x0 + 2, 8, 1), _C_SKIN)
+	var thumb_x := (x0 + 2 if side < 0 else x0 - 1)   # kciuk od strony tułowia
+	d.set_voxel(Vector3i(thumb_x, 7, 0), _C_SKIN)
+	# Zaciśnięte palce (kostki) — drobny cień na grzbiecie dłoni (przód -Z).
+	d.set_voxel(Vector3i(x0, 6, -1), _C_SKIN_SH); d.set_voxel(Vector3i(x0 + 1, 6, -1), _C_SKIN_SH)
 
 func _build_camera() -> void:
 	# Pivot: obraca się tylko w poziomie (yaw). NIE obracamy całej postaci,
@@ -348,8 +460,14 @@ func _build_camera() -> void:
 	_pivot.add_child(_spring)
 
 	_camera = Camera3D.new()
+	_camera.fov = base_fov           # bazowe FOV (sprint kick podbija je w _process)
 	_spring.add_child(_camera)
 	_camera.current = true
+
+	# Pył lądowania (one-shot GPUParticles, wzorzec jak ambient w Main): tworzony raz, ponownie
+	# „odpalany" przez restart() przy każdym lądowaniu. local_coords=false — pył zostaje w świecie.
+	_land_dust = _make_land_dust()
+	add_child(_land_dust)
 
 	# Game feel (0C): kamera ODPIĘTA od gracza (top_level) — podąża z wygładzeniem w _process.
 	_pivot.top_level = true
@@ -361,6 +479,48 @@ func _build_camera() -> void:
 	_shake_noise = FastNoiseLite.new()
 	_shake_noise.seed = 7
 	_shake_noise.frequency = 1.0
+
+# Tworzy one-shot „obłoczek" pyłu pod stopami (wzorzec GPUParticles jak ambient w Main.gd).
+# emitting=false na starcie; lądowanie woła restart()+emitting=true (one_shot sam wygasza).
+func _make_land_dust() -> GPUParticles3D:
+	var p := GPUParticles3D.new()
+	p.amount = 16
+	p.lifetime = 0.5
+	p.one_shot = true
+	p.explosiveness = 0.9       # cały burst naraz (puff), nie strużka
+	p.local_coords = false      # pył zostaje w świecie, gdy postać biegnie dalej
+	p.emitting = false
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.25
+	pm.gravity = Vector3(0.0, -1.2, 0.0)         # lekko opada
+	pm.direction = Vector3(0.0, 0.3, 0.0)
+	pm.spread = 75.0                              # rozłazi się na boki (płaski obłok)
+	pm.initial_velocity_min = 1.0
+	pm.initial_velocity_max = 2.4
+	pm.damping_min = 2.0
+	pm.damping_max = 4.0                          # szybko hamuje (puff, nie eksplozja)
+	pm.scale_min = 0.6
+	pm.scale_max = 1.3
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.16, 0.16)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.74, 0.68, 0.56, 0.7)   # piaskowy kurz
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mesh.material = mat
+	p.draw_pass_1 = mesh
+	return p
+
+# Odpala obłoczek pyłu u stóp (siła ~ prędkość upadku). Wołane z _physics_process przy lądowaniu.
+func _spawn_land_dust(strength: float) -> void:
+	if _land_dust == null:
+		return
+	_land_dust.global_position = global_position    # u stóp (origin postaci = y=0)
+	_land_dust.amount = int(clampf(10.0 + strength * 22.0, 10.0, 28.0))
+	_land_dust.restart()
+	_land_dust.emitting = true
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Ruch myszy obraca kamerę (gdy kursor jest złapany).
@@ -387,7 +547,7 @@ func _toggle_mouse() -> void:
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
-# Game feel (0C): kamera podąża z wygładzeniem/lagiem + trauma-shake.
+# Game feel (0C): kamera podąża z wygładzeniem/lagiem + trauma-shake + (JUICE) FOV kick i walk-bob.
 func _update_camera(delta: float) -> void:
 	if _pivot == null:
 		return
@@ -399,21 +559,57 @@ func _update_camera(delta: float) -> void:
 	var s := _trauma * _trauma
 	if _camera == null:
 		return
+
+	# JUICE: SPRINT FOV KICK — przy biegu FOV rośnie (poczucie pędu), wraca przy chodzie/staniu.
+	var hspeed := Vector2(velocity.x, velocity.z).length()
+	var is_sprint := hspeed > speed + 0.6 and is_on_floor()
+	var fov_target := base_fov + (sprint_fov_add if is_sprint else 0.0)
+	_camera.fov = lerpf(_camera.fov, fov_target, _sm(fov_lerp, delta))
+
+	# JUICE: WALK-BOB kamery (MAŁY) — pionowe „tętno" kroku, tylko przy ruchu po ziemi.
+	var bob_off := Vector3.ZERO
+	if hspeed > 0.6 and is_on_floor():
+		_cam_bob_phase += delta * hspeed * 1.9
+		var amp := cam_bob_amount * clampf(hspeed / sprint_speed, 0.4, 1.0)
+		bob_off.y = -absf(sin(_cam_bob_phase)) * amp       # opada na każdym kroku
+		bob_off.x = sin(_cam_bob_phase) * amp * 0.4        # delikatne kołysanie boczne
+	else:
+		_cam_bob_phase = 0.0
+
 	if s > 0.0:
+		# Wstrząs dominuje nad walk-bobem (lądowanie/trafienie) — krótkie, więc OK.
 		_shake_time += delta
 		var nx := _shake_noise.get_noise_2d(_shake_time * 50.0, 0.0)
 		var ny := _shake_noise.get_noise_2d(0.0, _shake_time * 50.0)
 		var nr := _shake_noise.get_noise_2d(_shake_time * 50.0, 99.0)
-		_camera.position = Vector3(nx, ny, 0.0) * s * shake_pos
+		_camera.position = Vector3(nx, ny, 0.0) * s * shake_pos + bob_off
 		_camera.rotation.z = nr * s * shake_roll
 	else:
-		_camera.position = _camera.position.lerp(Vector3.ZERO, 12.0 * delta)
-		_camera.rotation.z = lerpf(_camera.rotation.z, 0.0, 12.0 * delta)
+		_camera.position = _camera.position.lerp(bob_off, _sm(12.0, delta))
+		_camera.rotation.z = lerpf(_camera.rotation.z, 0.0, _sm(12.0, delta))
 
 func add_trauma(amount: float) -> void:
 	_trauma = clampf(_trauma + amount, 0.0, 1.0)
 
-# Wizualne: obrót modelu w kierunku ruchu + animacja chodu (kołysanie kończyn).
+# ============================================================================
+#  ANIMACJA PROCEDURALNA (Veloren-feel: ciężar, foot-plant, przeciwfaza, zgięcia)
+# ============================================================================
+# Cała animacja jest FRAME-RATE INDEPENDENT:
+#  * ruch cykliczny = sin/cos(_walk_phase), gdzie _walk_phase += delta*tempo (czas, nie klatki),
+#  * wygładzanie/dosztywnianie = lerp z czynnikiem 1-exp(-k*delta) (stała szybkość niezależna od FPS).
+# Konwencja stawów. Segmenty WISZĄ poniżej swoich pivotów (y<0 względem zawiasu). Obrót wokół
+# +X: z' = y*sinθ, więc dla y<0: θ>0 => z'<0 (segment do PRZODU, -Z), θ<0 => z'>0 (do TYŁU, +Z).
+# Stąd kierunki naturalnych zgięć:
+#   * udo/bark w PRZÓD  => rotation.x DODATNI (a w tył => ujemny),
+#   * KOLANO (pięta ku górze, do TYŁU) => rotation.x UJEMNY na dolnym pivocie,
+#   * ŁOKIEĆ (dłoń ku twarzy, do PRZODU) => rotation.x DODATNI na dolnym pivocie.
+# (Zachowujemy fazowanie hip = -sin(phase), zgodne z oryginalnym, działającym chodem.)
+
+# Wygładzanie wykładnicze (frame-rate independent): zwraca alpha do lerp(a,b,alpha).
+func _sm(k: float, delta: float) -> float:
+	return 1.0 - exp(-k * delta)
+
+# Wizualne: wybór stanu animacji + tułów (bob/lean/twist) + stabilizacja głowy. Sterownik główny.
 func _process(delta: float) -> void:
 	_update_camera(delta)
 	if _model == null:
@@ -426,54 +622,185 @@ func _process(delta: float) -> void:
 			stamina = minf(max_stamina, stamina + stamina_regen * delta)
 			stamina_changed.emit(stamina, max_stamina)
 
-	# --- ATAK ma priorytet nad chodem na RĘKACH (nogi animują się normalnie) ---
-	# Jedyny właściciel rotation.x rąk, gdy is_attacking == true — chód NIGDY ich tu nie dotyka.
+	# --- Pomiary stanu ---
+	var hvel := Vector2(velocity.x, velocity.z)
+	var hspeed := hvel.length()
+	var on_floor := is_on_floor()
+	var sprinting := hspeed > speed + 0.6        # próg „bieg" (powyżej zwykłej prędkości chodu)
+	_idle_phase += delta                          # zegar idle (oddychanie) — biegnie zawsze
+	# Gaśnięcie przysiadu lądowania (squash) — niezależne od FPS.
+	_land_squash = maxf(0.0, _land_squash - delta * 4.0)
+
+	# --- OBRÓT MODELU w stronę ruchu (lub w stronę kamery podczas ataku) ---
 	if is_attacking:
-		var t := 1.0 - (_attack_anim_t / attack_anim_time)   # 0..1 postęp animacji
-		# Szybki zamach prawą ręką: w dół-do-przodu i powrót (parabola sin).
-		var swing := sin(t * PI) * 2.2                        # rad, ~126° wymachu
-		_arm_r.rotation.x = -swing                            # ręka leci do przodu (-X obrót)
-		_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.2, 12.0 * delta)  # lewa lekko w tył (balans)
-		# Obróć model w stronę celu/kamery podczas ciosu, żeby cios szedł "tam gdzie patrzymy".
-		_model.rotation.y = lerp_angle(_model.rotation.y, _pivot.rotation.y, 18.0 * delta)
-		# Nogi: niech chód działa dalej.
-		_animate_legs_only(delta)
-		return
-
-	# --- Standardowy chód/spoczynek (BEZ ZMIAN względem oryginału) ---
-	var hspeed := Vector2(velocity.x, velocity.z).length()
-	if hspeed > 0.5:
-		# Obrót modelu w stronę ruchu (przód = -Z), płynnie przez lerp_angle.
+		_model.rotation.y = lerp_angle(_model.rotation.y, _pivot.rotation.y, _sm(18.0, delta))
+	elif hspeed > 0.5:
 		var target_yaw := atan2(-velocity.x, -velocity.z)
-		_model.rotation.y = lerp_angle(_model.rotation.y, target_yaw, 12.0 * delta)
-		# Wahadłowe kołysanie kończyn; ręce w przeciwfazie do nóg (jak w chodzie).
-		_walk_phase += delta * hspeed * 1.8
-		var swing := sin(_walk_phase) * 0.6
-		_arm_l.rotation.x = swing
-		_arm_r.rotation.x = -swing
-		_leg_l.rotation.x = -swing
-		_leg_r.rotation.x = swing
-	else:
-		# Powrót kończyn do spoczynku.
-		_walk_phase = 0.0
-		_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.0, 10.0 * delta)
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, 0.0, 10.0 * delta)
-		_leg_l.rotation.x = lerpf(_leg_l.rotation.x, 0.0, 10.0 * delta)
-		_leg_r.rotation.x = lerpf(_leg_r.rotation.x, 0.0, 10.0 * delta)
+		_model.rotation.y = lerp_angle(_model.rotation.y, target_yaw, _sm(12.0, delta))
 
-# Animacja samych NÓG (wyjęta z _process), używana podczas ataku, by nogi nadal chodziły,
-# a ręce były "zajęte" zamachem. Tułów/głowa statyczne.
-func _animate_legs_only(delta: float) -> void:
-	var hspeed := Vector2(velocity.x, velocity.z).length()
-	if hspeed > 0.5:
-		_walk_phase += delta * hspeed * 1.8
-		var swing := sin(_walk_phase) * 0.6
-		_leg_l.rotation.x = -swing
-		_leg_r.rotation.x = swing
+	# --- WYBÓR STANU NÓG/RĄK ---
+	# Priorytet: powietrze > chód/bieg > idle. Atak nadpisuje TYLKO ręce (nogi grają normalnie).
+	if not on_floor:
+		_anim_air(delta, hspeed)
+	elif hspeed > 0.6:
+		_anim_locomotion(delta, hspeed, sprinting)
 	else:
-		_walk_phase = 0.0
-		_leg_l.rotation.x = lerpf(_leg_l.rotation.x, 0.0, 10.0 * delta)
-		_leg_r.rotation.x = lerpf(_leg_r.rotation.x, 0.0, 10.0 * delta)
+		_anim_idle(delta)
+
+	# Atak nadpisuje ramiona (po wyliczeniu lokomocji/idle dla nóg i tułowia).
+	if is_attacking:
+		_anim_attack_arms(delta)
+
+	# --- TUŁÓW: pionowy bob + lean (do przodu wg prędkości) + twist (wg fazy kroku) ---
+	_animate_torso(delta, hspeed, on_floor, sprinting)
+	# --- GŁOWA: stabilizacja (kompensuje bob/lean tułowia) + subtelny oddech-nod ---
+	_animate_head(delta, hspeed)
+
+# --- CHÓD / BIEG -----------------------------------------------------------
+# Zamach ramion w PRZECIWFAZIE do nóg; kolano/łokieć zginają się w fazie PRZENOSZENIA nogi;
+# stopa „trzyma" (foot-plant) w fazie podporu (zgięcie kolana ~0, gdy noga z tyłu/pod ciałem).
+func _anim_locomotion(delta: float, hspeed: float, sprinting: bool) -> void:
+	# Tempo kroku rośnie z prędkością; bieg ma większą amplitudę zamachu.
+	_walk_phase += delta * hspeed * (2.0 if sprinting else 1.8)
+	var swing := (0.95 if sprinting else 0.6)          # amplituda zamachu uda/ramienia (rad)
+	var ph := _walk_phase
+	var s := sin(ph)
+
+	# NOGI — górne pivoty (biodra): przeciwne fazy L/R.
+	var hip_l := -s * swing
+	var hip_r :=  s * swing
+	_leg_l.rotation.x = lerpf(_leg_l.rotation.x, hip_l, _sm(20.0, delta))
+	_leg_r.rotation.x = lerpf(_leg_r.rotation.x, hip_r, _sm(20.0, delta))
+	# KOLANA — zginają się TYLKO w fazie przenoszenia (noga unoszona z tyłu, pięta ku górze).
+	# Kolano zgina się DO TYŁU => UJEMNY rotation.x (segment poniżej pivota: <0 = +Z/tył).
+	# max(0,...) zeruje zgięcie w fazie podporu => stopa „trzyma" grunt (foot-plant feel).
+	var bend := (1.7 if sprinting else 1.2)            # maks. zgięcie kolana (rad)
+	# Kolano zgina się w fazie PRZENOSZENIA (udo idzie do PRZODU). Udo L jedzie do przodu, gdy
+	# hip_l = -sin(ph) > 0, czyli sin(ph) < 0; szczyt wymachu przy ph=3π/2 (mid-swing). Funkcja
+	# -cos(ph) > 0 dokładnie na (π/2, 3π/2) z pikiem w ph=π => bend pokrywa się z mid-swingiem,
+	# a podczas podporu (udo do tyłu) kolano jest PROSTE => stopa „trzyma" grunt (foot-plant).
+	var knee_l := -maxf(0.0, -cos(ph)) * bend          # L: zgięcie w fazie przenoszenia (mid-swing)
+	var knee_r := -maxf(0.0,  cos(ph)) * bend          # R: przeciwfaza
+	_leg_l_lo.rotation.x = lerpf(_leg_l_lo.rotation.x, knee_l, _sm(22.0, delta))
+	_leg_r_lo.rotation.x = lerpf(_leg_r_lo.rotation.x, knee_r, _sm(22.0, delta))
+
+	# RĘCE — barki w przeciwfazie do nóg (ramię L z nogą R). Atak nadpisze je później, jeśli trwa.
+	if not is_attacking:
+		var arm_sw := swing * (0.9 if sprinting else 0.75)
+		_arm_l.rotation.x = lerpf(_arm_l.rotation.x,  s * arm_sw, _sm(18.0, delta))
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -s * arm_sw, _sm(18.0, delta))
+		# ŁOKCIE — stałe lekkie zgięcie + dodatkowe na wymachu WŁASNEGO barku DO PRZODU (ręka „pompuje").
+		# Bark L napiera do przodu, gdy s>0 (_arm_l = +s); bark R, gdy s<0 (_arm_r = -s). Stąd flex
+		# parujemy z dodatnim wkładem WŁASNEGO barku — łokieć dosztywnia się dokładnie przy napieraniu.
+		var base_elbow := (0.55 if sprinting else 0.35)
+		var elbow_l := base_elbow + maxf(0.0,  s) * (0.5 if sprinting else 0.3)
+		var elbow_r := base_elbow + maxf(0.0, -s) * (0.5 if sprinting else 0.3)
+		_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, elbow_l, _sm(18.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, elbow_r, _sm(18.0, delta))
+
+# --- IDLE: oddychanie + przestępowanie (weight-shift) ----------------------
+func _anim_idle(delta: float) -> void:
+	_walk_phase = 0.0
+	# Bardzo subtelny ruch kończyn: lekkie „rozluźnienie" + minimalny oddech.
+	var breath := sin(_idle_phase * 1.6) * 0.04        # wolny oddech
+	# Nogi prawie proste; minimalne przestępowanie (weight-shift L/R co kilka s).
+	var shift := sin(_idle_phase * 0.7)
+	_leg_l.rotation.x = lerpf(_leg_l.rotation.x, breath * 0.5, _sm(6.0, delta))
+	_leg_r.rotation.x = lerpf(_leg_r.rotation.x, -breath * 0.5, _sm(6.0, delta))
+	# Kolano nogi „odciążonej" lekko ugięte do tyłu (ujemne) — luźna postawa, na zmianę L/R.
+	_leg_l_lo.rotation.x = lerpf(_leg_l_lo.rotation.x, -maxf(0.0, shift) * 0.12, _sm(6.0, delta))
+	_leg_r_lo.rotation.x = lerpf(_leg_r_lo.rotation.x, -maxf(0.0, -shift) * 0.12, _sm(6.0, delta))
+	# Ręce zwisają z minimalnym kołysaniem + lekko zgięte łokcie (naturalna sylwetka).
+	if not is_attacking:
+		_arm_l.rotation.x = lerpf(_arm_l.rotation.x, breath, _sm(6.0, delta))
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -breath, _sm(6.0, delta))
+		_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.18, _sm(6.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.18, _sm(6.0, delta))
+
+# --- SKOK / SPADANIE: pozy w powietrzu --------------------------------------
+func _anim_air(delta: float, _hspeed: float) -> void:
+	_walk_phase = 0.0
+	var rising := velocity.y > 0.5
+	if rising:
+		# SKOK (wznoszenie): UDA do PRZODU/kolana w górę (hip DODATNI), KOLANA podkulone DO TYŁU
+		# (pięty pod pośladki => UJEMNE). Asymetria L/R = lekki „dynamiczny" tuck, nie sztywny.
+		_leg_l.rotation.x = lerpf(_leg_l.rotation.x, 0.6, _sm(12.0, delta))
+		_leg_r.rotation.x = lerpf(_leg_r.rotation.x, 0.35, _sm(12.0, delta))
+		_leg_l_lo.rotation.x = lerpf(_leg_l_lo.rotation.x, -1.0, _sm(12.0, delta))
+		_leg_r_lo.rotation.x = lerpf(_leg_r_lo.rotation.x, -0.6, _sm(12.0, delta))
+		# Bramka po _attack_anim_t (nie is_attacking): is_attacking gaśnie klatkę później w
+		# _physics_process, więc na klatce przełączenia uniknęlibyśmy konkurencyjnego zapisu
+		# ramion (drobny twitch) — _anim_attack_arms i tak nadpisze ramiona, gdy atak trwa.
+		if _attack_anim_t <= 0.0:
+			# Ramiona w GÓRĘ-PRZÓD (zryw): bark do przodu (dodatni) + zgięte łokcie (dodatni).
+			_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.6, _sm(10.0, delta))
+			_arm_r.rotation.x = lerpf(_arm_r.rotation.x, 0.6, _sm(10.0, delta))
+			_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.6, _sm(10.0, delta))
+			_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.6, _sm(10.0, delta))
+	else:
+		# SPADANIE: nogi rozłożone w dół (gotowe na ląd.) — lekko rozkrok, KOLANA delikatnie ugięte
+		# do tyłu (amortyzacja). Ręce nieco w bok/przód dla balansu.
+		_leg_l.rotation.x = lerpf(_leg_l.rotation.x, -0.12, _sm(10.0, delta))
+		_leg_r.rotation.x = lerpf(_leg_r.rotation.x, 0.2, _sm(10.0, delta))
+		_leg_l_lo.rotation.x = lerpf(_leg_l_lo.rotation.x, -0.3, _sm(10.0, delta))
+		_leg_r_lo.rotation.x = lerpf(_leg_r_lo.rotation.x, -0.18, _sm(10.0, delta))
+		if _attack_anim_t <= 0.0:   # patrz uwaga w gałęzi „rising" — bramka po _attack_anim_t
+			_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.3, _sm(8.0, delta))
+			_arm_r.rotation.x = lerpf(_arm_r.rotation.x, 0.3, _sm(8.0, delta))
+			_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.45, _sm(8.0, delta))
+			_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.45, _sm(8.0, delta))
+
+# --- ATAK: zamach prawą ręką (nadpisuje ramiona po lokomocji/idle) ----------
+func _anim_attack_arms(delta: float) -> void:
+	var t := 1.0 - (_attack_anim_t / attack_anim_time)   # 0..1 postęp animacji
+	var swing := sin(t * PI)                              # 0->1->0 parabola
+	# Bark: szeroki zamach do przodu; łokieć: prostuje się na uderzeniu (cios „tnie").
+	_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -2.2 * swing, _sm(28.0, delta))
+	_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.9 * (1.0 - swing), _sm(28.0, delta))
+	# Lewa ręka: kontra w tył dla balansu (lekkie zgięcie łokcia).
+	_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.35, _sm(14.0, delta))
+	_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.4, _sm(14.0, delta))
+
+# --- TUŁÓW: body-bob (2× tempo kroku), lean wg prędkości, twist wg fazy ------
+func _animate_torso(delta: float, hspeed: float, on_floor: bool, sprinting: bool) -> void:
+	# 1) Pionowy bob: szczyt 2× na cykl kroku (ciało unosi się na każdym kroku). Amplituda z prędkości.
+	var bob_amp := clampf(hspeed / sprint_speed, 0.0, 1.0) * (0.06 if sprinting else 0.045)
+	var target_bob := -absf(sin(_walk_phase)) * bob_amp if (on_floor and hspeed > 0.6) else 0.0
+	# Idle: minimalne unoszenie z oddechu.
+	if on_floor and hspeed <= 0.6:
+		target_bob = sin(_idle_phase * 1.6) * 0.012
+	# Lądowanie: przysiad (squash) zaniża tułów chwilowo.
+	target_bob -= _land_squash * 0.10
+	_anim_bob = lerpf(_anim_bob, target_bob, _sm(16.0, delta))
+	_torso.position.y = float(_HIP_Y) * VS + _anim_bob
+
+	# 2) Lean do przodu proporcjonalny do prędkości (bieg pochyla mocniej). W powietrzu mniejszy.
+	var lean := clampf(hspeed / sprint_speed, 0.0, 1.0) * (0.28 if sprinting else 0.16)
+	if not on_floor:
+		lean *= 0.4
+	# 3) Twist (skręt barków wokół osi pionowej, przeciwnie do bioder) — naturalny rytm chodu.
+	var twist := sin(_walk_phase) * (0.14 if sprinting else 0.09) if (on_floor and hspeed > 0.6) else 0.0
+	# 4) Boczny przechył (roll) w idle przy weight-shift.
+	var roll := 0.0
+	if on_floor and hspeed <= 0.6:
+		roll = sin(_idle_phase * 0.7) * 0.03
+	_torso.rotation.x = lerpf(_torso.rotation.x, lean, _sm(10.0, delta))
+	_torso.rotation.y = lerp_angle(_torso.rotation.y, twist, _sm(14.0, delta))
+	_torso.rotation.z = lerpf(_torso.rotation.z, roll, _sm(8.0, delta))
+
+# --- GŁOWA: stabilizacja (kontra do leanu/twistu tułowia) + drobny nod ------
+func _animate_head(delta: float, hspeed: float) -> void:
+	# Głowa częściowo KOMPENSUJE pochylenie tułowia (wzrok trzyma się horyzontu) —
+	# to klasyczny „head stabilization": ujemny ułamek leanu/twistu tułowia.
+	var counter_pitch := -_torso.rotation.x * 0.55
+	var counter_twist := -_torso.rotation.y * 0.4
+	# Drobny nod w rytm kroku (głowa lekko „kiwa" przy bieganiu) + oddech w idle.
+	if hspeed > 0.6:
+		counter_pitch += sin(_walk_phase * 2.0) * 0.02
+	else:
+		counter_pitch += sin(_idle_phase * 1.6) * 0.025
+	_head.rotation.x = lerpf(_head.rotation.x, counter_pitch, _sm(12.0, delta))
+	_head.rotation.y = lerp_angle(_head.rotation.y, counter_twist, _sm(12.0, delta))
 
 func _physics_process(delta: float) -> void:
 	# ----------------------------------------------------------------------
@@ -592,9 +919,15 @@ func _physics_process(delta: float) -> void:
 	var pre_vy := velocity.y
 	move_and_slide()
 
-	# Lądowanie (0C): trzask kamery proporcjonalny do prędkości upadku (przed wyzerowaniem vy).
-	if is_on_floor() and not _was_on_floor and pre_vy < -4.0:
-		add_trauma(clampf(-pre_vy / 30.0, 0.0, 0.35))
+	# Lądowanie (0C + JUICE): trzask kamery + przysiad (squash) + pył, skalowane prędkością upadku.
+	if is_on_floor() and not _was_on_floor and pre_vy < -3.0:
+		var fall := -pre_vy
+		add_trauma(clampf(fall / 30.0, 0.0, 0.35))
+		# Squash: krótki przysiad ciała (anim _animate_torso zaniża tułów wg _land_squash).
+		_land_squash = clampf(fall / 16.0, 0.15, 1.0)
+		# Pył pod stopami przy mocniejszym lądowaniu (próg, by drobne kroki nie kurzyły).
+		if fall > 5.0:
+			_spawn_land_dust(clampf(fall / 16.0, 0.0, 1.0))
 	_was_on_floor = is_on_floor()
 
 # ============================================================================

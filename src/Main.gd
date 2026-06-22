@@ -194,6 +194,11 @@ func _probe_shot() -> void:
 	_day_night.set_time(0.0 if _pt == "night" else (0.76 if _pt == "gold" else 0.40))
 	var mode := OS.get_environment("VOXEL_PROBE")
 
+	# Tryb "char": usuń wrogów (spawnują przy graczu), by nie oberwać (czerwony flash) podczas pozowania.
+	if mode == "char":
+		for e in get_tree().get_nodes_in_group("enemies"):
+			e.queue_free()
+
 	# Tryb "water": przenieś gracza nad najniższy punkt terenu w okolicy (tam stoi woda).
 	var water_yaw_deg := 35.0   # domyślny yaw kamery (tryb nie-woda)
 	if mode == "water":
@@ -254,8 +259,27 @@ func _probe_shot() -> void:
 		var cam := Camera3D.new()
 		add_child(cam)
 		if mode == "char":
-			cam.global_position = ppos + Vector3(0.9, 1.5, -3.2)   # od przodu, lekko z góry/boku
-			cam.look_at(ppos + Vector3(0.0, 1.0, 0.0), Vector3.UP)  # celuj w tułów/twarz
+			# Wyłącz pętle gracza, by _animate nie nadpisał pozy; ustaw POZĘ CHODU ręcznie
+			# (L noga w przód ze zgiętym kolanem, R w tył prosto; ręce przeciwnie) — weryfikacja rigu.
+			_player_ref.set_process(false)
+			_player_ref.set_physics_process(false)
+			var P := _player_ref
+			var pl := P.get("_leg_l") as Node3D
+			if pl: pl.rotation.x = 0.5
+			var pll := P.get("_leg_l_lo") as Node3D
+			if pll: pll.rotation.x = -0.85
+			var pr := P.get("_leg_r") as Node3D
+			if pr: pr.rotation.x = -0.4
+			var prl := P.get("_leg_r_lo") as Node3D
+			if prl: prl.rotation.x = -0.05
+			var al := P.get("_arm_l") as Node3D
+			if al: al.rotation.x = -0.4
+			var ar := P.get("_arm_r") as Node3D
+			if ar: ar.rotation.x = 0.45
+			var arl := P.get("_arm_r_lo") as Node3D
+			if arl: arl.rotation.x = -0.55
+			cam.global_position = ppos + Vector3(0.8, 1.25, -2.3)   # ciaśniej, od przodu/boku
+			cam.look_at(ppos + Vector3(0.0, 1.0, 0.0), Vector3.UP)
 		elif mode == "vista":
 			cam.global_position = ppos + Vector3(0.0, 36.0, 0.0)    # wysoko: odsłoń strefę LOD
 			cam.look_at(ppos + Vector3(90.0, 6.0, 90.0), Vector3.UP)  # w dal nad styk NEAR|FAR (szczeliny?)
