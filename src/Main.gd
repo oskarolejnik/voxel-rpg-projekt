@@ -203,9 +203,30 @@ func _probe_shot() -> void:
 		water_yaw_deg = rad_to_deg(atan2(-wdir.x, -wdir.y))
 		print("[PROBE] shore spot=", spot, " surface_y=", spot_y, " wdir=", wdir, " found=", found)
 
+	# Tryb "tree": znajdź kafel z drzewem (odtworzenie warunku z Chunk._place_features) i stań obok.
+	if mode == "tree":
+		var tm := VoxelChunk.TREE_MARGIN
+		var tfound := false
+		for gx in range(-160, 161):
+			for gz in range(-160, 161):
+				var sy := _world.surface_height(gx, gz)
+				if sy <= VoxelChunk.BEACH_MAX_Y or sy >= VoxelChunk.ROCK_MIN_Y:
+					continue   # tylko trawa (nie plaża/skała/śnieg)
+				var lx := ((gx % VoxelChunk.CHUNK_SIZE) + VoxelChunk.CHUNK_SIZE) % VoxelChunk.CHUNK_SIZE
+				var lz := ((gz % VoxelChunk.CHUNK_SIZE) + VoxelChunk.CHUNK_SIZE) % VoxelChunk.CHUNK_SIZE
+				if lx < tm or lx > VoxelChunk.CHUNK_SIZE - 1 - tm or lz < tm or lz > VoxelChunk.CHUNK_SIZE - 1 - tm:
+					continue
+				if _world.feature_hash(gx, gz, VoxelChunk.SALT_TREE) < VoxelChunk.TREE_PROB:
+					_player_ref.global_position = Vector3(float(gx), _world.height_at(float(gx), float(gz)) + 2.0, float(gz))
+					tfound = true
+					break
+			if tfound: break
+		_world.prime(_world.world_to_chunk(_player_ref.global_position), 3)
+		print("[PROBE] tree found=", tfound, " pos=", _player_ref.global_position)
+
 	await get_tree().create_timer(6.0).timeout
 	var ppos := _player_ref.global_position
-	if mode == "char" or mode == "props" or mode == "vista":
+	if mode == "char" or mode == "props" or mode == "vista" or mode == "tree":
 		# Dedykowana kamera — omija gameplayowy SpringArm (który cofa się przy kolizji),
 		# daje deterministyczny kadr zbliżenia. Przód postaci = -Z (oczy/twarz tam).
 		var cam := Camera3D.new()
@@ -216,6 +237,9 @@ func _probe_shot() -> void:
 		elif mode == "vista":
 			cam.global_position = ppos + Vector3(0.0, 36.0, 0.0)    # wysoko: odsłoń strefę LOD
 			cam.look_at(ppos + Vector3(90.0, 6.0, 90.0), Vector3.UP)  # w dal nad styk NEAR|FAR (szczeliny?)
+		elif mode == "tree":
+			cam.global_position = ppos + Vector3(6.0, 7.0, -6.0)    # z boku/góry na koronę (ppos=baza+2)
+			cam.look_at(ppos + Vector3(0.0, 4.5, 0.0), Vector3.UP)  # celuj w środek korony nad pniem
 		else:
 			cam.global_position = ppos + Vector3(0.0, 2.2, -2.4)   # z góry-przodu na runo
 			cam.look_at(ppos + Vector3(0.0, 0.1, 0.6), Vector3.UP)  # patrz w dół na grunt z propami

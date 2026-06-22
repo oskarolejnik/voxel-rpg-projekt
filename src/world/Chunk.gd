@@ -112,6 +112,48 @@ const SALT_GRASS_POSZ: int = 68          # rozrzut podstaw źdźbeł Z
 const SALT_GRASS_HEIGHT: int = 70        # wysokość źdźbła: +i (rezerwuje 70..74)
 const SALT_GRASS_LEAN: int = 75          # pochylenie źdźbła: +i (rezerwuje 75..79)
 
+# --- FINE-LEAF: drobne sub-voxele puszystych koron (tylko NEAR, tylko skorupa korony) ---
+# Liść powierzchniowy (≥1 sąsiad AIR/WATER) renderujemy NIE jako kostkę 0,5 m, lecz jako
+# klaster LEAF_SUB³ sub-voxeli (bok = VOXEL_SIZE/LEAF_SUB) z deterministycznymi prześwitami
+# (światło przebija) + wariacją zieleni per sub-voxel. Liść WEWNĘTRZNY (otoczony) pomijamy
+# całkiem (0 geometrii). Wszystko OFF-THREAD-safe: czysta arytmetyka + feature_hash + lokalny
+# SurfaceTool + VoxelModel.emit_to_static (static). Pień WOOD i terrain bez zmian.
+const LEAF_SUB: int = 2                   # podział na sub-voxele (2 -> 0,25 m; 3 -> ~0,167 m)
+# DAPPLE NA POZIOMIE VOXELA LIŚCIA (0,5 m): ~32% powierzchniowych liści wycinamy w całość =>
+# duże szpary światła w koronie. Każdy ZACHOWANY liść staje się puszystym klastrem sub-voxeli.
+# WYJĄTEK (review #MAJOR): liść ZAKOTWICZONY (stykający się z WOOD lub terenem) NIGDY nie jest
+# wycinany w całość — inaczej powstałby prześwit przez pień/ziemię, których ściana ku liściowi
+# została już cullowana przez _is_face_visible (is_solid(LEAVES)==true). Patrz _classify_leaf.
+const LEAF_VOXEL_DAPPLE: float = 0.32     # P(wycięcia całego NIEzakotwiczonego liścia)
+# PRZEŚWIT POJEDYNCZEGO SUB-VOXELA (review #MAJOR tri-count): przy SUB=2 KAŻDY zachowany klaster
+# bez tego byłby pełnym 2×2×2 (8 komórek, 0 wnętrza) => identyczna sylwetka jak kostka 0,5 m,
+# tylko 48 tri zamiast ≤12. Wycięcie 1-3 z 8 sub-voxeli (a) tworzy REALNĄ postrzępioną „puszystość”
+# na skali 0,25 m (nie tylko drobniej pokrojona kostka), (b) ZMNIEJSZA liczbę emitowanych ścian.
+# 0.18 daje ~1,4 wyciętego sub-voxela/klaster średnio => klaster nieregularny, lekki, dappled.
+const LEAF_SUB_GAP_PROB: float = 0.18     # P(wycięcia POJEDYNCZEGO sub-voxela) — działa też przy SUB=2
+const LEAF_TINT_AMP: float = 0.06         # ±jasność per sub-voxel (pod AGX+glow: bezpiecznie < knee)
+const LEAF_WARM_AMP: float = 0.03         # ±ciepło/chłód (zieleń); jesień ma własny, cieplejszy rozrzut
+# Twardy bezpiecznik tri/chunk (4GB): budżet liczony w EMITOWANYCH ŚCIANACH (review #minor — sub-voxele
+# NIE skalują się 1:1 z tri, a skorupa klastra zależy od prześwitów i SUB). Po wyczerpaniu liście
+# wracają do kostki 0,5 m (degradacja zamiast dziur). ~9000 ścian => ~18000 tri liści/chunk: ~6-8 drzew
+# typowych, sufit dla patologicznego gęstego lasu. Próg w ścianach jest stabilny wobec zmian SUB/dapple.
+const LEAF_FACE_BUDGET: int = 9000
+# Salty fine-leaf (rozłączne, jednowartościowe bazy; +sub_i tylko dla gap/tint/warm). KAŻDA decyzja
+# DEKORELUJE WARSTWY Y (review #MAJOR diagonal stripes): dawne składanie y do argumentu Z (wz+y)
+# aliasowało różne voxele świata o równym (wz+y) do tej samej decyzji => widoczna ukośna kratka
+# prześwitów. NIE używamy SALT+y (y to LOKALNE Y chunku 0..95 — wpadałoby w okna sąsiednich saltów),
+# tylko MIESZAMY y do współrzędnych hasha mnożnikami pierwszymi (patrz _emit_leaf_cluster): dapple
+# z hx=wx*K+y*P, hz=wz*K-y*Q (salt stały), gap/tint/warm analogicznie ze swoim scramblem. Salt stały
+# => bazy mogą leżeć blisko siebie. Indeks sub-voxela 0..LEAF_SUB³-1 (max 26 dla SUB=3) dodajemy do
+# bazy gap/tint/warm, więc okna 100..126 / 130..156 / 160..186 są rozłączne.
+const SALT_LEAF_VOXEL_DAPPLE: int = 80   # wycięcie całego liścia (1 wartość; y mieszany w coords)
+const SALT_LEAF_SUB_GAP: int = 100       # prześwit sub-voxela: +sub_i (rezerwuje 100..126 dla SUB=3)
+const SALT_LEAF_TINT: int = 130          # jasność sub-voxela: +sub_i (rezerwuje 130..156)
+const SALT_LEAF_WARM: int = 160          # ciepło sub-voxela:  +sub_i (rezerwuje 160..186)
+# Flagi maski zwracanej przez _classify_leaf (bit0 = powierzchniowy, bit1 = zakotwiczony).
+const LEAF_FLAG_SURFACE: int = 1
+const LEAF_FLAG_ANCHORED: int = 2
+
 # 6 kierunków sąsiadów dla face cullingu (kolejność: +X,-X,+Y,-Y,+Z,-Z).
 const NEIGHBORS: Array[Vector3i] = [
 	Vector3i( 1, 0, 0), Vector3i(-1, 0, 0),
@@ -172,6 +214,7 @@ var _prop_count: int = 0
 var _r_solid_mesh: ArrayMesh = null      # gotowy mesh stałej geometrii (lub null)
 var _r_water_mesh: ArrayMesh = null      # gotowy mesh wody (lub null)
 var _r_props_mesh: ArrayMesh = null      # gotowy mesh drobnych propów (lub null)
+var _r_leaf_mesh: ArrayMesh = null       # fine-leaf: korony liści (NEAR) — OSOBNY mesh, BEZ kolizji
 var _r_collision_shape: Shape3D = null   # gotowy trimesh shape ze stałej geometrii (lub null)
 
 # Strażnicy cyklu życia (sanity): build_data() policzone? finalize() wykonany?
@@ -255,6 +298,14 @@ func finalize(world: VoxelWorld) -> void:
 		props_mi.mesh = _r_props_mesh
 		props_mi.material_override = world.props_material
 		add_child(props_mi)
+
+	# --- Korony liści fine-leaf (BEZ kolizji) — ten sam materiał co teren (vertex-color albedo) ---
+	if _r_leaf_mesh != null:
+		var leaf_mi := MeshInstance3D.new()
+		leaf_mi.name = "LeafMesh"
+		leaf_mi.mesh = _r_leaf_mesh
+		leaf_mi.material_override = world.solid_material
+		add_child(leaf_mi)
 
 	# --- Kolizja: trimesh tylko ze stałej geometrii — i TYLKO dla chunków NEAR (Faza 2B) ---
 	# create_trimesh_shape() liczymy TU, na GŁÓWNYM watku (NIE off-thread — patrz BLOCKER
@@ -740,13 +791,24 @@ func _build_mesh(world: VoxelWorld) -> void:
 	st_solid.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var st_water := SurfaceTool.new()
 	st_water.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Fine-leaf: korony liści idą do OSOBNEGO mesha (bez kolizji). Skorupa liści (tysiące
+	# drobnych trójkątów) NIE może trafić do trimesh kolizji — to zabijało finalize
+	# (create_trimesh_shape na głównym watku) i FPS. Liście nie wymagają kolizji.
+	var st_leaf := SurfaceTool.new()
+	st_leaf.begin(Mesh.PRIMITIVE_TRIANGLES)
 
 	var solid_count: int = 0
 	var water_count: int = 0
+	var leaf_count: int = 0
 
 	# Kolor wody policzony RAZ przed pętlą (review #minor: wcześniej _water_color()
 	# robiło lookup słownika na KAŻDY voxel wody — przy WORLD_HEIGHT=96 to tysiące zbędnych wywołań).
 	var water_col := _water_color()
+
+	# Budżet ŚCIAN liści dla CAŁEGO chunku (twardy bezpiecznik tri/chunk na 4GB; review #minor:
+	# w ścianach, nie sub-voxelach — odporne na zmianę SUB/dapple). _build_mesh biegnie wyłącznie
+	# dla NEAR (lod_step<=1), więc fine-leaf jest tu zawsze "włączony".
+	var leaf_face_budget := LEAF_FACE_BUDGET
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
@@ -760,6 +822,25 @@ func _build_mesh(world: VoxelWorld) -> void:
 						_emit_face(st_water, Vector3i(x, y, z), 2, water_col, false)
 						water_count += 1
 					continue
+
+				# --- FINE-LEAF (NEAR): liście LEAVES/LEAVES_AUTUMN nie jako kostka 0,5 m ---
+				# Tylko powierzchniowe (≥1 sąsiad AIR/WATER); wnętrze korony pomijamy całkiem.
+				if t == Blocks.Type.LEAVES or t == Blocks.Type.LEAVES_AUTUMN:
+					# Jeden przebieg po 6 sąsiadach => maska bitowa (bit0=POWIERZCHNIOWY: ≥1 sąsiad
+					# AIR/WATER; bit1=ZAKOTWICZONY: styka się z WOOD/terenem). Typowany int, bez Variantów.
+					var lf := _classify_leaf(x, y, z)
+					if (lf & LEAF_FLAG_SURFACE) == 0:
+						continue   # liść WEWNĘTRZNY (otoczony) => 0 geometrii (oszczędność)
+					if leaf_face_budget > 0:
+						var lc := _solid_color(world, t, x, y, z)   # baza zieleni/biom/tint (reuse)
+						var anchored := (lf & LEAF_FLAG_ANCHORED) != 0
+						# Klaster do st_leaf (osobny mesh BEZ kolizji), nie st_solid.
+						var faces := _emit_leaf_cluster(st_leaf, world, x, y, z, t, lc, anchored)
+						leaf_face_budget -= faces
+						if faces > 0:
+							leaf_count += 1
+						continue
+					# Budżet wyczerpany => fallback do zwykłej kostki (degradacja, NIE continue).
 
 				# Blok stały: dla każdej z 6 ścian sprawdzamy sąsiada.
 				for fi in 6:
@@ -786,6 +867,109 @@ func _build_mesh(world: VoxelWorld) -> void:
 	# Powierzchnia wody: osobny ArrayMesh, BEZ kolizji.
 	if water_count > 0:
 		_r_water_mesh = st_water.commit()
+
+	# Korony liści (fine-leaf): osobny ArrayMesh, BEZ kolizji (skorupa liści NIE w trimesh).
+	if leaf_count > 0:
+		_r_leaf_mesh = st_leaf.commit()
+
+
+# --- FINE-LEAF: helpery (tylko NEAR; wołane z _build_mesh) ---
+
+## Jeden przebieg po 6 sąsiadach klasyfikuje voxel liścia (review: scala dwa dawne przebiegi
+## w jeden — _is_leaf_surface robiło te same 6 lookupów). Zwraca maskę bitową:
+##  LEAF_FLAG_SURFACE  — ≥1 sąsiad to AIR/WATER (liść odsłonięty => renderujemy klaster);
+##  LEAF_FLAG_ANCHORED — ≥1 sąsiad to NIE-liść SOLID (WOOD lub dowolny blok terenu) — taki liść
+##                       NIGDY nie może zniknąć przez DAPPLE, bo ściana sąsiada ku niemu została
+##                       już cullowana w _is_face_visible (is_solid(LEAVES)==true) => wycięcie liścia
+##                       zrobiłoby prześwit przez pień/ziemię (review #MAJOR „dziury pień|liście”).
+## get_voxel poza zakresem zwraca AIR => brzeg chunku liczy się jako odsłonięty (korony mają
+## margines TREE_MARGIN=7 i nie dotykają szwu, więc anchored na szwie nie występuje).
+func _classify_leaf(x: int, y: int, z: int) -> int:
+	var flags := 0
+	for n in NEIGHBORS:
+		var nt := get_voxel(x + n.x, y + n.y, z + n.z)
+		if nt == Blocks.Type.AIR or nt == Blocks.Type.WATER:
+			flags |= LEAF_FLAG_SURFACE
+		elif nt != Blocks.Type.LEAVES and nt != Blocks.Type.LEAVES_AUTUMN:
+			# Sąsiad jest stały i NIE jest liściem => pień (WOOD) lub teren => liść zakotwiczony.
+			flags |= LEAF_FLAG_ANCHORED
+	return flags
+
+
+## Renderuje POWIERZCHNIOWY voxel liścia jako klaster drobnych sub-voxeli (skorupa + prześwity
+## + wariacja koloru), reużywając VoxelModel.emit_to_static (wewn. face-culling + CW winding,
+## A=0 jawnie => liście nie kołyszą się w shaderze terenu). Zwraca liczbę WYEMITOWANYCH ŚCIAN
+## (do odjęcia z budżetu — review #minor: budżet w ścianach, nie sub-voxelach). Determinizm i
+## thread-safety: wyłącznie world.feature_hash (czysta arytmetyka) + lokalny VoxelDef + static
+## emit — ten sam chunk zawsze daje identyczny mesh, zero operacji na drzewie sceny / _voxels.
+##
+## DAPPLE (skala liścia): ~LEAF_VOXEL_DAPPLE NIEzakotwiczonych liści znika w całości => duże
+## szpary światła. Liść 'anchored' (przy pniu/terenie) jest z dapple WYŁĄCZONY (brak prześwitu
+## przez solid). SUB-GAP (skala sub-voxela): LEAF_SUB_GAP_PROB wycina pojedyncze sub-voxele =>
+## klaster nieregularny/puszysty (a NIE drobniej pokrojona pełna kostka) i mniej ścian — działa
+## też przy SUB=2. Y-warstwy decorrelowane (review #MAJOR): WSZYSTKIE decyzje (dapple/gap/tint/warm)
+## mieszają y do współrzędnych hasha mnożnikami pierwszymi przy stałym salcie (NIE wz+y, NIE salt+y)
+## => brak ukośnej kratki prześwitów i zachowane rozłączne okna saltów.
+func _emit_leaf_cluster(st: SurfaceTool, world: VoxelWorld, x: int, y: int, z: int,
+		t: int, base_col: Color, anchored: bool) -> int:
+	# Współrzędne świata tego voxela liścia — STABILNA kotwica determinizmu per voxel.
+	var wx := _coord.x * CHUNK_SIZE + x
+	var wz := _coord.y * CHUNK_SIZE + z
+
+	# DAPPLE na skali liścia: część NIEzakotwiczonych liści znika w całości => światło przebija.
+	# Y mieszamy do WSPÓŁRZĘDNYCH hasha różnymi mnożnikami pierwszymi (NIE wz+y, NIE salt+y), więc
+	# warstwy korony nie aliasują się do wspólnej ukośnej kratki (review #MAJOR), a salt zostaje stały
+	# i rozłączny. Liść zakotwiczony NIGDY nie znika (brak prześwitu przez pień/ziemię).
+	if not anchored \
+	and world.feature_hash(wx * 31 + y * 23, wz * 17 - y * 11, SALT_LEAF_VOXEL_DAPPLE) < LEAF_VOXEL_DAPPLE:
+		return 0
+
+	var sub := LEAF_SUB
+	var autumn := t == Blocks.Type.LEAVES_AUTUMN
+	var d := VoxelModel.VoxelDef.new()
+	var placed := 0
+	for sx in sub:
+		for sy in sub:
+			for sz in sub:
+				# Lokalny indeks sub-voxela 0..sub³-1 (rozłączne okno saltów gap/tint/warm).
+				var sub_i := sx + sub * (sy + sub * sz)
+				# Współrzędne hasha unikalne per sub-voxel W ŚWIECIE (sąsiednie klastry niezależne).
+				# Y decorrelowany: mieszamy go w X i Z różnymi mnożnikami pierwszymi (NIE wz+y),
+				# żeby warstwy nie tworzyły ukośnych wzorów (review #MAJOR, ten sam fold co dapple).
+				var hx := (wx * sub + sx) * 31 + y * 17
+				var hz := (wz * sub + sz) * 17 - y * 13
+				# Prześwit pojedynczego sub-voxela => klaster nieregularny/puszysty (i mniej ścian).
+				if LEAF_SUB_GAP_PROB > 0.0 \
+				and world.feature_hash(hx, hz, SALT_LEAF_SUB_GAP + sub_i) < LEAF_SUB_GAP_PROB:
+					continue
+				# Wariacja koloru per sub-voxel: jasność ± + lekka temperatura ±. Warm ma WŁASNY,
+				# niezależny scramble (review #minor: nie arg-swap hz/hx — pełna dekorelacja od tint).
+				var lv := (world.feature_hash(hx, hz, SALT_LEAF_TINT + sub_i) - 0.5) * 2.0 * LEAF_TINT_AMP
+				var wv := (world.feature_hash(hx + 101, hz + 53, SALT_LEAF_WARM + sub_i) - 0.5) * 2.0 * LEAF_WARM_AMP
+				var c: Color
+				if autumn:
+					# Jesień: cieplejszy rozrzut (R w górę przy dodatnim wv, B w dół) — bursztyn/miedź.
+					c = Color(
+						clampf(base_col.r + lv + maxf(wv, 0.0), 0.0, 1.0),
+						clampf(base_col.g + lv,                 0.0, 1.0),
+						clampf(base_col.b + lv - maxf(wv, 0.0), 0.0, 1.0),
+						0.0)
+				else:
+					# Zieleń: jasność ± oraz cieplej/chłodniej (R↑/B↓ vs R↓/B↑).
+					c = Color(
+						clampf(base_col.r + lv + wv, 0.0, 1.0),
+						clampf(base_col.g + lv,      0.0, 1.0),
+						clampf(base_col.b + lv - wv, 0.0, 1.0),
+						0.0)   # A=0 nominalnie; emit_to_static i tak wymusza A=0 (liście bez sway)
+				d.set_voxel(Vector3i(sx, sy, sz), c)
+				placed += 1
+	if placed == 0:
+		return 0
+	# Osadzenie: dolny-lewy róg klastra == pozycja voxela liścia w metrach (BEZ recentrowania!).
+	# Bok sub-voxela = VOXEL_SIZE/sub => klaster dokładnie wypełnia sześcian voxela liścia.
+	# emit_to_static robi culling skorupy klastra + CW winding (NIE pełne 6·sub³ ścian) i A=0.
+	var origin := Vector3(x, y, z) * VOXEL_SIZE
+	return VoxelModel.emit_to_static(st, d, origin, VOXEL_SIZE / float(sub))
 
 
 # ============================================================================

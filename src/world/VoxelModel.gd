@@ -132,6 +132,18 @@ static func emit_to(st: SurfaceTool, def: VoxelDef, origin: Vector3,
 	return _emit(st, def, voxel_size, origin, true)   # use_sway = true
 
 
+# --- TRYB A': STATYCZNY emit (BEZ sway) do współdzielonego mesha ---
+## Jak emit_to, ale wymusza COLOR.a = 0 (use_sway=false) niezależnie od def.sway.
+## Dla geometrii kładzionej do mesha STAŁEGO (solid_material), który NIE czyta COLOR.a
+## jako fazy wiatru — np. fine-leaf klastry liści w Chunk._emit_leaf_cluster. Czyni
+## „liście się nie kołyszą” JAWNYM kontacktem na poziomie API (a nie ukrytym skutkiem
+## pustego def.sway), więc ewentualny późniejszy COLOR.a w defie liścia nie zacznie
+## po cichu sterować sway-em w shaderze terenu. Zwraca liczbę wyemitowanych ścian.
+static func emit_to_static(st: SurfaceTool, def: VoxelDef, origin: Vector3,
+		voxel_size: float = MICRO) -> int:
+	return _emit(st, def, voxel_size, origin, false)  # use_sway = false (A=0 zawsze)
+
+
 # --- TRYB B: POSTAĆ — standalone ArrayMesh (bez sway) ---
 ## Zwraca gotowy ArrayMesh do MeshInstance3D.mesh. Materiał ustawia woła­jący
 ## (StandardMaterial3D z vertex_color_use_as_albedo — patrz Player._make_char_material).
