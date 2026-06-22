@@ -106,6 +106,10 @@ var _walk_phase: float = 0.0
 @export var coyote_time: float = 0.12      # okno skoku tuż po zejściu z krawędzi
 @export var jump_buffer_time: float = 0.12 # bufor wciśnięcia skoku przed lądowaniem
 @export var fall_gravity_mult: float = 1.5 # mocniejsze opadanie (mniej „księżycowo")
+# Auto-step: pokonuj TYLKO niskie progi (~1 voxel). Wyższe ściany/strome zbocza NIE są
+# pokonywane (postać się zatrzyma) — koniec „wspinania się po terenie, gdzie nie powinna".
+@export var step_height: float = 0.6       # maks. wysokość progu do automatycznego wejścia (m)
+@export var step_boost: float = 5.5        # impuls w górę przy wejściu na próg (m/s)
 @export var cam_follow: float = 14.0       # szybkość podążania kamery (lag)
 @export var trauma_decay: float = 1.6      # zanik wstrząsu kamery /s
 @export var shake_pos: float = 0.18        # amplituda przesunięcia kamery
@@ -528,13 +532,8 @@ func _physics_process(delta: float) -> void:
 		if Input.is_physical_key_pressed(KEY_D): input_dir.x += 1.0
 	input_dir = input_dir.normalized()
 
-	# 3b) Auto-podskok: gdy idziemy i blokuje nas NISKI stopień (np. 1-blokowy teren
-	# voxelowy), lekko podskakujemy, żeby go pokonać — jak auto-jump w grach blokowych.
-	# is_on_floor()/is_on_wall() odnoszą się do ostatniego move_and_slide() (poprz. klatka).
-	# Pomijamy auto-podskok, gdy czeka pionowy impuls knockbacku (_knockback.y > 0),
-	# inaczej trafienie pod ścianą dałoby podwójny wyskok (6.5 + 3.0).
-	if is_on_floor() and is_on_wall() and input_dir != Vector2.ZERO and _knockback.y <= 0.0:
-		velocity.y = 6.5
+	# (Auto-step przeniesiony niżej — wymaga policzonego `direction`/`current_speed`, a do tego
+	#  jest BRAMKOWANY test_move, żeby wchodzić tylko na niskie progi, nie na strome ściany.)
 
 	# 4) Obróć kierunek o yaw kamery — "przód" zawsze tam, gdzie patrzysz.
 	var yaw := _pivot.rotation.y
@@ -550,6 +549,17 @@ func _physics_process(delta: float) -> void:
 	_move_vel.z = move_toward(_move_vel.z, direction.z * current_speed, accel * delta)
 	velocity.x = _move_vel.x + _knockback.x
 	velocity.z = _move_vel.z + _knockback.z
+
+	# 5a) AUTO-STEP (naprawione): wejdź TYLKO na niski próg (~1 voxel), NIE na strome ściany.
+	# Test: podnieś transform o step_height i sprawdź, czy ruch w przód jest WOLNY. Jeśli tak =>
+	# to niski stopień => mały impuls w górę. Jeśli wciąż blokuje => ściana => brak podskoku
+	# (postać się zatrzyma, zamiast „wspinać się" po terenie, gdzie nie powinna).
+	if is_on_floor() and is_on_wall() and moving and _knockback.y <= 0.0 and _dodge_t <= 0.0:
+		var probe := direction * 0.35   # jak daleko w przód sprawdzamy kolizję progu
+		var raised := global_transform
+		raised.origin.y += step_height
+		if not test_move(raised, probe):
+			velocity.y = maxf(velocity.y, step_boost)
 
 	# Sprint pobiera staminę tylko gdy faktycznie biegniemy i się ruszamy:
 	if can_sprint and moving and stamina > 0.0:
