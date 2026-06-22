@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_ofd33"]
+
+[resource]
+script = ExtResource("1_ofd33")
+id = &"massive"
+stat = &"area_radius"
+op = 1
+value_min = 0.05
+value_max = 0.15
+tags = Array[StringName]([&"aoe"])
+allowed_slots = Array[int]([0])
+weight = 0.9

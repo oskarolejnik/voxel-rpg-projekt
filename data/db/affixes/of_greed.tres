@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_0ilnh"]
+
+[resource]
+script = ExtResource("1_0ilnh")
+id = &"of_greed"
+kind = 1
+stat = &"magic_find"
+value_min = 0.03
+value_max = 0.1
+tags = Array[StringName]([&"utility"])
+allowed_slots = Array[int]([5])
+weight = 0.7

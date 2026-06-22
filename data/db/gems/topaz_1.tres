@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_y8e7h"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_rn1kv"]
+
+[sub_resource type="Resource" id="Resource_ytrbv"]
+script = ExtResource("1_y8e7h")
+stat = &"lightning_damage"
+value = 5.0
+tags = Array[StringName]([&"lightning"])
+source = &"gem"
+source_id = &"topaz_1"
+
+[resource]
+script = ExtResource("2_rn1kv")
+id = &"topaz_1"
+display_name = "Topaz (Skaza)"
+modifiers = Array[ExtResource("1_y8e7h")]([SubResource("Resource_ytrbv")])

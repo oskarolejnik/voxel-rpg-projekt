@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_km1v3"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_tgq2q"]
+
+[sub_resource type="Resource" id="Resource_e485x"]
+script = ExtResource("1_km1v3")
+stat = &"damage"
+value = 30.0
+tags = Array[StringName]([&"phys"])
+source = &"gear"
+source_id = &"hardened_axe"
+
+[resource]
+script = ExtResource("2_tgq2q")
+id = &"hardened_axe"
+display_name = "Hartowany Topor"
+weapon_class = &"axe2h"
+base_modifiers = Array[ExtResource("1_km1v3")]([SubResource("Resource_e485x")])

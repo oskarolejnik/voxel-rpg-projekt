@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_x2a62"]
+
+[resource]
+script = ExtResource("1_x2a62")
+id = &"of_cheetah"
+kind = 1
+stat = &"move_speed"
+op = 1
+value_min = 0.03
+value_max = 0.08
+tags = Array[StringName]([&"speed"])
+allowed_slots = Array[int]([4, 5])
+biomes = Array[StringName]([&"verdant"])

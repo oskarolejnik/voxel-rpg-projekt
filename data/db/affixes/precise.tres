@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_arrfn"]
+
+[resource]
+script = ExtResource("1_arrfn")
+id = &"precise"
+stat = &"crit_chance"
+value_min = 0.02
+value_max = 0.06
+tags = Array[StringName]([&"crit"])
+allowed_slots = Array[int]([0, 1, 2, 3, 4, 5])

@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_qji07"]
+
+[resource]
+script = ExtResource("1_qji07")
+id = &"of_bear"
+kind = 1
+stat = &"max_hp"
+op = 1
+value_min = 0.04
+value_max = 0.1
+tags = Array[StringName]([&"defense"])
+allowed_slots = Array[int]([1, 2, 3, 4])
+weight = 1.2

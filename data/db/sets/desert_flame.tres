@@ -1,0 +1,40 @@
+[gd_resource type="Resource" script_class="SetResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_xghn0"]
+[ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_bbpui"]
+
+[sub_resource type="Resource" id="Resource_tw7pw"]
+script = ExtResource("1_xghn0")
+stat = &"fire_damage"
+op = 1
+value = 0.15
+tags = Array[StringName]([&"set", &"fire"])
+source = &"set"
+source_id = &"desert_flame"
+
+[sub_resource type="Resource" id="Resource_ckt7q"]
+script = ExtResource("1_xghn0")
+stat = &"fire_damage"
+op = 2
+value = 0.25
+tags = Array[StringName]([&"set", &"fire"])
+source = &"set"
+source_id = &"desert_flame"
+
+[sub_resource type="Resource" id="Resource_rar1d"]
+script = ExtResource("1_xghn0")
+stat = &"fire_damage"
+value = 5.0
+tags = Array[StringName]([&"set", &"fire"])
+source = &"set"
+source_id = &"desert_flame"
+
+[resource]
+script = ExtResource("2_bbpui")
+id = &"desert_flame"
+display_name = "Plomien Pustyni"
+fixed_modifiers = Array[ExtResource("1_xghn0")]([SubResource("Resource_rar1d")])
+bonuses = {
+2: [SubResource("Resource_tw7pw")],
+4: [SubResource("Resource_ckt7q")]
+}

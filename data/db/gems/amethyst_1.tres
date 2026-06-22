@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_l2a77"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_knilf"]
+
+[sub_resource type="Resource" id="Resource_firfi"]
+script = ExtResource("1_l2a77")
+stat = &"lifesteal"
+value = 0.03
+tags = Array[StringName]([&"leech"])
+source = &"gem"
+source_id = &"amethyst_1"
+
+[resource]
+script = ExtResource("2_knilf")
+id = &"amethyst_1"
+display_name = "Ametyst (Skaza)"
+modifiers = Array[ExtResource("1_l2a77")]([SubResource("Resource_firfi")])

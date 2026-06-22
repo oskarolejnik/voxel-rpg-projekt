@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_8o7jc"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_xeh3b"]
+
+[sub_resource type="Resource" id="Resource_xjvml"]
+script = ExtResource("1_8o7jc")
+stat = &"cdr"
+op = 1
+value = 0.04
+tags = Array[StringName]([&"utility"])
+source = &"gem"
+source_id = &"sapphire_1"
+
+[resource]
+script = ExtResource("2_xeh3b")
+id = &"sapphire_1"
+display_name = "Szafir (Skaza)"
+modifiers = Array[ExtResource("1_8o7jc")]([SubResource("Resource_xjvml")])

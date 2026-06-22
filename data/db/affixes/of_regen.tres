@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_6fhkw"]
+
+[resource]
+script = ExtResource("1_6fhkw")
+id = &"of_regen"
+kind = 1
+stat = &"hp_regen"
+value_min = 1.0
+value_max = 4.0
+tags = Array[StringName]([&"heal"])
+allowed_slots = Array[int]([1, 2, 3, 4])

@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_t7uyh"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_gm16t"]
+
+[sub_resource type="Resource" id="Resource_12rwf"]
+script = ExtResource("1_t7uyh")
+stat = &"magic_find"
+value = 0.05
+tags = Array[StringName]([&"utility"])
+source = &"gem"
+source_id = &"onyx_1"
+
+[resource]
+script = ExtResource("2_gm16t")
+id = &"onyx_1"
+display_name = "Onyks (Skaza)"
+modifiers = Array[ExtResource("1_t7uyh")]([SubResource("Resource_12rwf")])

@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_n5y3m"]
+
+[resource]
+script = ExtResource("1_n5y3m")
+id = &"of_turtle"
+kind = 1
+stat = &"armor"
+op = 1
+value_min = 0.05
+value_max = 0.12
+tags = Array[StringName]([&"defense"])
+allowed_slots = Array[int]([1, 2, 3, 4])
+weight = 1.1

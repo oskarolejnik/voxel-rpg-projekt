@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_3lehx"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_rqxfx"]
+
+[sub_resource type="Resource" id="Resource_dgfnk"]
+script = ExtResource("1_3lehx")
+stat = &"max_hp"
+op = 1
+value = 0.08
+tags = Array[StringName]([&"defense"])
+source = &"gear"
+source_id = &"scout_jacket"
+
+[resource]
+script = ExtResource("2_rqxfx")
+id = &"scout_jacket"
+display_name = "Kurtka Zwiadowcy"
+slot = 2
+base_modifiers = Array[ExtResource("1_3lehx")]([SubResource("Resource_dgfnk")])
+max_sockets = 1

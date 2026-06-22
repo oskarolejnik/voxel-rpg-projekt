@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_frygk"]
+
+[resource]
+script = ExtResource("1_frygk")
+id = &"of_shadow"
+kind = 1
+stat = &"dodge_iframes"
+value_min = 0.02
+value_max = 0.06
+tags = Array[StringName]([&"mobility"])
+ilvl_min = 3
+allowed_slots = Array[int]([4, 5])
+biomes = Array[StringName]([&"frosthelm"])
+weight = 0.8

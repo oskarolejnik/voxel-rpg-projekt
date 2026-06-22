@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sbpd2"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_2wf0r"]
+
+[sub_resource type="Resource" id="Resource_o7if6"]
+script = ExtResource("1_sbpd2")
+stat = &"cdr"
+op = 1
+value = 0.06
+tags = Array[StringName]([&"utility"])
+source = &"gear"
+source_id = &"adept_hood"
+
+[resource]
+script = ExtResource("2_2wf0r")
+id = &"adept_hood"
+display_name = "Kaptur Adepta"
+slot = 1
+base_modifiers = Array[ExtResource("1_sbpd2")]([SubResource("Resource_o7if6")])
+max_sockets = 1

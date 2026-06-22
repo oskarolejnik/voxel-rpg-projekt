@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_asi4g"]
+
+[resource]
+script = ExtResource("1_asi4g")
+id = &"sharp"
+stat = &"damage"
+op = 1
+value_min = 0.08
+value_max = 0.2
+tags = Array[StringName]([&"phys"])
+allowed_slots = Array[int]([0])
+weight = 1.4

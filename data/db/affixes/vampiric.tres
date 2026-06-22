@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_efnew"]
+
+[resource]
+script = ExtResource("1_efnew")
+id = &"vampiric"
+stat = &"lifesteal"
+value_min = 0.02
+value_max = 0.06
+tags = Array[StringName]([&"leech"])
+ilvl_min = 5
+allowed_slots = Array[int]([0])
+weight = 0.7

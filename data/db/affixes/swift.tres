@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_nf5j7"]
+
+[resource]
+script = ExtResource("1_nf5j7")
+id = &"swift"
+stat = &"attack_speed"
+op = 1
+value_min = 0.05
+value_max = 0.12
+tags = Array[StringName]([&"speed"])
+allowed_slots = Array[int]([0])
+weight = 1.1

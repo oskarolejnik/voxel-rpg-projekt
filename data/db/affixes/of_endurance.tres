@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_cweex"]
+
+[resource]
+script = ExtResource("1_cweex")
+id = &"of_endurance"
+kind = 1
+stat = &"stamina_regen"
+value_min = 3.0
+value_max = 9.0
+tags = Array[StringName]([&"utility"])
+allowed_slots = Array[int]([1, 2, 3, 4])
+biomes = Array[StringName]([&"emberwaste"])

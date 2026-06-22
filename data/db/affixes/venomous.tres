@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_hqiey"]
+
+[resource]
+script = ExtResource("1_hqiey")
+id = &"venomous"
+stat = &"poison_damage"
+value_min = 2.0
+value_max = 8.0
+tags = Array[StringName]([&"poison"])
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"verdant"])

@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_x417i"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_37h72"]
+
+[sub_resource type="Resource" id="Resource_yjkqj"]
+script = ExtResource("1_x417i")
+stat = &"crit_chance"
+value = 0.03
+tags = Array[StringName]([&"crit"])
+source = &"gem"
+source_id = &"emerald_1"
+
+[resource]
+script = ExtResource("2_37h72")
+id = &"emerald_1"
+display_name = "Szmaragd (Skaza)"
+modifiers = Array[ExtResource("1_x417i")]([SubResource("Resource_yjkqj")])

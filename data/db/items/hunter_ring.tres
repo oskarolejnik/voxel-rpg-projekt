@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_jnsqv"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_puku2"]
+
+[sub_resource type="Resource" id="Resource_x8i38"]
+script = ExtResource("1_jnsqv")
+stat = &"magic_find"
+value = 0.08
+tags = Array[StringName]([&"utility"])
+source = &"gear"
+source_id = &"hunter_ring"
+
+[resource]
+script = ExtResource("2_puku2")
+id = &"hunter_ring"
+display_name = "Pierscien Lowcy"
+slot = 5
+base_modifiers = Array[ExtResource("1_jnsqv")]([SubResource("Resource_x8i38")])

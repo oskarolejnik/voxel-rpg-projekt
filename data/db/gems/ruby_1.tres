@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="GemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_8mr20"]
+[ext_resource type="Script" path="res://data/resources/GemResource.gd" id="2_8ixtw"]
+
+[sub_resource type="Resource" id="Resource_bpwxm"]
+script = ExtResource("1_8mr20")
+stat = &"fire_damage"
+value = 4.0
+tags = Array[StringName]([&"fire"])
+source = &"gem"
+source_id = &"ruby_1"
+
+[resource]
+script = ExtResource("2_8ixtw")
+id = &"ruby_1"
+display_name = "Rubin (Skaza)"
+modifiers = Array[ExtResource("1_8mr20")]([SubResource("Resource_bpwxm")])

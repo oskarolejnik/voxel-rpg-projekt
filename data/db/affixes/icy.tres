@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_ytesg"]
+
+[resource]
+script = ExtResource("1_ytesg")
+id = &"icy"
+stat = &"frost_damage"
+value_min = 3.0
+value_max = 10.0
+tags = Array[StringName]([&"frost"])
+ilvl_min = 3
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"frosthelm"])

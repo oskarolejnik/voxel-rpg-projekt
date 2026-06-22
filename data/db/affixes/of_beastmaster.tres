@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_55h2p"]
+
+[resource]
+script = ExtResource("1_55h2p")
+id = &"of_beastmaster"
+kind = 1
+stat = &"pet_damage"
+op = 1
+value_min = 0.05
+value_max = 0.15
+tags = Array[StringName]([&"pet"])
+ilvl_min = 5
+allowed_slots = Array[int]([5])
+weight = 0.6

@@ -36,6 +36,19 @@ signal died(enemy: Enemy)        # emitowany tuż przed queue_free() — Main li
 @export var armor: float = 0.0
 
 # ============================================================================
+#  ETAP 2 — LOOT (kontekst dropu czytany przez LootService.drop_for)
+# ============================================================================
+# Tablica lootu (LootTableResource). Pusta -> LootService daje sensowny default (vertical slice).
+@export var loot_table: LootTableResource
+# Poziom itemu dropu (skaluje wartosci afiksow); Etap 4 ustawi wg biomu/dystansu. Domyslnie 1.
+@export var loot_ilvl: int = 1
+# Biom dropu (filtr afiksow tematycznych); Etap 4 ustawi z get_biome. Domyslnie verdant.
+@export var loot_biome: StringName = &"verdant"
+# Etap 2: emitowany przy smierci z policzonym dropem (Main spawnuje LootDrop). Niesie pozycje +
+# liste wpisow z LootService.drop_for (item/zloto). Pozwala spawnowac loot ZANIM encja zniknie.
+signal loot_dropped(world_pos: Vector3, drops: Array)
+
+# ============================================================================
 #  ETAP 1 — WARIANTY (Brute/Slinger) + droga komponentowa
 # ============================================================================
 # Profil AI / sposób ataku: &"melee" (zwarcie) lub &"ranged" (Slinger — spawnuje pocisk).
@@ -605,7 +618,13 @@ func _die() -> void:
 		return                # idempotencja: HealthComponent.died + ewentualny fallback nie dublują
 	_dead_emitted = true
 	hp = 0.0
-	died.emit(self)          # Main/świat policzy ubitych (hook pod loot Etap 2)
+	# ETAP 2: policz drop ZANIM encja zniknie (LootService HOST-ONLY/deterministyczny). Emitujemy
+	# pozycje + liste dropow, by Main zespawnowal LootDrop-y w SWIECIE (nie pod zwalnianym wrogiem).
+	# LootService to autoload (zawsze obecny w runtime/teście headless).
+	var drops := LootService.drop_for(self)
+	if not drops.is_empty():
+		loot_dropped.emit(global_position, drops)
+	died.emit(self)          # Main/świat policzy ubitych
 	queue_free()
 
 # ============================================================================

@@ -18,6 +18,10 @@ const DayNightScript := preload("res://src/DayNight.gd")
 const EnemyScript := preload("res://src/Enemy.gd")
 # Skrypt HUD-a walki (paski HP/stamina + ekran śmierci).
 const HUDScript := preload("res://src/HUD.gd")
+# ETAP 2: ekran ekwipunku + toast lootu (osobna warstwa CanvasLayer) i encja lootu w świecie.
+const InventoryUIScript := preload("res://src/InventoryUI.gd")
+const LootDropScript := preload("res://src/LootDrop.gd")
+const InventoryComponentScript := preload("res://components/InventoryComponent.gd")
 
 # Referencje przechowywane jako pola — VoxelWorld potrzebuje gracza do streamingu.
 var _world: VoxelWorld
@@ -36,6 +40,10 @@ var _fireflies: GPUParticles3D
 # HUD walki + licznik żywych wrogów.
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
+
+# ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
+var _inv_ui: InventoryUI
+var _inventory: InventoryComponent
 
 # Licznik FPS (diagnostyka wydajności) — róg ekranu, aktualizowany w _process.
 var _fps_label: Label
@@ -521,6 +529,14 @@ func _spawn_player() -> void:
 	# Podajemy referencję gracza do streamingu (od teraz świat śledzi jego pozycję).
 	_world.set_player(_player_ref)
 
+	# ETAP 2: ekwipunek gracza (komponent). Rejestruje się jako provider StatsComponentu gracza
+	# (collect_modifiers z założonych itemów -> get_stat). GameState.local_player potrzebny m.in.
+	# do magic_find w LootService.
+	_inventory = InventoryComponentScript.new()
+	_player_ref.add_child(_inventory)
+	if GameState != null:
+		GameState.set_local_player(_player_ref)
+
 func _spawn_enemies() -> void:
 	# 3 wrogów wokół gracza (offsety 6–10 m). Teren wokół spawnu jest już sprimowany
 	# w _spawn_player(), więc height_at() da grunt; +1 m zapasu na osiadnięcie.
@@ -537,6 +553,7 @@ func _spawn_enemies() -> void:
 		add_child(e)
 		e.set_target(_player_ref)
 		e.died.connect(_on_enemy_died)
+		e.loot_dropped.connect(_on_enemy_loot_dropped)   # ETAP 2: spawn LootDrop w świecie
 		_enemies_alive += 1
 
 func _setup_hud() -> void:
@@ -570,6 +587,13 @@ func _setup_hud() -> void:
 	if _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
 
+	# --- ETAP 2: ekran ekwipunku + toast lootu (OSOBNA warstwa CanvasLayer, nad HUD walki) ---
+	_inv_ui = InventoryUIScript.new()
+	_inv_ui.name = "InventoryUI"
+	add_child(_inv_ui)
+	if _inventory != null:
+		_inv_ui.bind_inventory(_inventory)
+
 # Po śmierci gracza: chwila na ekran śmierci, potem respawn na punkcie startowym.
 func _on_player_died() -> void:
 	var t := get_tree().create_timer(respawn_delay)
@@ -583,3 +607,30 @@ func _on_enemy_died(_e: Enemy) -> void:
 	_enemies_alive = maxi(0, _enemies_alive - 1)
 	if _hud != null and _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
+
+# ETAP 2: wróg zrzucił loot -> spawn encji LootDrop w świecie (pod Main, nie pod zwalnianym wrogiem).
+# Item -> LootDrop z ItemInstance; zloto -> LootDrop zlota. Toast pokazujemy DOPIERO przy podniesieniu
+# (LootDrop.picked_up), żeby gracz wiedział, co faktycznie wpadło do plecaka.
+func _on_enemy_loot_dropped(world_pos: Vector3, drops: Array) -> void:
+	var i := 0
+	for d in drops:
+		# Lekki rozrzut, by kilka dropów nie nakładało się w jednym punkcie.
+		var jitter := Vector3(cos(float(i) * 2.1) * 0.6, 0.0, sin(float(i) * 2.1) * 0.6)
+		var pos := world_pos + jitter
+		var drop: LootDrop = null
+		if d.get("kind", "") == "item" and d.get("instance", null) is ItemInstance:
+			drop = LootDropScript.spawn_item(self, pos, d["instance"])
+		elif d.get("kind", "") == "gold":
+			drop = LootDropScript.spawn_gold(self, pos, int(d.get("amount", 0)))
+		if drop != null:
+			drop.picked_up.connect(_on_loot_picked_up)
+		i += 1
+
+# ETAP 2: gracz podniósł loot -> toast w kolorze rzadkości (item) lub złoty (złoto).
+func _on_loot_picked_up(drop: LootDrop) -> void:
+	if _inv_ui == null:
+		return
+	if drop.item != null:
+		_inv_ui.show_item_toast(drop.item)
+	elif drop.gold > 0:
+		_inv_ui.show_gold_toast(drop.gold)

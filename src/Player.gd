@@ -1156,12 +1156,16 @@ func _physics_process(delta: float) -> void:
 		var g := _gravity * (fall_gravity_mult if velocity.y < 0.0 else 1.0)
 		velocity.y -= g * delta
 
+	# Bramka UI (Etap 2 review #4): gdy modalne UI (ekwipunek) lapie input LUB gra jest spauzowana,
+	# gracz NIE chodzi/skacze/sprintuje — inaczej klikajac itemy w ekwipunku odbiegasz od lootu/wrogow.
+	var ui_locked := get_tree().paused or (GameState != null and GameState.ui_capturing_input)
+
 	# 2) Skok z game feel (0C): coyote time + bufor wejścia + jump-cut.
 	if is_on_floor():
 		_coyote = coyote_time
 	else:
 		_coyote = maxf(0.0, _coyote - delta)
-	var space_down := Input.is_physical_key_pressed(KEY_SPACE) and not is_dead
+	var space_down := Input.is_physical_key_pressed(KEY_SPACE) and not is_dead and not ui_locked
 	if space_down and not _space_was:
 		_jump_buffer = jump_buffer_time
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
@@ -1176,7 +1180,7 @@ func _physics_process(delta: float) -> void:
 
 	# 3) Kierunek z klawiszy WASD (lokalny: x = bok, y = przód/tył)
 	var input_dir := Vector2.ZERO
-	if not is_dead:
+	if not is_dead and not ui_locked:
 		if Input.is_physical_key_pressed(KEY_W): input_dir.y -= 1.0
 		if Input.is_physical_key_pressed(KEY_S): input_dir.y += 1.0
 		if Input.is_physical_key_pressed(KEY_A): input_dir.x -= 1.0
@@ -1192,7 +1196,7 @@ func _physics_process(delta: float) -> void:
 
 	# 5) Prędkość pozioma (bieg z shiftem; bramkowanie staminą) + knockback (gaśnie)
 	var moving := input_dir != Vector2.ZERO
-	var can_sprint := Input.is_physical_key_pressed(KEY_SHIFT) and stamina > 0.0
+	var can_sprint := Input.is_physical_key_pressed(KEY_SHIFT) and stamina > 0.0 and not ui_locked
 	var current_speed := sprint_speed if can_sprint else speed
 	# Akceleracja/wyhamowanie (0C): płynny rozpęd zamiast natychmiastowej prędkości.
 	var accel := ground_accel if is_on_floor() else air_accel

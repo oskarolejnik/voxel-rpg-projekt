@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_8h40v"]
+
+[resource]
+script = ExtResource("1_8h40v")
+id = &"stormy"
+stat = &"lightning_damage"
+value_min = 3.0
+value_max = 11.0
+tags = Array[StringName]([&"lightning"])
+ilvl_min = 3
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"frosthelm"])
+weight = 0.9

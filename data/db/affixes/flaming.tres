@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_enjl2"]
+
+[resource]
+script = ExtResource("1_enjl2")
+id = &"flaming"
+stat = &"fire_damage"
+value_min = 4.0
+value_max = 12.0
+tags = Array[StringName]([&"fire"])
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"emberwaste"])
+weight = 1.2

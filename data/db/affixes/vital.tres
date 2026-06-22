@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_edso5"]
+
+[resource]
+script = ExtResource("1_edso5")
+id = &"vital"
+stat = &"max_hp"
+value_min = 20.0
+value_max = 60.0
+tags = Array[StringName]([&"defense"])
+allowed_slots = Array[int]([1, 2, 3, 4])
+weight = 1.3
