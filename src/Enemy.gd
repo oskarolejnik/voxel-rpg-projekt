@@ -212,6 +212,14 @@ func _ready() -> void:
 # Po tym: HP żyje w HealthComponent (hp mirroruje), trafienia gracza lecą do _hurtbox (Area3D) ->
 # DamageService -> HealthComponent, AI tyka przez AIComponent, atak melee otwiera okno _hitbox.
 func _build_components() -> void:
+	# 0) ETAP 7 — NetIdentity z JAWNYM owner_peer = HOST (peer 1). Wrogowie sa host-owned: AI/HP/loot
+	#    liczy WYLACZNIE host (TDD 6.2). Jawne ustawienie (a nie poleganie na domyslnym 1) sprawia, ze
+	#    NetManager.has_authority(enemy) u klienta jednoznacznie zwraca false (owner_peer != peer klienta)
+	#    -> klient nie ma autorytetu nad wrogiem (anti-cheat HP). W SP owner_peer=1 == lokalny peer (no-op).
+	var net_id := NetIdentity.new()
+	net_id.owner_peer = NetManager.HOST_PEER_ID if NetManager != null else 1
+	add_child(net_id)
+
 	# 1) StatsComponent z base StatBlock zbudowanym z eksportów (jedno źródło staty wroga).
 	_stats = StatsComponent.new()
 	var block := StatBlock.new()

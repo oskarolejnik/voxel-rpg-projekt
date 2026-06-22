@@ -113,8 +113,12 @@ func _physics_process(delta: float) -> void:
 
 ## Zbiera nakladajace sie ciala/hurtboxy, filtruje lukiem + dystansem do roota, wola DamageService.
 func _collect_and_resolve() -> void:
-	if NetManager != null and not NetManager.has_authority(get_owner_entity()):
-		return   # tylko autorytet zadaje obrazenia (Etap 7: klient nie liczy HP)
+	# Zbieramy trafienia gdy jestesmy WLASCICIELEM RUCHU atakujacego (host nad wszystkim; klient nad
+	# wlasna postacia). Klient-wlasciciel DETEKTUJE trafienie i wysyla request_attack do hosta przez
+	# DamageService (ktory sam bramkuje has_state_authority -> klient nie liczy HP, tylko prosi).
+	# Host symulujacy CUDZA postac tez tu wejdzie (ma autorytet), wiec ciosy zdalnego gracza dzialaja.
+	if NetManager != null and not NetManager.is_movement_owner(get_owner_entity()):
+		return
 	var src := get_owner_entity()
 	var origin: Vector3 = (src as Node3D).global_position if src is Node3D else global_position
 

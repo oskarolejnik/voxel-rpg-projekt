@@ -86,6 +86,20 @@ func heal(amount: float) -> void:
 	hp_changed.emit(current_hp, max_hp())
 
 
+## ETAP 7 (KLIENT): ustawia HP narzucone przez HOSTA (autorytet stanu). Klient NIE liczy HP —
+## tylko stosuje wartosc autorytatywna i emituje sygnaly (HUD/FX). Idempotentne; przejscie do
+## smierci emituje died RAZ. Uzywane przez DamageService._rpc_sync_hp (TDD 6.2: "klient wyswietla").
+func set_hp_authoritative(new_hp: float, dead: bool, from: Node = null) -> void:
+	var mx := max_hp()
+	current_hp = clampf(new_hp, 0.0, mx if mx > 0.0 else new_hp)
+	hp_changed.emit(current_hp, max_hp())
+	if dead and not is_dead:
+		is_dead = true
+		died.emit(from)
+	elif not dead and is_dead:
+		is_dead = false
+
+
 ## Pelne odnowienie (respawn/start). Zdejmuje flage smierci.
 func revive_full() -> void:
 	is_dead = false

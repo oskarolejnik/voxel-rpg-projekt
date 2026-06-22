@@ -130,8 +130,8 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 ## -> sensowny domyslny drop (proceduralny item ze slotu losowego), by vertical slice mial co dropic.
 func drop_for(enemy: Node) -> Array:
 	var out: Array = []
-	if not NetManager.has_authority(enemy):
-		return out   # tylko autorytet rozstrzyga drop (anti-desync)
+	if not NetManager.has_state_authority(enemy):
+		return out   # tylko HOST rozstrzyga drop (autorytet stanu — anti-desync lootu, TDD 6.2)
 
 	var table: LootTableResource = null
 	if enemy != null and "loot_table" in enemy and enemy.loot_table is LootTableResource:

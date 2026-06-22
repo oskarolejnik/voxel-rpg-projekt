@@ -23,6 +23,8 @@ const InventoryUIScript := preload("res://src/InventoryUI.gd")
 const SkillTreeUIScript := preload("res://src/SkillTreeUI.gd")
 const LootDropScript := preload("res://src/LootDrop.gd")
 const InventoryComponentScript := preload("res://components/InventoryComponent.gd")
+# ETAP 7: minimalne lobby co-op (Host/Join) + spawn zdalnych graczy. SP = brak peera -> wszystko lokalne.
+const LobbyUIScript := preload("res://src/LobbyUI.gd")
 
 # Referencje przechowywane jako pola — VoxelWorld potrzebuje gracza do streamingu.
 var _world: VoxelWorld
@@ -45,6 +47,11 @@ var _enemies_alive: int = 0
 var _spawner: WorldSpawner
 # ETAP 5: orkiestracja wejść dungeonów + przejście świat<->dungeon (instancja efemeryczna).
 var _dungeon_mgr: DungeonManager
+
+# ETAP 7: lobby co-op + mapa zdalnych graczy (peer_id -> encja). SP: lobby istnieje, ale dopóki nie
+# klikniesz Host/Join, NetManager.mode==SINGLE i ta mapa jest pusta (gra lokalna jak dotąd).
+var _lobby: CanvasLayer
+var _remote_players: Dictionary = {}        # int(peer) -> CharacterBody3D (zdalna postać)
 
 # ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
 var _inv_ui: InventoryUI
@@ -72,6 +79,7 @@ func _ready() -> void:
 	_spawn_player()        # nasza postać — stawiana NA terenie przez height_at()
 	_spawn_enemies()       # 3 wrogów blisko gracza (po prime() terenu wokół spawnu)
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
+	_setup_coop()          # ETAP 7: lobby co-op (Host/Join) + spawn zdalnych graczy. SP = no-op (brak peera).
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
 	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
 	_setup_fps_counter()   # diagnostyka: licznik FPS w rogu (do strojenia wydajności)
@@ -659,6 +667,132 @@ func _setup_hud() -> void:
 func _save_progression() -> void:
 	if _player_ref != null and _player_ref.has_method("save_progression"):
 		_player_ref.save_progression()
+
+# ============================================================================
+#  ETAP 7 — CO-OP: lobby + spawn/despawn zdalnych graczy
+# ============================================================================
+# SP-SAFETY: w single-player NetManager.mode==SINGLE i te sygnaly NIGDY nie odpalają (brak peerów),
+# więc _remote_players zostaje puste, a lokalny gracz biegnie sciezka lokalna jak dotad (zero zmian).
+func _setup_coop() -> void:
+	# Lobby (Host/Join). Domyślnie SP — dopóki gracz nie kliknie Host/Join, nic się nie dzieje.
+	_lobby = LobbyUIScript.new()
+	_lobby.name = "LobbyUI"
+	add_child(_lobby)
+
+	if NetManager == null:
+		return
+	# Lokalny gracz = peer-właściciel (host: 1; klient: jego unique id). Po starcie sesji ustawiamy
+	# owner_peer lokalnej postaci, by predykcja/autorytet wiedziały, że to NASZA postać.
+	NetManager.session_started.connect(_on_session_started)
+	NetManager.peer_joined.connect(_on_peer_joined)
+	NetManager.peer_left.connect(_on_peer_left)
+	NetManager.session_ended.connect(_on_session_ended)
+	NetManager.world_seed_received.connect(_on_world_seed_received)
+
+# Sesja wystartowała (host_game/join_game). Ustaw owner lokalnej postaci na nasz peer + zarejestruj.
+# KLUCZOWE (review #major/blocker): zmieniamy NAZWE lokalnej postaci na STABILNA "Player_<peer>",
+# IDENTYCZNA u kazdego peera. Godotowy @rpc routuje po NodePath, wiec ten sam logiczny gracz musi miec
+# ten sam path (/root/Main/Player_<peer>) na hoscie i u klienta — inaczej _submit_input/_ack_position/
+# sync HP trafialyby w zly wezel. W SP ta funkcja nie jest wolana (nazwa "Player" zostaje bez zmian).
+func _on_session_started(_is_host: bool) -> void:
+	if _player_ref == null:
+		return
+	var my_peer := NetManager.local_peer_id()
+	_player_ref.name = "Player_%d" % my_peer
+	if _player_ref.has_method("set_owner_peer"):
+		_player_ref.set_owner_peer(my_peer)
+	NetManager.register_player(my_peer, _player_ref)
+	# HOST rozsyła seed świata wszystkim (klienci wygenerują teren lokalnie — TDD 6.1).
+	if NetManager.is_host():
+		NetManager.broadcast_world_seed()
+
+# Nowy peer w sesji. KAZDY peer musi widziec WSZYSTKICH innych (review #blocker: wczesniej spawn byl
+# gated is_host(), wiec klient nie widzial innych klientow). HOST jest zrodlem prawdy o rosterze:
+# spawnuje reprezentacje nowego peera u siebie i ROZSYLA pelny roster wszystkim (RPC), a kazdy peer
+# spawnuje/despawnuje repliki dla peerow != on sam. To "reczny MultiplayerSpawner" ze STABILNYM
+# nazewnictwem Player_<peer> (identyczne sciezki na wszystkich peerach -> @rpc routuje poprawnie).
+func _on_peer_joined(peer_id: int) -> void:
+	if not NetManager.is_host():
+		return                               # roster rozsyla wylacznie host (autorytet sesji)
+	# Host: zaktualizuj wlasny widok + rozeslij pelny roster wszystkim (host + klienci).
+	_apply_roster(_current_roster())
+	_rpc_roster.rpc(_current_roster())
+
+func _on_peer_left(peer_id: int) -> void:
+	_despawn_remote_player(peer_id)
+	if NetManager.is_host():
+		_rpc_roster.rpc(_current_roster())   # rozeslij zaktualizowany roster po odejsciu peera
+
+func _on_session_ended() -> void:
+	# Powrót do SP: usuń wszystkie zdalne postacie, lokalny gracz wraca do peer 1 (host/SP).
+	for pid in _remote_players.keys():
+		_despawn_remote_player(pid)
+	if _player_ref != null:
+		_player_ref.name = "Player"          # przywroc nazwe SP (spojnosc z czystym single-player)
+		if _player_ref.has_method("set_owner_peer"):
+			_player_ref.set_owner_peer(NetManager.HOST_PEER_ID)
+
+# Pelna lista peerow w sesji (host + klienci) wg NetManager. Host rozsyla ja jako roster.
+func _current_roster() -> Array:
+	if NetManager == null:
+		return []
+	return NetManager.peer_ids()
+
+# RPC host -> klienci: pelny roster sesji. Kazdy peer dostosowuje swoje repliki (spawn brakujacych,
+# despawn nieobecnych) dla peerow != on sam. Authority(host) -> tylko host nadaje.
+@rpc("authority", "call_remote", "reliable")
+func _rpc_roster(roster: Array) -> void:
+	_apply_roster(roster)
+
+# Doprowadza lokalny zestaw zdalnych postaci do zgodnosci z rosterem: spawn dla nowych peerow,
+# despawn dla tych, ktorych juz nie ma. Pomija WLASNY peer (lokalna postac juz istnieje).
+func _apply_roster(roster: Array) -> void:
+	if NetManager == null:
+		return
+	var me := NetManager.local_peer_id()
+	var want: Dictionary = {}
+	for p in roster:
+		var pid := int(p)
+		if pid == me:
+			continue
+		want[pid] = true
+		if not _remote_players.has(pid):
+			_spawn_remote_player(pid)
+	# Despawn tych, ktorych nie ma juz w rosterze.
+	for pid in _remote_players.keys():
+		if not want.has(int(pid)):
+			_despawn_remote_player(int(pid))
+
+# KLIENT: dostał seed świata od hosta -> przeseeduj RNG (już robi to NetManager) i odśwież świat
+# z tego samego ziarna. VoxelWorld generuje teren z FEATURE_SEED (stałe) — deterministyczny u każdego.
+func _on_world_seed_received(_seed: int) -> void:
+	pass    # teren jest deterministyczny z FEATURE_SEED; seed steruje loot/combat (RNGService już ustawiony)
+
+# Tworzy zdalną postać gracza (peer_id) w świecie. Owner = peer_id; host symuluje ją z inputu RPC,
+# inni klienci ją interpolują. NAZWA STABILNA "Player_<peer>" — IDENTYCZNA na wszystkich peerach
+# (warunek poprawnego routingu @rpc PlayerNetSync/HP-sync po NodePath). Minimalny spawn (bez UI progresji).
+func _spawn_remote_player(peer_id: int) -> void:
+	if _remote_players.has(peer_id):
+		return
+	var rp := CharacterBody3D.new()
+	rp.set_script(PlayerScript)
+	rp.name = "Player_%d" % peer_id
+	var sx := 2.0 * float(peer_id)
+	var sy := _world.height_at(sx, 0.0) + 2.0 if _world != null else 5.0
+	rp.position = Vector3(sx, sy, 0.0)
+	add_child(rp)
+	if rp.has_method("set_owner_peer"):
+		rp.set_owner_peer(peer_id)
+	NetManager.register_player(peer_id, rp)
+	_remote_players[peer_id] = rp
+
+func _despawn_remote_player(peer_id: int) -> void:
+	var rp = _remote_players.get(peer_id, null)
+	if rp != null and is_instance_valid(rp):
+		rp.queue_free()
+	_remote_players.erase(peer_id)
+	if NetManager != null:
+		NetManager.unregister_player(peer_id)
 
 # ETAP 5 — ZAPIS HYBRYDOWY po wyjściu z dungeonu (DungeonManager woła to przez save_after_dungeon).
 # Postać (loot/postęp zdobyte w runie) trafia do save'a postaci; świat (host) zapisuje swój seed +

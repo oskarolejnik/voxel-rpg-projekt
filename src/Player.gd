@@ -232,6 +232,12 @@ var _skill_attack: SkillResource = null         # podstawowy atak (LMB)
 var _skill_dash: SkillResource = null           # unik (RMB/Q)
 var _dead_emitted: bool = false                 # idempotencja śmierci (HealthComponent.died + fallback)
 
+# --- ETAP 7: tożsamość sieciowa + predykcja/rekonsyliacja ruchu (TDD 6.3). W SP OBA są BEZCZYNNE:
+# NetIdentity.owner_peer=1 (host), a PlayerNetSync.net_post_physics() robi natychmiastowy return gdy
+# NetManager.has_network()==false. Dzięki temu SP biegnie sciezka lokalna jak dotad (zero zmian odczucia).
+var _net_identity: NetIdentity = null            # owner_peer (kto steruje ta postacia)
+var _net_sync: PlayerNetSync = null              # predykcja wlasnej / interpolacja cudzej postaci
+
 # --- ETAP 3: progresja (poziomy/XP, drzewko, zasob klasy). Patrz LevelComponent/SkillTreeComponent/
 # ClassResourceComponent. Gracz spina je w _build_progression() i wystawia jako publiczne API
 # (grant_xp, allocate_node, respec_tree) + sygnaly do HUD. Fallbacki: brak komponentu = no-op.
@@ -383,6 +389,17 @@ func _build_components() -> void:
 	_skill_dash.cost_resource = &"stamina"
 	_skill_dash.cost_amount = dodge_stamina_cost
 
+	# ETAP 7 — tożsamość sieciowa + predykcja ruchu. NetIdentity domyślnie owner_peer=1 (host/SP).
+	# W co-opie Main/warstwa spawnu ustawia owner_peer na peer-właściciela tej postaci (set_owner_peer).
+	# PlayerNetSync jest bezczynny w SP (net_post_physics -> return gdy brak sieci), więc dodanie go
+	# NIE zmienia single-playera. Tworzymy zawsze (tani Node), by co-op nie wymagał re-spawnu encji.
+	_net_identity = NetIdentity.new()
+	_net_identity.owner_peer = NetManager.HOST_PEER_ID if NetManager != null else 1
+	add_child(_net_identity)
+	_net_sync = PlayerNetSync.new()
+	add_child(_net_sync)
+	_net_sync.setup(self, _net_identity)
+
 	# ETAP 3 — progresja (poziomy/XP + drzewko + zasob klasy). Po komponentach walki, by
 	# StatsComponent juz istnial (drzewko rejestruje sie jako jego provider).
 	_build_progression()
@@ -443,6 +460,27 @@ func _build_progression() -> void:
 # ============================================================================
 #  ETAP 3 — PUBLICZNE API PROGRESJI (Main/HUD/UI drzewka/test wolaja to)
 # ============================================================================
+
+## ETAP 7 — ustawia peer-właściciela tej postaci (warstwa spawnu co-op). owner==local -> predykcja
+## i czytanie klawiatury; inaczej host symuluje z RPC, a klient interpoluje. W SP nie wołane (owner=1).
+## Ustawia też Godotowy multiplayer authority (gdy w drzewie), by has_authority() działało dwustronnie.
+func set_owner_peer(peer_id: int) -> void:
+	if _net_identity != null:
+		_net_identity.owner_peer = peer_id
+	if is_inside_tree() and NetManager != null and NetManager.has_network():
+		# REKURENCYJNIE na cale poddrzewo (review #major): @rpc("authority") na PlayerNetSync musi
+		# rozwiazywac autorytet wzgledem OWNER-PEERA tej postaci, a nie domyslnego 1. set_multiplayer_
+		# authority na samym roocie NIE propaguje na dzieci — komponent PlayerNetSync ma wtedy zly
+		# autorytet i _ack_position/_recv_snapshot ida z perspektywy zlego peera. true = rekurencyjnie.
+		set_multiplayer_authority(peer_id, true)
+
+## ETAP 7 — peer-właściciel tej postaci (1 = host/SP).
+func owner_peer() -> int:
+	return _net_identity.owner_peer if _net_identity != null else 1
+
+## ETAP 7 — komponent predykcji/synchronizacji (Main/test). Null tylko zanim _ready zbuduje komponenty.
+func net_sync() -> PlayerNetSync:
+	return _net_sync
 
 ## XP za zabicie wroga (hook smierci wroga w Main). Deleguje do LevelComponent (lvl up -> punkt).
 func grant_xp(amount: int) -> void:
@@ -1320,7 +1358,11 @@ func _physics_process(delta: float) -> void:
 		if _dodge_t == 0.0:
 			is_dodging = false
 	# Obsługa KEY_Q jako alternatywy uniku (debounce) — tylko gdy kursor złapany.
-	var q_down := Input.is_physical_key_pressed(KEY_Q) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	# ETAP 7 (review #minor): czytamy KEY_Q TYLKO gdy to NASZ input (SP lub klient-właściciel). Gdy HOST
+	# symuluje CUDZĄ postać (should_read_local_input==false), klawiatura HOSTA nie może wywołać uniku
+	# cudzej postaci — inaczej klient unika wg klawiszy hosta. W SP zawsze true (zero zmian odczucia).
+	var read_local_input := _net_sync == null or _net_sync.should_read_local_input()
+	var q_down := read_local_input and Input.is_physical_key_pressed(KEY_Q) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	if q_down and not _q_was_down:
 		_try_dodge()
 	_q_was_down = q_down
@@ -1349,12 +1391,21 @@ func _physics_process(delta: float) -> void:
 	# gracz NIE chodzi/skacze/sprintuje — inaczej klikajac itemy w ekwipunku odbiegasz od lootu/wrogow.
 	var ui_locked := get_tree().paused or (GameState != null and GameState.ui_capturing_input)
 
+	# ETAP 7: ŹRÓDŁO INPUTU. read_local==true w SP (has_network()==false) -> sciezka klawiatury jak
+	# dotąd, IDENTYCZNIE. W co-opie HOST symulujący CUDZĄ postać czyta input przysłany RPC zamiast
+	# klawiatury (autorytatywna symulacja); klient-właściciel i SP czytają klawiaturę (predykcja od ręki).
+	var read_local := _net_sync == null or _net_sync.should_read_local_input()
+
 	# 2) Skok z game feel (0C): coyote time + bufor wejścia + jump-cut.
 	if is_on_floor():
 		_coyote = coyote_time
 	else:
 		_coyote = maxf(0.0, _coyote - delta)
-	var space_down := Input.is_physical_key_pressed(KEY_SPACE) and not is_dead and not ui_locked
+	var space_down := false
+	if read_local:
+		space_down = Input.is_physical_key_pressed(KEY_SPACE) and not is_dead and not ui_locked
+	else:
+		space_down = (_net_sync != null and _net_sync.remote_input_jump()) and not is_dead
 	if space_down and not _space_was:
 		_jump_buffer = jump_buffer_time
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
@@ -1367,13 +1418,18 @@ func _physics_process(delta: float) -> void:
 		velocity.y = minf(velocity.y, jump_velocity * 0.35)
 	_space_was = space_down
 
-	# 3) Kierunek z klawiszy WASD (lokalny: x = bok, y = przód/tył)
+	# 3) Kierunek z klawiszy WASD (lokalny: x = bok, y = przód/tył). read_local policzone wyżej.
 	var input_dir := Vector2.ZERO
-	if not is_dead and not ui_locked:
-		if Input.is_physical_key_pressed(KEY_W): input_dir.y -= 1.0
-		if Input.is_physical_key_pressed(KEY_S): input_dir.y += 1.0
-		if Input.is_physical_key_pressed(KEY_A): input_dir.x -= 1.0
-		if Input.is_physical_key_pressed(KEY_D): input_dir.x += 1.0
+	if read_local:
+		if not is_dead and not ui_locked:
+			if Input.is_physical_key_pressed(KEY_W): input_dir.y -= 1.0
+			if Input.is_physical_key_pressed(KEY_S): input_dir.y += 1.0
+			if Input.is_physical_key_pressed(KEY_A): input_dir.x -= 1.0
+			if Input.is_physical_key_pressed(KEY_D): input_dir.x += 1.0
+	else:
+		# HOST nad cudzą postacią: kierunek z przysłanego inputu klienta (autorytatywna symulacja).
+		if not is_dead:
+			input_dir = _net_sync.remote_input_dir()
 	input_dir = input_dir.normalized()
 
 	# (Auto-step przeniesiony niżej — wymaga policzonego `direction`/`current_speed`, a do tego
@@ -1385,7 +1441,9 @@ func _physics_process(delta: float) -> void:
 
 	# 5) Prędkość pozioma (bieg z shiftem; bramkowanie staminą) + knockback (gaśnie)
 	var moving := input_dir != Vector2.ZERO
-	var can_sprint := Input.is_physical_key_pressed(KEY_SHIFT) and stamina > 0.0 and not ui_locked
+	# Bieg: lokalnie z SHIFT; host nad cudzą postacią z flagi inputu klienta. W SP = stara ścieżka.
+	var sprint_held := Input.is_physical_key_pressed(KEY_SHIFT) if read_local else (_net_sync != null and _net_sync.remote_input_run())
+	var can_sprint := sprint_held and stamina > 0.0 and not ui_locked
 	var current_speed := sprint_speed if can_sprint else speed
 	# Akceleracja/wyhamowanie (0C): płynny rozpęd zamiast natychmiastowej prędkości.
 	var accel := ground_accel if is_on_floor() else air_accel
@@ -1432,25 +1490,39 @@ func _physics_process(delta: float) -> void:
 		velocity.x = move_toward(velocity.x, 0.0, 30.0 * delta)
 		velocity.z = move_toward(velocity.z, 0.0, 30.0 * delta)
 
+	# ETAP 7: czy w ogóle SYMULUJEMY ruch (move_and_slide). True w SP i dla postaci, nad którą mamy
+	# kontrolę (host: wszyscy; klient: tylko własna postać — predykcja). False TYLKO dla CUDZEJ postaci
+	# u klienta — tam pozycję narzuca interpolacja w net_post_physics() (poniżej). W SP zawsze true.
+	var simulate := _net_sync == null or _net_sync.should_simulate_movement()
+
 	# 6) Wykonaj ruch z uwzględnieniem kolizji
 	var pre_vy := velocity.y
-	move_and_slide()
+	if simulate:
+		move_and_slide()
 
-	# 6a) AUTO-STEP po ruchu: jeśli zablokował nas NISKI próg (schodek voxela), wnieś postać
-	# na niego płynnie (góra->przód->dół). Wysokie ściany/strome zbocza => brak (postać staje).
-	if moving and is_on_floor() and not is_dead and _dodge_t <= 0.0:
-		_try_step_up(direction, current_speed, delta)
+		# 6a) AUTO-STEP po ruchu: jeśli zablokował nas NISKI próg (schodek voxela), wnieś postać
+		# na niego płynnie (góra->przód->dół). Wysokie ściany/strome zbocza => brak (postać staje).
+		if moving and is_on_floor() and not is_dead and _dodge_t <= 0.0:
+			_try_step_up(direction, current_speed, delta)
 
-	# Lądowanie (0C + JUICE): trzask kamery + przysiad (squash) + pył, skalowane prędkością upadku.
-	if is_on_floor() and not _was_on_floor and pre_vy < -3.0:
-		var fall := -pre_vy
-		add_trauma(clampf(fall / 30.0, 0.0, 0.35))
-		# Squash: krótki przysiad ciała (anim _animate_torso zaniża tułów wg _land_squash).
-		_land_squash = clampf(fall / 16.0, 0.15, 1.0)
-		# Pył pod stopami przy mocniejszym lądowaniu (próg, by drobne kroki nie kurzyły).
-		if fall > 5.0:
-			_spawn_land_dust(clampf(fall / 16.0, 0.0, 1.0))
-	_was_on_floor = is_on_floor()
+		# Lądowanie (0C + JUICE): trzask kamery + przysiad (squash) + pył, skalowane prędkością upadku.
+		if is_on_floor() and not _was_on_floor and pre_vy < -3.0:
+			var fall := -pre_vy
+			add_trauma(clampf(fall / 30.0, 0.0, 0.35))
+			# Squash: krótki przysiad ciała (anim _animate_torso zaniża tułów wg _land_squash).
+			_land_squash = clampf(fall / 16.0, 0.15, 1.0)
+			# Pył pod stopami przy mocniejszym lądowaniu (próg, by drobne kroki nie kurzyły).
+			if fall > 5.0:
+				_spawn_land_dust(clampf(fall / 16.0, 0.0, 1.0))
+		_was_on_floor = is_on_floor()
+
+	# ETAP 7: PREDYKCJA/REKONSYLIACJA + INTERPOLACJA. No-op w SP (net_post_physics -> return gdy brak
+	# sieci). Klient-właściciel: buforuje input + wysyła do hosta; host: rozsyła snapshoty; cudza postać
+	# u klienta: ustawia pozycję z interpolacji snapshotów. Wołane PO ruchu (predykcja już się wydarzyła).
+	# Wysylamy SUROWA intencje biegu `sprint_held` (review #minor), NIE `can_sprint` (juz zbramkowane
+	# lokalna stamina) — host bramkuje bieg WLASNA kopia staminy na tej samej intencji => zgodna predykcja.
+	if _net_sync != null:
+		_net_sync.net_post_physics(delta, input_dir, sprint_held, space_down)
 
 ## Gładkie wchodzenie na NISKIE progi (schodki voxela ~0,5 m) bez skakania — algorytm
 ## góra->przód->dół. Jeśli w przód blokuje, a po podniesieniu o step_height przód jest WOLNY
@@ -1702,12 +1774,18 @@ func _begin_dash() -> void:
 	_dodge_dir = dir.normalized()
 
 # Zwraca świat-kierunek z WASD+yaw kamery (ta sama logika co w _physics_process).
+# ETAP 7 (review #minor): gdy NIE czytamy lokalnego inputu (host symuluje cudzą postać), kierunek
+# bierzemy z inputu KLIENTA (_net_sync.remote_input_dir), nie z klawiatury hosta — inaczej dash
+# cudzej postaci szedłby wg klawiszy hosta. W SP/u klienta-właściciela: klawiatura jak dotąd.
 func _wish_direction() -> Vector3:
 	var input_dir := Vector2.ZERO
-	if Input.is_physical_key_pressed(KEY_W): input_dir.y -= 1.0
-	if Input.is_physical_key_pressed(KEY_S): input_dir.y += 1.0
-	if Input.is_physical_key_pressed(KEY_A): input_dir.x -= 1.0
-	if Input.is_physical_key_pressed(KEY_D): input_dir.x += 1.0
+	if _net_sync != null and not _net_sync.should_read_local_input():
+		input_dir = _net_sync.remote_input_dir()
+	else:
+		if Input.is_physical_key_pressed(KEY_W): input_dir.y -= 1.0
+		if Input.is_physical_key_pressed(KEY_S): input_dir.y += 1.0
+		if Input.is_physical_key_pressed(KEY_A): input_dir.x -= 1.0
+		if Input.is_physical_key_pressed(KEY_D): input_dir.x += 1.0
 	input_dir = input_dir.normalized()
 	if input_dir == Vector2.ZERO:
 		return Vector3.ZERO

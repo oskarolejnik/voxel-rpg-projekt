@@ -15,16 +15,20 @@ extends Node
 signal hit_resolved(source: Node, target: Node, final_damage: float, was_crit: bool)
 
 
-## Publiczne wejscie. W SP (autorytet) rozstrzyga od razu; w Etapie 7 klient pojdzie galezia RPC.
+## Publiczne wejscie. W SP/HOST (autorytet stanu) rozstrzyga od razu; KLIENT pokazuje FX i prosi
+## hosta o rozstrzygniecie przez @rpc (TDD 6.4). HP/smierc/loot zmienia WYLACZNIE host (autorytet
+## stanu), wiec bramkujemy has_state_authority() (== is_host), a NIE has_authority() — inaczej klient
+## liczylby HP wlasnej postaci lokalnie (dwa zrodla HP = desync). Klient: FX kosmetyczny + request_attack.
 func request_hit(source: Node, target: Node, hit: HitData) -> void:
 	if target == null or not is_instance_valid(target):
 		return
-	if NetManager.has_authority(target):
+	if NetManager.has_state_authority(target):
 		_resolve(source, target, hit)
 	else:
-		# Etap 7: KLIENT pokazuje tylko FX (predykcja kosmetyczna) i prosi hosta o rozstrzygniecie.
-		# W Etapie 0/1 ta galaz jest nieosiagalna (has_authority zawsze true), trzyma ksztalt API.
+		# KLIENT (Etap 7): tylko kosmetyka (flash/numbers) + prosba do hosta o autorytatywny cios.
+		# Host waliduje (cel zywy / zasieg) i rozstrzyga _resolve; wynik HP wraca przez HealthSync.
 		_predict_fx(source, target, hit)
+		_request_attack_to_host(source, target, hit)
 
 
 ## Rdzen liczenia obrazen (host LUB single-player). Zwraca finalne obrazenia (przydatne testom).
@@ -65,8 +69,48 @@ func _resolve(source: Node, target: Node, hit: HitData) -> float:
 	# 6) on_hit_effects (statusy/proki) — hook pod Etap 2 (ignite/chill/poison...). Na razie no-op.
 	# for fx in hit.on_hit_effects: _apply_status(target, fx)
 
+	# 7) ETAP 7: REPLIKACJA HP host -> klienci (TDD 6.2 "klient tylko wyswietla"). Po autorytatywnej
+	#    mutacji rozsylamy current_hp celu, by KLIENCI widzieli ZGODNE HP (brak desyncu). No-op w SP.
+	_broadcast_hp(target)
+
 	hit_resolved.emit(source, target, dmg, was_crit)
 	return dmg
+
+
+# ============================================================================
+#  REPLIKACJA HP (host -> klienci) — autorytatywny stan HP po _resolve/heal
+# ============================================================================
+
+## HOST: rozsyla autorytatywne HP encji do klientow (po sciezce stabilnej u wszystkich peerow).
+## No-op w SP/u klienta. Encje bez HealthComponent (fasada take_damage) pomijamy — ich HP nie jest
+## w komponentowym zrodle prawdy (vertical slice: pelne HP-encje maja HealthComponent).
+func _broadcast_hp(target: Node) -> void:
+	if NetManager == null or not NetManager.has_network() or not NetManager.is_host():
+		return
+	if target == null or not is_instance_valid(target) or not target.is_inside_tree():
+		return
+	var hc := _find_health(target)
+	if hc == null:
+		return
+	_rpc_sync_hp.rpc(target.get_path(), hc.current_hp, hc.is_dead)
+
+
+## KLIENT: odbiera autorytatywne HP encji od hosta i ustawia je LOKALNIE (nie liczy — tylko stosuje).
+## Host ignoruje (sam jest zrodlem). Sciezka encji jest identyczna u hosta i klienta (stabilny spawn).
+@rpc("authority", "call_remote", "reliable")
+func _rpc_sync_hp(target_path: NodePath, current_hp: float, is_dead: bool) -> void:
+	if NetManager == null or NetManager.is_host():
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	var target: Node = tree.root.get_node_or_null(target_path)
+	if target == null or not is_instance_valid(target):
+		return
+	var hc := _find_health(target)
+	if hc == null:
+		return
+	hc.set_hp_authoritative(current_hp, is_dead, target)
 
 
 ## Zadaje obrazenia: preferuje HurtboxComponent/HealthComponent (komponentowa droga Etapu 1),
@@ -91,6 +135,7 @@ func _heal(source: Node, amount: float) -> void:
 	var hc := _find_health(source)
 	if hc != null:
 		hc.heal(amount)
+		_broadcast_hp(source)   # ETAP 7: lifesteal tez replikuje HP zrodla do klientow
 	elif source.has_method("heal"):
 		source.heal(amount)
 
@@ -115,9 +160,63 @@ func _apply_resistances(target: Node, hit: HitData, dmg: float) -> float:
 	return dmg * (1.0 - best)
 
 
-## KLIENT (Etap 7): tylko kosmetyka, NIGDY HP. W SP nieosiagalne.
-func _predict_fx(_source: Node, _target: Node, _hit: HitData) -> void:
-	pass
+## KLIENT (Etap 7): predykcja KOSMETYCZNA — NIGDY HP. Emituje hit_resolved z final_damage 0,
+## by lokalne FX/numbers/hitstop encji odpalily sie od razu (responsywnosc), a autorytatywne HP
+## przyjdzie z hosta. W SP nieosiagalne (has_state_authority zawsze true). Bezpieczne: zero mutacji HP.
+func _predict_fx(source: Node, target: Node, _hit: HitData) -> void:
+	hit_resolved.emit(source, target, 0.0, false)
+
+
+# ============================================================================
+#  WALKA PO SIECI (TDD 6.4) — klient klik -> @rpc do hosta -> walidacja -> _resolve
+# ============================================================================
+
+## Maksymalny dystans (m) miedzy atakujacym a celem, ktory host akceptuje od klienta (anti-cheat
+## zasiegu). Z duzym zapasem na pingowe rozjazdy pozycji (predykcja vs autorytet) — cel: odrzucic
+## ewidentny cheat (cios przez pol mapy), nie psuc grywalnosci. Bron melee siega ~2.2 m + bufor.
+const MAX_ATTACK_RANGE: float = 6.0
+
+## KLIENT: wysyla intencje ataku do hosta (peer 1). source/target jako NodePath (autoloady i encje
+## maja IDENTYCZNE sciezki u hosta dzieki stabilnemu nazewnictwu spawnu). HitData jako dict (RPC-safe).
+func _request_attack_to_host(source: Node, target: Node, hit: HitData) -> void:
+	if NetManager == null or not NetManager.has_network() or NetManager.is_host():
+		return
+	if source == null or not is_instance_valid(source) or not source.is_inside_tree():
+		return
+	if target == null or not is_instance_valid(target) or not target.is_inside_tree():
+		return
+	_rpc_request_attack.rpc_id(NetManager.HOST_PEER_ID,
+		source.get_path(), target.get_path(), hit.to_dict())
+
+
+## HOST: odbiera intencje ataku klienta, WALIDUJE (anti-cheat: cel istnieje/zywy, zasieg) i dopiero
+## wtedy rozstrzyga autorytatywnie. KLIENT nie woła tego (any_peer -> tylko host wykonuje cialo).
+@rpc("any_peer", "call_remote", "reliable")
+func _rpc_request_attack(source_path: NodePath, target_path: NodePath, hit_dict: Dictionary) -> void:
+	if NetManager == null or not NetManager.is_host():
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	var source: Node = tree.root.get_node_or_null(source_path)
+	var target: Node = tree.root.get_node_or_null(target_path)
+	if target == null or not is_instance_valid(target):
+		return
+	# Anti-cheat: tylko host liczy HP (autorytet stanu) — odrzuc, gdyby cel nie nalezal do hosta.
+	if not NetManager.has_state_authority(target):
+		return
+	# Anti-cheat zasiegu: cios musi byc fizycznie mozliwy (atakujacy w poblizu celu).
+	if source is Node3D and target is Node3D:
+		var d := (source as Node3D).global_position.distance_to((target as Node3D).global_position)
+		if d > MAX_ATTACK_RANGE:
+			return
+	# Walidacja "cel zywy": gdy ma HealthComponent i jest martwy -> odrzuc (brak phantom-kill).
+	var hc := _find_health(target)
+	if hc != null and hc.is_dead:
+		return
+	var hit := HitData.from_dict(hit_dict)
+	hit.source = source
+	_resolve(source, target, hit)
 
 
 # ============================================================================
