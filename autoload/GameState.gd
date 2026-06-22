@@ -25,6 +25,15 @@ var current_run_seed: int = 0
 var gold: int = 0
 signal gold_changed(amount: int)
 
+## ETAP 3 — klasa wybranej postaci (Mag/Wojownik/Ranger). Zrodlo dla ClassResourceComponent
+## (jaki zasob: Mana/Furia/Combo+Focus) oraz dla SkillDB.tree(class_id) (ktore drzewko). Domyslnie
+## Wojownik (klasa startowa vertical slice — GDD 4.2). Kreator postaci (GDD 12) ustawi to docelowo.
+var class_id: StringName = &"warrior"
+
+## ETAP 3 — Orby Przemiany (waluta respecu drzewka, GDD 10.1). Zloto powyzej (tani respec).
+var orbs: int = 0
+signal orbs_changed(amount: int)
+
 
 func set_local_player(p: Node) -> void:
 	local_player = p
@@ -36,6 +45,34 @@ func add_gold(amount: int) -> void:
 		return
 	gold = maxi(0, gold + amount)
 	gold_changed.emit(gold)
+
+
+## ETAP 3 — wydatek/dodanie Orb (respec). spend_orbs zwraca true jesli starczylo.
+func add_orbs(amount: int) -> void:
+	if amount == 0:
+		return
+	orbs = maxi(0, orbs + amount)
+	orbs_changed.emit(orbs)
+
+
+func spend_orbs(amount: int) -> bool:
+	if amount <= 0:
+		return true
+	if orbs < amount:
+		return false
+	orbs -= amount
+	orbs_changed.emit(orbs)
+	return true
+
+
+func spend_gold(amount: int) -> bool:
+	if amount <= 0:
+		return true
+	if gold < amount:
+		return false
+	gold -= amount
+	gold_changed.emit(gold)
+	return true
 
 
 func is_paused() -> bool:

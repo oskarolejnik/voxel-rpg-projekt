@@ -27,6 +27,8 @@ extends Resource
 @export var elemental: Dictionary = {}              # &"fire"/&"frost"/&"poison"/&"lightning"/&"dark" -> float
 @export var pet_damage: float = 0.0
 @export var pet_hp: float = 0.0
+@export var rage_gen: float = 1.0                   # mnoznik generacji Furii (Wojownik; baza 1.0 = 100%)
+@export var mana_max: float = 100.0                 # pula many (Mag); zasob klasy czyta to z get_stat
 @export var primary: Dictionary = {}                # &"str"/&"dex"/&"int" -> int (skalowanie klas)
 
 
@@ -52,6 +54,8 @@ func get_base(stat: StringName) -> float:
 		&"magic_find": return magic_find
 		&"pet_damage": return pet_damage
 		&"pet_hp": return pet_hp
+		&"rage_gen": return rage_gen
+		&"mana_max": return mana_max
 		_:
 			# Staty zlozone (elemental/resistances/primary) nie sa skalarem -> sprawdz slowniki.
 			if elemental.has(stat):

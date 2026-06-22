@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_blood_ls"]
+script = ExtResource("1_sm")
+stat = &"lifesteal"
+op = 0
+value = 0.06
+tags = Array[StringName]([&"phys", &"warrior"])
+source = &"tree"
+source_id = &"war_bloodthirst"
+
+[sub_resource type="Resource" id="mod_blood_dmg"]
+script = ExtResource("1_sm")
+stat = &"damage"
+op = 1
+value = 0.1
+tags = Array[StringName]([&"phys", &"warrior"])
+source = &"tree"
+source_id = &"war_bloodthirst"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"war_bloodthirst"
+display_name = "Krwiozerczosc"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_blood_ls"), SubResource("mod_blood_dmg")])
+cost_points = 1
+requires = Array[StringName]([&"war_damage_1"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

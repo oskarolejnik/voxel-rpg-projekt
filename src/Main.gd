@@ -20,6 +20,7 @@ const EnemyScript := preload("res://src/Enemy.gd")
 const HUDScript := preload("res://src/HUD.gd")
 # ETAP 2: ekran ekwipunku + toast lootu (osobna warstwa CanvasLayer) i encja lootu w świecie.
 const InventoryUIScript := preload("res://src/InventoryUI.gd")
+const SkillTreeUIScript := preload("res://src/SkillTreeUI.gd")
 const LootDropScript := preload("res://src/LootDrop.gd")
 const InventoryComponentScript := preload("res://components/InventoryComponent.gd")
 
@@ -44,6 +45,8 @@ var _enemies_alive: int = 0
 # ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
 var _inv_ui: InventoryUI
 var _inventory: InventoryComponent
+# ETAP 3: ekran drzewka umiejetnosci (toggle K).
+var _tree_ui: SkillTreeUI
 
 # Licznik FPS (diagnostyka wydajności) — róg ekranu, aktualizowany w _process.
 var _fps_label: Label
@@ -537,6 +540,14 @@ func _spawn_player() -> void:
 	if GameState != null:
 		GameState.set_local_player(_player_ref)
 
+	# ETAP 3: jesli istnieje zapis postaci — wczytaj progresje (poziom/xp/alokacja/waluty). Brak
+	# zapisu = swiezy start (lvl 1) jak dotad. Ustaw klase z save PRZED budowa zasobu (juz zbudowany
+	# w Player._ready, wiec read_progression tylko odtwarza poziom/drzewko/waluty — bezpiecznie).
+	if SaveManager != null and _player_ref.has_method("read_progression_from_save"):
+		var sd: SaveData = SaveManager.load_character()
+		if sd != null:
+			_player_ref.read_progression_from_save(sd)
+
 func _spawn_enemies() -> void:
 	# 3 wrogów wokół gracza (offsety 6–10 m). Teren wokół spawnu jest już sprimowany
 	# w _spawn_player(), więc height_at() da grunt; +1 m zapasu na osiadnięcie.
@@ -560,7 +571,7 @@ func _setup_hud() -> void:
 	# --- Stara podpowiedź ze sterowaniem (przeniesiona na dół, by nie kryła pasków) ---
 	var layer := CanvasLayer.new()
 	var label := Label.new()
-	label.text = "WASD – ruch  |  mysz – kamera  |  LMB – atak  |  RMB / Q – unik  |  spacja – skok  |  shift – bieg  |  ESC – kursor"
+	label.text = "WASD – ruch  |  mysz – kamera  |  LMB – atak  |  RMB / Q – unik  |  R – finisher  |  I – ekwipunek  |  K – drzewko  |  spacja – skok  |  shift – bieg  |  ESC – kursor"
 	label.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	label.position = Vector2(16.0, -28.0)   # przy dolnej krawędzi, nie koliduje z paskami u góry
 	layer.add_child(label)
@@ -583,6 +594,29 @@ func _setup_hud() -> void:
 		# Respawn po śmierci: Main steruje opóźnieniem (HUD tylko pokazuje napis).
 		_player_ref.died.connect(_on_player_died)
 
+		# ETAP 3: pasek zasobu klasy (Mana/Furia/Combo+Focus) + poziom/XP na HUD.
+		if _hud.has_method("setup_class_resource"):
+			var cr = _player_ref.class_resource_component()
+			if cr != null:
+				_hud.setup_class_resource(cr.display_label(), cr.bar_color(), cr.max_value())
+				_hud.on_class_resource_changed(cr.resource_name(), cr.current_value(), cr.max_value())
+		if _hud.has_method("on_class_resource_changed"):
+			_player_ref.class_resource_changed.connect(_hud.on_class_resource_changed)
+		if _hud.has_method("on_level_changed"):
+			_player_ref.level_changed.connect(_hud.on_level_changed)
+			_hud.on_level_changed(_player_ref.get_level(), _player_ref.get_xp(),
+				LevelComponent.xp_to_next(_player_ref.get_level()))
+		if _hud.has_method("on_leveled_up"):
+			_player_ref.leveled_up.connect(_hud.on_leveled_up)
+
+		# ETAP 3: autosave progresji na awansie i po kazdej zmianie alokacji drzewka / respec.
+		# Razem z zapisem na zamknieciu okna (_notification) daje to trwala progresje w realnej grze.
+		_player_ref.leveled_up.connect(func(_lv: int, _pts: int) -> void: _save_progression())
+		var tc = _player_ref.skill_tree_component()
+		if tc != null:
+			tc.allocation_changed.connect(func(_id: StringName, _a: bool, _l: int) -> void: _save_progression())
+			tc.respec_done.connect(func(_r: int, _c: int) -> void: _save_progression())
+
 	# Startowy licznik wrogów.
 	if _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
@@ -594,6 +628,25 @@ func _setup_hud() -> void:
 	if _inventory != null:
 		_inv_ui.bind_inventory(_inventory)
 
+	# --- ETAP 3: ekran drzewka umiejetnosci (toggle K) ---
+	_tree_ui = SkillTreeUIScript.new()
+	_tree_ui.name = "SkillTreeUI"
+	add_child(_tree_ui)
+	if _player_ref != null:
+		_tree_ui.bind_player(_player_ref)
+
+# ETAP 3 — TRWALY zapis progresji w trakcie gry (review: sciezka zapisu nie byla wolana). Zapisujemy
+# na: (1) zamknieciu okna, (2) awansie, (3) zmianie alokacji drzewka / respec. Tak XP/poziom/pasywy/
+# waluty przezywaja wyjscie z gry (DoD: poziom/xp/punkty/waluta/alokacja w save — teraz pelne, nie tylko load).
+func _save_progression() -> void:
+	if _player_ref != null and _player_ref.has_method("save_progression"):
+		_player_ref.save_progression()
+
+# Zamkniecie okna (X) / zadanie wyjscia: zapisz progresje ZANIM silnik zwolni sceny.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		_save_progression()
+
 # Po śmierci gracza: chwila na ekran śmierci, potem respawn na punkcie startowym.
 func _on_player_died() -> void:
 	var t := get_tree().create_timer(respawn_delay)
@@ -602,11 +655,35 @@ func _on_player_died() -> void:
 			_player_ref.respawn()
 	)
 
-# Wróg zginął: dekrementuj licznik i odśwież HUD.
-func _on_enemy_died(_e: Enemy) -> void:
+# Wróg zginął: dekrementuj licznik, przyznaj XP graczowi (ETAP 3) i odśwież HUD.
+func _on_enemy_died(e: Enemy) -> void:
 	_enemies_alive = maxi(0, _enemies_alive - 1)
 	if _hud != null and _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
+	# ETAP 3: XP za zabicie wroga (hook smierci -> grant_xp). Skala wg HP (goblin HP 30 -> 12 XP).
+	if _player_ref != null and _player_ref.has_method("grant_xp"):
+		_player_ref.grant_xp(_xp_reward_for(e))
+	# ETAP 3: Orby Przemiany za zabicie wroga -> waluta respecu (GDD 10.1). Bez tego GameState.orbs
+	# zostawalo 0 i przycisk RESPEC w drzewku byl nieosiagalny w realnej grze (review). Vertical slice:
+	# placeholder ~kilka Orb za wroga (mocniejsi/elity wiecej), by respec byl realnie testowalny.
+	if GameState != null:
+		GameState.add_orbs(_orb_reward_for(e))
+
+# Nagroda XP za wroga (ETAP 3). Skala z max_hp (goblin HP 30 -> 12; Brute HP 120 -> 48). Bazowy
+# fallback 12, gdy brak referencji. Etap 4 podlaczy poziom/biom wroga zamiast plaskiego HP.
+func _xp_reward_for(e: Enemy) -> int:
+	if e == null:
+		return 12
+	# Skala z max_hp wroga (Brute HP 120 da wiecej niz goblin HP 30) — proste, deterministyczne.
+	return maxi(1, int(round(e.max_hp * 0.4)))
+
+# Nagroda Orb za wroga (ETAP 3 — waluta respecu). Placeholder vertical slice: ~HP/15 (goblin HP 30 ->
+# 2 Orby), min 1. Etap 4 ograniczy drop do elit/bossow (GDD 10.1) i doda losowosc; tu staly drop
+# z kazdego wroga, by RESPEC byl osiagalny end-to-end w slice (koszt #0 = 500 Orb).
+func _orb_reward_for(e: Enemy) -> int:
+	if e == null:
+		return 1
+	return maxi(1, int(round(e.max_hp / 15.0)))
 
 # ETAP 2: wróg zrzucił loot -> spawn encji LootDrop w świecie (pod Main, nie pod zwalnianym wrogiem).
 # Item -> LootDrop z ItemInstance; zloto -> LootDrop zlota. Toast pokazujemy DOPIERO przy podniesieniu

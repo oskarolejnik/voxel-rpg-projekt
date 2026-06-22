@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/war_battle_fury.tres" id="2_bf"]
+[ext_resource type="Resource" path="res://data/db/passives/war_damage_1.tres" id="3_d1"]
+[ext_resource type="Resource" path="res://data/db/passives/war_damage_2.tres" id="4_d2"]
+[ext_resource type="Resource" path="res://data/db/passives/war_toughness.tres" id="5_tg"]
+[ext_resource type="Resource" path="res://data/db/passives/war_endurance.tres" id="6_en"]
+[ext_resource type="Resource" path="res://data/db/passives/war_bloodthirst.tres" id="7_bt"]
+[ext_resource type="Resource" path="res://data/db/passives/war_second_wind.tres" id="8_sw"]
+[ext_resource type="Resource" path="res://data/db/passives/war_reckless.tres" id="9_rk"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"warrior"
+nodes = Array[ExtResource("2_bf")]([ExtResource("2_bf"), ExtResource("3_d1"), ExtResource("4_d2"), ExtResource("5_tg"), ExtResource("6_en"), ExtResource("7_bt"), ExtResource("8_sw"), ExtResource("9_rk")])
+layout = {
+&"war_battle_fury": Vector2(0, 0),
+&"war_damage_1": Vector2(-120, 110),
+&"war_toughness": Vector2(120, 110),
+&"war_damage_2": Vector2(-200, 230),
+&"war_bloodthirst": Vector2(-40, 230),
+&"war_endurance": Vector2(120, 230),
+&"war_second_wind": Vector2(120, 350),
+&"war_reckless": Vector2(-200, 350)
+}

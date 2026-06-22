@@ -232,6 +232,18 @@ var _skill_attack: SkillResource = null         # podstawowy atak (LMB)
 var _skill_dash: SkillResource = null           # unik (RMB/Q)
 var _dead_emitted: bool = false                 # idempotencja śmierci (HealthComponent.died + fallback)
 
+# --- ETAP 3: progresja (poziomy/XP, drzewko, zasob klasy). Patrz LevelComponent/SkillTreeComponent/
+# ClassResourceComponent. Gracz spina je w _build_progression() i wystawia jako publiczne API
+# (grant_xp, allocate_node, respec_tree) + sygnaly do HUD. Fallbacki: brak komponentu = no-op.
+var _level: LevelComponent = null               # poziomy/XP -> punkty umiejetnosci
+var _tree: SkillTreeComponent = null            # alokacja pasywow (provider StatsComponentu)
+var _class_res: ClassResourceComponent = null   # Mana/Furia/Combo+Focus (resource_pool/spend Ability)
+var _skill_finisher: SkillResource = null       # finisher zasobu klasy (Wojownik: Wir Ostrzy, R)
+signal level_changed(level: int, xp: int, xp_to_next: int)   # HUD: pasek/etykieta poziomu
+signal leveled_up(new_level: int, points_gained: int)        # HUD/FX: awans
+signal class_resource_changed(name: StringName, current: float, maximum: float)  # HUD: pasek zasobu
+signal class_combo_changed(count: int, maximum: int)         # HUD: pipsy combo (Ranger)
+
 # --- ETAP 1: bufor inputu ataku/uniku (ROADMAP 4 krok 3) ---
 @export var attack_buffer_time: float = 0.18    # s: klik LMB tuż przed końcem CD zostaje zapamiętany
 @export var dodge_buffer_time: float = 0.18     # s: klik uniku w trakcie ataku/CD zostaje zapamiętany
@@ -347,12 +359,19 @@ func _build_components() -> void:
 	_ability = AbilityComponent.new()
 	add_child(_ability)
 	_ability.resource_pool = func(name: StringName) -> float:
-		return stamina if name == &"stamina" else 0.0
+		if name == &"stamina":
+			return stamina
+		# ETAP 3: zasoby klasy (mana/rage/focus/combo) idą przez ClassResourceComponent.
+		if _class_res != null:
+			return _class_res.pool(name)
+		return 0.0
 	_ability.resource_spend = func(name: StringName, amount: float) -> void:
 		if name == &"stamina":
 			stamina = maxf(0.0, stamina - amount)
 			_stamina_idle = 0.0
 			stamina_changed.emit(stamina, max_stamina)
+		elif _class_res != null:
+			_class_res.spend(name, amount)   # ETAP 3: finisher Furii / kast many / wydanie Combo
 	_ability.perform_skill = _perform_skill
 	_skill_attack = SkillResource.new()
 	_skill_attack.id = &"basic_attack"
@@ -362,6 +381,147 @@ func _build_components() -> void:
 	_skill_dash.cooldown = dodge_cooldown
 	_skill_dash.cost_resource = &"stamina"
 	_skill_dash.cost_amount = dodge_stamina_cost
+
+	# ETAP 3 — progresja (poziomy/XP + drzewko + zasob klasy). Po komponentach walki, by
+	# StatsComponent juz istnial (drzewko rejestruje sie jako jego provider).
+	_build_progression()
+
+# ETAP 3: buduje stos progresji (LevelComponent + SkillTreeComponent + ClassResourceComponent)
+# i wpina go w istniejace komponenty i sygnaly. Klasa z GameState.class_id, drzewko z SkillDB.
+# Wstepny stan (poziom/XP/alokacja) z save'a wczytuje Main przez load_progression() — tu start lvl 1.
+func _build_progression() -> void:
+	var cls: StringName = &"warrior"
+	if typeof(GameState) != TYPE_NIL and GameState != null:
+		cls = GameState.class_id
+
+	# 1) LevelComponent — XP -> punkty. Sygnaly do HUD (re-emit z encji, by HUD spinal sie z graczem).
+	_level = LevelComponent.new()
+	add_child(_level)
+	_level.level_changed.connect(func(lv: int, x: int, nx: int) -> void: level_changed.emit(lv, x, nx))
+	_level.leveled_up.connect(func(lv: int, pts: int) -> void: leveled_up.emit(lv, pts))
+
+	# 2) SkillTreeComponent — provider StatsComponentu. Drzewko klasy z SkillDB (jesli zaladowane).
+	_tree = SkillTreeComponent.new()
+	add_child(_tree)
+	var tree_res: SkillTreeResource = null
+	if typeof(SkillDB) != TYPE_NIL and SkillDB != null and SkillDB.has_method("tree"):
+		tree_res = SkillDB.tree(cls)
+	_tree.setup(tree_res, _level)
+
+	# 3) ClassResourceComponent — Mana/Furia/Combo+Focus. Re-emit do HUD.
+	_class_res = ClassResourceComponent.new()
+	add_child(_class_res)
+	_class_res.build_for(cls)
+	# Wepnij StatsComponent: zasob KLASY czyta z niego mnozniki/pule (rage_gen -> realna Furia za cios,
+	# mana_max -> pula many) i subskrybuje stats_changed, wiec loot/pasywy zmieniajace te staty od razu
+	# wplywaja na generacje i maksima (review Etap 3: rage_gen byl martwy, mana_max czytany raz).
+	if _stats != null:
+		_class_res.set_stats(_stats)
+	_class_res.resource_changed.connect(func(n: StringName, c: float, m: float) -> void:
+		class_resource_changed.emit(n, c, m))
+	_class_res.combo_changed.connect(func(c: int, m: int) -> void: class_combo_changed.emit(c, m))
+
+	# 4) Finisher zasobu klasy (sink, by zasob mial sens w grze). Wojownik: Wir Ostrzy (30 Furii,
+	#    CD 1 s, AoE wokol — ROADMAP 6). Koszt/CD pilnuje AbilityComponent (cost_resource=rage).
+	if cls == &"warrior":
+		_skill_finisher = SkillResource.new()
+		_skill_finisher.id = &"whirlwind"
+		_skill_finisher.cooldown = 1.0
+		_skill_finisher.cost_resource = &"rage"
+		_skill_finisher.cost_amount = 30.0
+		_skill_finisher.damage_mult = 0.8
+		var ftags: Array[StringName] = [&"phys", &"aoe", &"melee"]
+		_skill_finisher.tags = ftags
+
+# ============================================================================
+#  ETAP 3 — PUBLICZNE API PROGRESJI (Main/HUD/UI drzewka/test wolaja to)
+# ============================================================================
+
+## XP za zabicie wroga (hook smierci wroga w Main). Deleguje do LevelComponent (lvl up -> punkt).
+func grant_xp(amount: int) -> void:
+	if _level != null:
+		_level.grant_xp(amount)
+
+func get_level() -> int:
+	return _level.level if _level != null else 1
+
+func get_xp() -> int:
+	return _level.xp if _level != null else 0
+
+func get_skill_points() -> int:
+	return _level.available_points() if _level != null else 0
+
+## Alokuje wezel drzewka (UI/test). Zwraca true przy sukcesie (walidacja w SkillTreeComponent).
+func allocate_node(node_id: StringName) -> bool:
+	return _tree.allocate(node_id) if _tree != null else false
+
+func deallocate_node(node_id: StringName) -> bool:
+	return _tree.deallocate(node_id) if _tree != null else false
+
+## Pelny respec drzewka za walute (Orby — GDD 10.1). Zwraca liczbe zwroconych punktow.
+## Koszt liczony schodkowo; waluta z GameState.orbs (pool/spend). respec_index — ile razy juz respec.
+func respec_tree(respec_index: int = 0) -> int:
+	if _tree == null:
+		return 0
+	var cost := SkillTreeComponent.orb_cost_for(respec_index)
+	var pool := func() -> int: return GameState.orbs if GameState != null else 0
+	var spend := func(amount: int) -> void:
+		if GameState != null:
+			GameState.spend_orbs(amount)
+	return _tree.respec(cost, pool, spend)
+
+## Komponenty progresji (dla Main/UI/HUD/test).
+func level_component() -> LevelComponent:
+	return _level
+func skill_tree_component() -> SkillTreeComponent:
+	return _tree
+func class_resource_component() -> ClassResourceComponent:
+	return _class_res
+
+## Wczytanie stanu progresji z save (Main wola po spawnie). poziom/XP + alokacja drzewka.
+func load_progression(p_level: int, p_xp: int, p_allocated: Array[StringName]) -> void:
+	if _level != null:
+		_level.load_from(p_level, p_xp)
+	if _tree != null:
+		_tree.setup(_tree.tree, _level, p_allocated)
+
+## Zapisuje stan progresji gracza do SaveData (poziom/xp/alokacja). Waluty trzyma GameState ->
+## zsynchronizuj je tu, by SaveData mial komplet (DoD: poziom/xp/punkty/waluta/alokacja w save).
+func write_progression_to_save(sd: SaveData) -> void:
+	if sd == null:
+		return
+	sd.class_id = GameState.class_id if GameState != null else &"warrior"
+	sd.level = get_level()
+	sd.xp = get_xp()
+	if _tree != null:
+		sd.allocated_passives = _tree.allocated_ids()
+	if GameState != null:
+		sd.gold = GameState.gold
+		sd.orbs = GameState.orbs
+
+## Wczytuje progresje z SaveData (odwrotnosc write). Waluty -> GameState.
+func read_progression_from_save(sd: SaveData) -> void:
+	if sd == null:
+		return
+	load_progression(sd.level, sd.xp, sd.allocated_passives)
+	if GameState != null:
+		GameState.gold = sd.gold
+		GameState.orbs = sd.orbs
+		GameState.gold_changed.emit(GameState.gold)
+		GameState.orbs_changed.emit(GameState.orbs)
+
+## ETAP 3 — TRWALY zapis progresji w trakcie gry (review: sciezka zapisu nie byla wolana w grze).
+## Wola Main na zamknieciu okna, awansie i po zmianie alokacji/respec. Najpierw WCZYTUJE istniejacy
+## zapis postaci (by NIE nadpisac wygladu/ekwipunku/skilli z innych etapow), nakłada na niego biezaca
+## progresje (poziom/xp/alokacja/waluty) i zapisuje. Bezpieczne, gdy SaveManager niedostepny (no-op).
+func save_progression() -> bool:
+	if typeof(SaveManager) == TYPE_NIL or SaveManager == null:
+		return false
+	var sd: SaveData = SaveManager.load_character()
+	if sd == null:
+		sd = SaveData.new()       # swiezy zapis (np. pierwsza sesja bez character.json)
+	write_progression_to_save(sd)
+	return SaveManager.save_character(sd)
 
 # ============================================================================
 #  WYLICZENIE PROPORCJI: pivoty + skala VS z parametrów P_* (wołane w _ready
@@ -801,6 +961,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_try_attack()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_try_dodge()
+
+	# ETAP 3: R = finisher zasobu klasy (Wojownik: Wir Ostrzy, 30 Furii). AbilityComponent pilnuje
+	# kosztu/CD; brak Furii -> try_use po prostu nie odpali (bufor wygasa). Nie psuje LMB/RMB.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
+			and not event.echo and event.physical_keycode == KEY_R:
+		_try_finisher()
 
 func _toggle_mouse() -> void:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -1304,6 +1470,13 @@ func _can_attack() -> bool:
 func _can_dodge() -> bool:
 	return not is_dead and _dodge_cd <= 0.0 and not is_dodging and stamina >= dodge_stamina_cost
 
+# ETAP 3: finisher zasobu klasy (Wojownik: Wir Ostrzy). AbilityComponent sprawdza koszt (Furia) i CD;
+# gdy brak Furii -> nie odpali. perform_skill (_perform_skill) otwiera szerokie okno hitboxa (AoE).
+func _try_finisher() -> void:
+	if is_dead or _ability == null or _skill_finisher == null:
+		return
+	_ability.try_use(_skill_finisher)
+
 func _try_attack() -> void:
 	if is_dead:
 		return
@@ -1349,6 +1522,17 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 			_melee_sweep(forward)
 	elif skill == _skill_dash:
 		_begin_dash()
+	elif skill == _skill_finisher:
+		# ETAP 3: Wir Ostrzy — AoE 360°. Otwieramy okno hitboxa BEZ filtra łuku (dot=-1 -> wszystko
+		# wokół) i z lekkim juicem. Damage idzie tą samą ścieżką DamageService (HitData z _build_hit).
+		_attack_anim_t = attack_anim_time
+		is_attacking = true
+		if _hitbox != null:
+			var fyaw := _pivot.rotation.y
+			var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+			_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
+			_hitbox.open_window(0.14, forward)
+		add_trauma(0.18)
 
 # Hitbox trafił cel: juice (combo-okno + hitstop + trauma) raz na klatkę trafienia. HP już zadane
 # przez DamageService z poziomu hitboxa — tu tylko odczucie walki.
@@ -1357,6 +1541,9 @@ func _on_hitbox_hit_landed(_target: Node) -> void:
 	if not _hitstop_active:
 		_hitstop(0.06)
 	add_trauma(0.12)
+	# ETAP 3: zadany cios wrecz buduje zasob klasy (Furia +6 / Combo +1 — GDD 4.2/4.3, ROADMAP 6).
+	if _class_res != null:
+		_class_res.on_hit_dealt(true)
 
 # Okno hitboxa zamknięte: gdy 0 trafień -> pudło = reset combo (kasuje inkrement z _try_attack).
 func _on_hitbox_window_ended(hit_count: int) -> void:
@@ -1554,6 +1741,10 @@ func take_damage(amount: float, from: Node = null, knockback: float = -1.0) -> v
 		return
 
 	_flash_hit()              # błysk koloru modelu (czerwień)
+	# ETAP 3: otrzymany cios buduje Furie (+4 — GDD 4.2, ROADMAP 6). Tylko realne trafienie
+	# (po przejsciu i-frames/perfect-dodge powyzej), niezaleznie od tego kto liczy HP.
+	if _class_res != null:
+		_class_res.on_hit_taken()
 
 	# Knockback: odpychamy w bok OD źródła trafienia (poziomo) + lekko w górę. Siła z HitData lub 6.0.
 	var src := global_position
