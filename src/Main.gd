@@ -37,6 +37,9 @@ var _fireflies: GPUParticles3D
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
 
+# Licznik FPS (diagnostyka wydajności) — róg ekranu, aktualizowany w _process.
+var _fps_label: Label
+
 # Opóźnienie respawnu gracza po śmierci (s). Wystawione jako eksport, by nie było
 # magiczną stałą rozjeżdżającą się z respawn_iframes gracza (1,5 s nietykalności).
 # Zasada strojenia: i-frames gracza powinny być >= czasu od respawnu do odzyskania
@@ -56,6 +59,7 @@ func _ready() -> void:
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
 	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
+	_setup_fps_counter()   # diagnostyka: licznik FPS w rogu (do strojenia wydajności)
 	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE != "" — normalne F5 gra bez sondy.
 	if OS.get_environment("VOXEL_PROBE") != "":
 		if OS.get_environment("VOXEL_PROBE") == "stress":
@@ -101,6 +105,22 @@ func _stress_run() -> void:
 		" abandoned=", _world._abandoned.size(),
 		" queue=", _world._build_queue.size())
 	get_tree().quit()
+
+# Licznik FPS w rogu — prosty wskaźnik do strojenia wydajności (diagnostyka; można usunąć).
+func _setup_fps_counter() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 10   # nad HUD-em
+	_fps_label = Label.new()
+	_fps_label.text = "FPS: --"
+	_fps_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_fps_label.position = Vector2(-118.0, 30.0)   # prawy-górny róg, pod licznikiem wrogów
+	_fps_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_fps_label.add_theme_color_override("font_color", Color(1.0, 1.0, 0.4))
+	_fps_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_fps_label.add_theme_constant_override("outline_size", 4)
+	_fps_label.add_theme_font_size_override("font_size", 18)
+	layer.add_child(_fps_label)
+	add_child(layer)
 
 # Winieta — pełnoekranowy ColorRect z shaderem, pod HUD-em walki.
 func _setup_vignette() -> void:
@@ -154,6 +174,8 @@ func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: 
 	return p
 
 func _process(_delta: float) -> void:
+	if _fps_label != null:
+		_fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
 	if _player_ref == null or _fireflies == null:
 		return
 	var pos := _player_ref.global_position
