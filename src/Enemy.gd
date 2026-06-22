@@ -146,12 +146,25 @@ var _ai: AIComponent = null
 # ============================================================================
 #  STAN
 # ============================================================================
-enum State { IDLE, PATROL, CHASE, ATTACK }
+# ETAP 6: FOLLOW dodane na końcu, by mapowanie enum AIComponent.State -> Enemy.State zostalo 1:1
+# (tick() zwraca int rzutowany na ten enum). Pet uzywa FOLLOW; wrog nigdy w nim nie jest.
+enum State { IDLE, PATROL, CHASE, ATTACK, FOLLOW }
 var _state: State = State.IDLE
 
 var hp: float = 30.0
 var _target: Node3D = null                    # gracz (push z Main lub fallback z grupy)
 var _home: Vector3 = Vector3.ZERO             # punkt startu (środek patrolu / leash)
+
+# ============================================================================
+#  ETAP 6 — ALLEGIANCE (wrog / pet) + skalowanie peta wg gracza
+# ============================================================================
+# HOSTILE = zwykly wrog (celuje w gracza). ALLY = oswojony pet (celuje w wrogow, leash do gracza).
+# Konwersji dokonuje TameSystem.convert_to_pet(): przelacza flage allegiance w AIComponent (cel
+# odwrocony) + przeklada warstwy hurtbox/hitbox na strone gracza (pet nie bije gracza, nie jest bity
+# przez sojusznikow, JEST bity przez wrogow — GDD 9). Reuse calej maszyny Enemy/AIComponent.
+enum Allegiance { HOSTILE, ALLY }
+var allegiance: int = Allegiance.HOSTILE
+var _pet_owner: Node3D = null                 # gracz-wlasciciel (anchor leasha + zrodlo skalowania)
 var _patrol_target: Vector3 = Vector3.ZERO
 var _face_dir: Vector3 = Vector3.ZERO         # kierunek do obrotu modelu w _process
 
@@ -350,6 +363,65 @@ func _cube(parent: Node3D, size: Vector3, pos: Vector3, color: Color, emit: bool
 # ============================================================================
 func set_target(t: Node3D) -> void:
 	_target = t
+
+
+# ============================================================================
+#  ETAP 6 — KONWERSJA W PETA (ALLY) + skalowanie wg gracza
+# ============================================================================
+## Zamienia ZYWEGO wroga w peta gracza. WOLANE przez TameSystem PO spelnieniu warunkow oswojenia.
+## NIE duplikuje AI — przelacza flage allegiance w AIComponent (cel = wrog, leash = gracz, FOLLOW) i
+## przeklada warstwy hurtbox/hitbox na strone gracza. Na koncu skaluje staty peta wg pet_damage/pet_hp
+## gracza (silniejszy gracz => silniejszy pet). scale_src = StatsComponent gracza (zrodlo mnoznikow).
+func convert_to_pet(owner_node: Node3D, scale_src: StatsComponent) -> void:
+	allegiance = Allegiance.ALLY
+	_pet_owner = owner_node
+	add_to_group("pets")
+	remove_from_group("enemies")              # swiat/loot/licznik wrogow NIE liczy peta
+
+	# WARSTWY: cialo peta na warstwie GRACZA (sojusznik). Wrogowie (enemy_hitbox mask player_body)
+	# celuja w niego tak jak w gracza; hitbox gracza (mask enemy_body) go NIE trafia.
+	collision_layer = 1 << 1                   # bit1 = player_body (warstwa gracza)
+	collision_mask = 1                         # tylko teren (jak dotad)
+
+	# HURTBOX peta -> strona gracza: hitboxy WROGOW go wykrywaja, hitbox GRACZA/PETOW — nie.
+	if _hurtbox != null:
+		_hurtbox.setup_as_player()             # layer = player_body, mask 0
+
+	# HITBOX peta -> bije WROGOW (mask = enemy_body), nie gracza ani innych petow (oba na player_body).
+	if _hitbox != null:
+		_hitbox.setup_as_player(0.2)           # layer = player_hitbox, mask = enemy_body, waski luk
+
+	# AI: cel = najblizszy wrog (nie gracz), leash do gracza, start FOLLOW. Reuse maszyny.
+	if _ai != null:
+		_ai.set_allegiance_ally(owner_node)
+
+	apply_pet_scaling(scale_src)
+
+
+## ETAP 6 — skalowanie peta wg pet_damage/pet_hp gracza. Mnozniki wchodza jako INCREASED przez
+## StatsComponent.add_modifiers (pipeline/memoizacja/sygnal -> HealthComponent klamruje max_hp), wiec
+## damage i max_hp peta rosna automatycznie. Re-aplikowalne (zdejmuje stary source przed dodaniem).
+func apply_pet_scaling(player_stats: StatsComponent) -> void:
+	if _stats == null or player_stats == null:
+		return
+	_stats.remove_modifiers_by_source(&"pet_scaling")   # idempotencja przy ponownym skalowaniu
+	var pdmg := player_stats.get_stat(&"pet_damage")    # np. 0.30 => +30% dmg
+	var php := player_stats.get_stat(&"pet_hp")          # np. 0.40 => +40% HP
+	var mods: Array[StatModifier] = []
+	if pdmg != 0.0:
+		var m := StatModifier.new()
+		m.stat = &"damage"; m.op = StatModifier.Op.INCREASED; m.value = pdmg
+		m.source_id = &"pet_scaling"
+		mods.append(m)
+	if php != 0.0:
+		var h := StatModifier.new()
+		h.stat = &"max_hp"; h.op = StatModifier.Op.INCREASED; h.value = php
+		h.source_id = &"pet_scaling"
+		mods.append(h)
+	if not mods.is_empty():
+		_stats.add_modifiers(mods)
+	if _health != null:
+		_health.revive_full()                  # swiezy, pelny pet (current_hp = nowy max)
 
 # ============================================================================
 #  FIZYKA + AI
@@ -752,6 +824,12 @@ func _die() -> void:
 	_dead_emitted = true
 	hp = 0.0
 	_clear_telegraph()        # ETAP 4: nie zostawiaj wiszącej zapowiedzi po śmierci elite/boss
+	# ETAP 6: pet (ALLY) NIE dropi lootu i NIE emituje died (to daloby graczowi XP/licznik za swojego
+	# peta). Pet po prostu znika (TameSystem czysci _active_pet przez is_instance_valid). GDD 9 zostawia
+	# furtke na respawn — tu upraszczamy do free (nie psuje walki/lootu/progresji).
+	if allegiance == Allegiance.ALLY:
+		queue_free()
+		return
 	# ETAP 2: policz drop ZANIM encja zniknie (LootService HOST-ONLY/deterministyczny). Emitujemy
 	# pozycje + liste dropow, by Main zespawnowal LootDrop-y w SWIECIE (nie pod zwalnianym wrogiem).
 	# LootService to autoload (zawsze obecny w runtime/teście headless).
@@ -796,7 +874,12 @@ func _spawn_projectile() -> void:
 	var origin := global_position + Vector3(0.0, 1.0, 0.0)         # z wysokości tułowia
 	var aim: Vector3 = (_target as Node3D).global_position + Vector3(0.0, 0.9, 0.0)
 	var dir := (aim - origin)
-	var mask := (1 << 0) | (1 << 1)                                # teren | ciało gracza
+	# ETAP 6 (review): maska pocisku zalezy od allegiance. WROG celuje w teren|cialo gracza (bit1);
+	# PET (ALLY) celuje w teren|cialo wroga (enemy_body=bit2) — inaczej pocisk peta trafialby gracza
+	# i inne pety (oba na player_body=bit1) i NIE trafialby wrogow. Lustro tego, co convert_to_pet
+	# robi dla hitboxa melee. LATENTNE dzis (jedyny oswajalny goblin=melee), ale pulapka pod ranged-pety.
+	var body_bit := (1 << 2) if allegiance == Allegiance.ALLY else (1 << 1)
+	var mask := (1 << 0) | body_bit                               # teren | cialo celu (wrog: gracz, pet: wrog)
 	# Builder HitData per cel (Projectile woła go przy trafieniu) — domknięcie na self.
 	proj.setup(self, dir, projectile_speed, func(_t: Node) -> HitData: return _build_hit(),
 		mask, projectile_gravity, projectile_pierce)

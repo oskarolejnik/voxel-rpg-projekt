@@ -238,6 +238,7 @@ var _dead_emitted: bool = false                 # idempotencja śmierci (HealthC
 var _level: LevelComponent = null               # poziomy/XP -> punkty umiejetnosci
 var _tree: SkillTreeComponent = null            # alokacja pasywow (provider StatsComponentu)
 var _class_res: ClassResourceComponent = null   # Mana/Furia/Combo+Focus (resource_pool/spend Ability)
+var _tame: TameSystem = null                    # ETAP 6: oswajanie bestii -> pet (gate lvl 5, T)
 var _skill_finisher: SkillResource = null       # finisher zasobu klasy (Wojownik: Wir Ostrzy, R)
 signal level_changed(level: int, xp: int, xp_to_next: int)   # HUD: pasek/etykieta poziomu
 signal leveled_up(new_level: int, points_gained: int)        # HUD/FX: awans
@@ -421,6 +422,12 @@ func _build_progression() -> void:
 		class_resource_changed.emit(n, c, m))
 	_class_res.combo_changed.connect(func(c: int, m: int) -> void: class_combo_changed.emit(c, m))
 
+	# ETAP 6 — TameSystem (oswajanie -> pet). Gate lvl 5 + cel <35% HP + item-oswajacz; 1 aktywny pet
+	# skalowany pet_damage/pet_hp gracza. Po LevelComponent/StatsComponent (czyta oba do gate'u/skalow.).
+	_tame = TameSystem.new()
+	add_child(_tame)
+	_tame.setup(self, _level, _stats)
+
 	# 4) Finisher zasobu klasy (sink, by zasob mial sens w grze). Wojownik: Wir Ostrzy (30 Furii,
 	#    CD 1 s, AoE wokol — ROADMAP 6). Koszt/CD pilnuje AbilityComponent (cost_resource=rage).
 	if cls == &"warrior":
@@ -477,6 +484,9 @@ func skill_tree_component() -> SkillTreeComponent:
 	return _tree
 func class_resource_component() -> ClassResourceComponent:
 	return _class_res
+## ETAP 6 — TameSystem (oswajanie/pet). Main/test wola try_tame / load_pet_from_save przez to.
+func tame_system() -> TameSystem:
+	return _tame
 
 ## Wczytanie stanu progresji z save (Main wola po spawnie). poziom/XP + alokacja drzewka.
 func load_progression(p_level: int, p_xp: int, p_allocated: Array[StringName]) -> void:
@@ -498,6 +508,9 @@ func write_progression_to_save(sd: SaveData) -> void:
 	if GameState != null:
 		sd.gold = GameState.gold
 		sd.orbs = GameState.orbs
+	# ETAP 6 — pet (aktywny typ + stajnia) do save'a.
+	if _tame != null:
+		_tame.write_pet_to_save(sd)
 
 ## Wczytuje progresje z SaveData (odwrotnosc write). Waluty -> GameState.
 func read_progression_from_save(sd: SaveData) -> void:
@@ -509,6 +522,9 @@ func read_progression_from_save(sd: SaveData) -> void:
 		GameState.orbs = sd.orbs
 		GameState.gold_changed.emit(GameState.gold)
 		GameState.orbs_changed.emit(GameState.orbs)
+	# ETAP 6 — odtworz peta ze stanu save (typ -> ALLY przy graczu + stajnia).
+	if _tame != null:
+		_tame.load_pet_from_save(sd)
 
 ## ETAP 3 — TRWALY zapis progresji w trakcie gry (review: sciezka zapisu nie byla wolana w grze).
 ## Wola Main na zamknieciu okna, awansie i po zmianie alokacji/respec. Najpierw WCZYTUJE istniejacy
@@ -967,6 +983,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
 			and not event.echo and event.physical_keycode == KEY_R:
 		_try_finisher()
+
+	# ETAP 6: T = oswajanie najblizszej bestii (gate lvl 5 + cel <35% HP + item-oswajacz). TameSystem
+	# pilnuje warunkow i 1-aktywnego-peta; brak warunkow -> tame_failed (no-op dla rozgrywki).
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
+			and not event.echo and event.physical_keycode == KEY_T:
+		if _tame != null:
+			_tame.try_tame()
 
 func _toggle_mouse() -> void:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:

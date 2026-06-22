@@ -15,7 +15,8 @@ extends Node
 ##   host.ai_can_attack() -> bool                          # CD ataku zszedl
 ## Komponent zwraca w tick() wybrany stan (do animacji/diagnostyki). Brak autorytetu -> NO-OP.
 
-enum State { IDLE, PATROL, CHASE, ATTACK }
+## ETAP 6: dodany stan FOLLOW (pet idzie za graczem). Mapowanie enum 1:1 z Enemy.State (IDLE..FOLLOW).
+enum State { IDLE, PATROL, CHASE, ATTACK, FOLLOW }
 
 ## Parametry zachowania — domyslne = obecny Goblin z Enemy.gd; encja moze nadpisac przez configure().
 var move_speed: float = 3.5
@@ -26,6 +27,19 @@ var patrol_radius: float = 6.0
 var attack_entry_delay: float = 0.35
 
 var allegiance_hostile: bool = true        # pet (ALLY) celuje w HOSTILE; HOSTILE celuje w gracza
+
+# ETAP 6 — parametry peta (ALLY). Anchor leasha = gracz (zamiast _home). Pet skanuje wrogow z grupy
+# "enemies" w PET_AGGRO_RADIUS od SIEBIE; gdy za daleko od gracza (PET_LEASH_RADIUS) porzuca cel i
+# wraca do FOLLOW. Histereza FOLLOW (stop/resume), by nie deptal graczowi po petach.
+#
+# NIEZMIENNIK (review): PET_AGGRO_RADIUS + FOLLOW_RESUME_DIST <= PET_LEASH_RADIUS. Dzieki temu cel
+# namierzony z najdalszej granicy aggro (gdy pet jest w FOLLOW_RESUME ~5 m od gracza) NIE jest od
+# razu za leashem -> brak oscylacji CHASE<->FOLLOW (pet plynnie dogania zamiast "drgac"). 10+5=15<=16.
+const PET_AGGRO_RADIUS: float = 10.0
+const PET_LEASH_RADIUS: float = 16.0
+const FOLLOW_STOP_DIST: float = 3.0
+const FOLLOW_RESUME_DIST: float = 5.0
+var _leash_anchor: Node3D = null           # null => wrog (leash do _home); ustawiony => pet (leash do gracza)
 
 var _state: State = State.IDLE
 var _home: Vector3 = Vector3.ZERO
@@ -58,13 +72,26 @@ func set_home(h: Vector3) -> void:
 	_patrol_target = h
 
 
+## ETAP 6 — przelacza komponent w tryb PETA (ALLY). Cel = najblizszy WROG (nie gracz), leash do
+## gracza (anchor), start w FOLLOW. Reuse calej maszyny (CHASE/ATTACK/leash) — zmienia sie tylko
+## KOGO uznajemy za cel i DOKAD wracamy. WOLANE z Enemy.convert_to_pet().
+func set_allegiance_ally(owner_node: Node3D) -> void:
+	allegiance_hostile = false
+	_leash_anchor = owner_node
+	aggro_radius = PET_AGGRO_RADIUS
+	_state = State.FOLLOW
+
+
 func get_state() -> State:
 	return _state
 
 
 ## Wybudzenie przez trafienie (z Enemy.take_damage): wymusza pogon.
+## ETAP 6 (review): FOLLOW tez wybudza sie do CHASE — pet trafiony spoza aggro (np. ranged wrog)
+## natychmiast kontratakuje, zamiast czekac az _follow() sam zobaczy wroga. Bezpieczne: CHASE bez
+## celu spadnie z powrotem do FOLLOW przez _lose_target() (pet) / PATROL (wrog).
 func wake_to_chase() -> void:
-	if _state == State.IDLE or _state == State.PATROL:
+	if _state == State.IDLE or _state == State.PATROL or _state == State.FOLLOW:
 		_state = State.CHASE
 
 
@@ -77,7 +104,8 @@ func tick(delta: float) -> int:
 		return _state
 
 	var pos: Vector3 = _host.ai_get_position()
-	var target: Node3D = _host.ai_get_target()
+	# ETAP 6: cel zalezy od allegiance. Wrog -> gracz (ai_get_target). Pet -> najblizszy ZYWY wrog.
+	var target: Node3D = _resolve_target(pos)
 	var has_target := target != null and is_instance_valid(target)
 	var dist := INF
 	if has_target:
@@ -87,9 +115,37 @@ func tick(delta: float) -> int:
 	match _state:
 		State.IDLE:    _idle(delta, has_target, dist)
 		State.PATROL:  _patrol(delta, has_target, dist, pos)
-		State.CHASE:   _chase(has_target, dist, target)
+		State.CHASE:   _chase(has_target, dist, target, pos)
 		State.ATTACK:  _attack(delta, has_target, dist, target, pos)
+		State.FOLLOW:  _follow(has_target, dist, pos)
 	return _state
+
+
+## ETAP 6 — JEDNO miejsce wyboru celu (odwraca logike bez duplikowania maszyny).
+## Wrog: cel = gracz (host.ai_get_target). Pet: cel = najblizszy ZYWY wrog z grupy "enemies".
+func _resolve_target(pos: Vector3) -> Node3D:
+	if allegiance_hostile:
+		return _host.ai_get_target()
+	return _nearest_enemy(pos)
+
+
+## Pet: najblizszy zywy wrog (grupa "enemies") w PET_AGGRO_RADIUS od peta. Pomija martwych/niewaznych.
+func _nearest_enemy(pos: Vector3) -> Node3D:
+	if _host == null or not is_instance_valid(_host):
+		return null
+	var best: Node3D = null
+	var best_d := aggro_radius * aggro_radius
+	for e in _host.get_tree().get_nodes_in_group("enemies"):
+		if e == null or not is_instance_valid(e) or not (e is Node3D):
+			continue
+		if e.has_method("is_dead") and e.is_dead():
+			continue
+		var d: Vector3 = (e as Node3D).global_position - pos
+		var dsq := d.x * d.x + d.z * d.z
+		if dsq < best_d:
+			best_d = dsq
+			best = e as Node3D
+	return best
 
 
 func _idle(delta: float, has_target: bool, dist: float) -> void:
@@ -117,14 +173,14 @@ func _patrol(delta: float, has_target: bool, dist: float, pos: Vector3) -> void:
 		_state = State.IDLE
 
 
-func _chase(has_target: bool, dist: float, target: Node3D) -> void:
+func _chase(has_target: bool, dist: float, target: Node3D, pos: Vector3) -> void:
 	if not has_target:
-		_patrol_target = _home
-		_state = State.PATROL
+		_lose_target()
 		return
-	if dist > leash_radius:
-		_patrol_target = _home
-		_state = State.PATROL
+	# ETAP 6: leash mierzony od ANCHORA (gracz dla peta, _home dla wroga). Pet za daleko od gracza
+	# -> porzuca pogon i wraca do FOLLOW; wrog za daleko od domu -> PATROL (zachowanie 1:1 jak dotad).
+	if _leash_broken(pos):
+		_lose_target()
 		return
 	if dist <= attack_range:
 		_host.ai_stop()
@@ -137,12 +193,10 @@ func _chase(has_target: bool, dist: float, target: Node3D) -> void:
 func _attack(delta: float, has_target: bool, dist: float, target: Node3D, pos: Vector3) -> void:
 	_host.ai_stop()
 	if not has_target:
-		_patrol_target = _home
-		_state = State.PATROL
+		_lose_target()
 		return
-	if dist > leash_radius:                       # leash ma priorytet nawet w ataku
-		_patrol_target = _home
-		_state = State.PATROL
+	if _leash_broken(pos):                         # leash ma priorytet nawet w ataku
+		_lose_target()
 		return
 
 	# Patrz na cel.
@@ -165,3 +219,65 @@ func _pick_patrol_target() -> void:
 	var ang := randf() * TAU
 	var r := randf() * patrol_radius
 	_patrol_target = _home + Vector3(cos(ang) * r, 0.0, sin(ang) * r)
+
+
+# ============================================================================
+#  ETAP 6 — leash anchor (gracz dla peta, _home dla wroga) + stan FOLLOW
+# ============================================================================
+
+## Punkt powrotu/leasha: gracz (pet) albo _home (wrog).
+func _leash_origin() -> Vector3:
+	if _leash_anchor != null and is_instance_valid(_leash_anchor):
+		return _leash_anchor.global_position
+	return _home
+
+
+## Promien leasha: pet trzyma sie blisko gracza (PET_LEASH_RADIUS), wrog jak dotad (leash_radius).
+func _leash_radius_eff() -> float:
+	return PET_LEASH_RADIUS if _leash_anchor != null else leash_radius
+
+
+## Czy zerwano leash (pet: za daleko od gracza; wrog: cel za daleko od domu — UWAGA: dla wroga
+## leash liczony jest po dystansie do CELU, jak dawniej, by nie zmienic zachowania Etapow 1-5).
+func _leash_broken(pos: Vector3) -> bool:
+	if _leash_anchor != null:
+		var to := _leash_origin() - pos
+		to.y = 0.0
+		return to.length() > _leash_radius_eff()
+	# Wrog: zachowanie 1:1 jak dotad — leash po dystansie XZ do gracza (ai_get_target).
+	var t: Node3D = _host.ai_get_target()
+	if t == null or not is_instance_valid(t):
+		return false
+	var dt: Vector3 = t.global_position - pos
+	return Vector2(dt.x, dt.z).length() > leash_radius
+
+
+## Utrata celu / zerwanie leasha: pet wraca do FOLLOW (do gracza), wrog do PATROL (do domu).
+func _lose_target() -> void:
+	if _leash_anchor != null:
+		_state = State.FOLLOW
+	else:
+		_patrol_target = _home
+		_state = State.PATROL
+
+
+## ETAP 6 — FOLLOW: pet idzie za graczem (anchor). Wrog w PET_AGGRO_RADIUS -> CHASE (ta sama maszyna).
+## Histereza ruchu (stop/resume), by pet nie deptal graczowi po piętach ani nie zostawal w tyle.
+func _follow(has_target: bool, dist: float, pos: Vector3) -> void:
+	if has_target and dist <= aggro_radius:        # wrog w zasiegu -> walcz
+		_state = State.CHASE
+		return
+	if _leash_anchor == null or not is_instance_valid(_leash_anchor):
+		_host.ai_stop()
+		return
+	var to := _leash_anchor.global_position - pos
+	to.y = 0.0
+	var ad := to.length()
+	if ad > FOLLOW_RESUME_DIST:
+		_host.ai_move_towards(_leash_anchor.global_position, move_speed * 1.15)  # dogania, nie zostaje w tyle
+	elif ad < FOLLOW_STOP_DIST:
+		_host.ai_stop()
+		if to.length() > 0.01:
+			_host.ai_face(to.normalized())
+	else:
+		_host.ai_move_towards(_leash_anchor.global_position, move_speed)

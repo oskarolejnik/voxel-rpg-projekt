@@ -21,6 +21,8 @@ loot_table = ExtResource("3_loot")
 xp_reward = 12
 ai_profile = &"melee"
 threat_tier = &"trash"
+tameable = true
+tame_difficulty_mult = 1.0
 biomes = Array[StringName]([&"verdant"])
 variant_meta = {
 "attack_windup": 0.35,
