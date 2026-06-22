@@ -157,16 +157,26 @@ func _probe_shot() -> void:
 		print("[PROBE] shore spot=", spot, " surface_y=", spot_y, " wdir=", wdir, " found=", found)
 
 	await get_tree().create_timer(6.0).timeout
-	var spring := _find_node_of_type(_player_ref, "SpringArm3D")
-	if spring:
-		spring.spring_length = (2.6 if mode == "char" else (6.0 if mode == "water" else 7.0))
-		spring.rotation.x = deg_to_rad(-6.0 if mode == "char" else (-28.0 if mode == "water" else -20.0))
-		var pivot := spring.get_parent()
-		var cam_yaw := 0.0 if mode == "char" else water_yaw_deg
-		if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(cam_yaw)
+	var ppos := _player_ref.global_position
+	if mode == "char" or mode == "props":
+		# Dedykowana kamera — omija gameplayowy SpringArm (który cofa się przy kolizji),
+		# daje deterministyczny kadr zbliżenia. Przód postaci = -Z (oczy/twarz tam).
+		var cam := Camera3D.new()
+		add_child(cam)
 		if mode == "char":
-			var m := _player_ref.get_node_or_null("Model")
-			if m: (m as Node3D).rotation.y = PI   # twarzą do kamery (oczy widoczne)
+			cam.global_position = ppos + Vector3(0.9, 1.5, -3.2)   # od przodu, lekko z góry/boku
+			cam.look_at(ppos + Vector3(0.0, 1.0, 0.0), Vector3.UP)  # celuj w tułów/twarz
+		else:
+			cam.global_position = ppos + Vector3(0.0, 2.2, -2.4)   # z góry-przodu na runo
+			cam.look_at(ppos + Vector3(0.0, 0.1, 0.6), Vector3.UP)  # patrz w dół na grunt z propami
+		cam.current = true
+	else:
+		var spring := _find_node_of_type(_player_ref, "SpringArm3D")
+		if spring:
+			spring.spring_length = (6.0 if mode == "water" else 7.0)
+			spring.rotation.x = deg_to_rad(-28.0 if mode == "water" else -20.0)
+			var pivot := spring.get_parent()
+			if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
 	await get_tree().create_timer(0.6).timeout
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")

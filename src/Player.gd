@@ -155,47 +155,76 @@ func _build_body() -> void:
 	# Widoczny model: voxelowa postać z małych kostek (styl Cube World).
 	_build_voxel_character()
 
-# Buduje voxelową postać z kostek jako dzieci węzła "Model".
-# Tułów/głowa są statyczne; ręce i nogi wiszą na pivotach (zawiasach) do animacji chodu.
+# ============================================================================
+#  DETALICZNA POSTAĆ Z MALUTKICH VOXELI (styl Cube World, chibi adventurer)
+# ============================================================================
+# Każda grupa ciała = jeden zbatchowany ArrayMesh z drobnych kostek (vertex color),
+# z cullingiem wewnętrznych ścian (przez VoxelModel). Głowa+tułów statyczne na _model;
+# ręce/nogi na pivotach (bark/biodro) -> istniejąca animacja chodu/ataku BEZ ZMIAN.
+# Materiał: StandardMaterial3D z vertex_color_use_as_albedo, by _flash_hit() (rzut
+# `as StandardMaterial3D`) działał dalej, a kolory były wbudowane w jeden materiał.
+#
+# Skala: VS = 0.09 m/voxel (~5.5× drobniej niż teren 0,5 m) => kontrast Cube World.
+# Siatka logiczna (Vector3i, oś Y od stóp): najwyższy voxel (czapa włosów) to logiczne
+# y=24, więc realna wysokość modelu ≈ 24 × 0,09 ≈ 2,16 m. Kapsuła kolizji ma height=2.0
+# (środek y=1.0 => biegun na y=2.0), więc CZUBEK GŁOWY wystaje ~0,16 m PONAD kapsułę.
+# To CELOWE i bezpieczne: kapsuła służy tylko kolizji (stopy poprawnie na y=0, postać nie
+# wnika w teren); jedynie pod bardzo niskim nawisem czubek włosów mógłby wizualnie przeniknąć
+# sufit. Chcąc pełnego zamknięcia w kapsule: zbij VS do ~0.083 (24×0.083≈1,99 m) albo
+# podnieś capsule.height=2.2 i shape.position.y=1.1 w _build_body().
+const VS: float = 0.09
+
+# Buduje voxelową postać. Tułów/głowa statyczne; ręce i nogi na pivotach do animacji chodu.
 func _build_voxel_character() -> void:
 	_model = Node3D.new()
 	_model.name = "Model"
 	add_child(_model)
 
-	# Paleta (albedo_color jest sRGB w Godocie — kolory dobieramy normalnie).
-	var skin := Color(0.93, 0.76, 0.60)
-	var tunic := Color(0.18, 0.46, 0.32)   # zielona tunika
-	var belt := Color(0.32, 0.22, 0.12)    # pasek
-	var pants := Color(0.26, 0.30, 0.46)   # spodnie
-	var boots := Color(0.20, 0.16, 0.12)   # buty
-	var hair := Color(0.34, 0.20, 0.10)    # włosy
-	var eyes := Color(0.06, 0.06, 0.08)    # oczy
+	var mat := _make_char_material()
 
-	# --- Tułów (tunika + pasek) — statyczny ---
-	_cube(_model, Vector3(0.66, 0.62, 0.40), Vector3(0.0, 1.05, 0.0), tunic)
-	_cube(_model, Vector3(0.68, 0.10, 0.42), Vector3(0.0, 0.78, 0.0), belt)
+	# --- Statyczne: głowa + tułów -> jeden mesh dziecko _model ---
+	var body := VoxelModel.VoxelDef.new()
+	_sculpt_head(body)
+	_sculpt_torso(body)
+	_add_model_mesh(_model, body, mat, Vector3i.ZERO)
 
-	# --- Głowa + włosy + oczy — statyczne ---
-	# Większa głowa + większe oczy = sylwetka „chibi" (sygnatura looku Cube World, Faza 2D).
-	_cube(_model, Vector3(0.66, 0.62, 0.62), Vector3(0.0, 1.72, 0.0), skin)
-	_cube(_model, Vector3(0.70, 0.18, 0.66), Vector3(0.0, 2.04, 0.0), hair)   # czapka włosów
-	_cube(_model, Vector3(0.70, 0.50, 0.16), Vector3(0.0, 1.78, 0.28), hair)  # tył głowy (+Z)
-	_cube(_model, Vector3(0.15, 0.18, 0.05), Vector3(-0.16, 1.74, -0.33), eyes)
-	_cube(_model, Vector3(0.15, 0.18, 0.05), Vector3(0.16, 1.74, -0.33), eyes)
+	# --- Nogi: pivoty (zawiasy) w biodrach (logiczny y=8), kończyny schodzą w -Y, stopy na y=0 ---
+	# Pivot w METRACH = pivot_voxel * VS. Geometria każdej grupy przesuwana o -pivot przy
+	# bake'u, więc zawias ląduje w (0,0,0) węzła -> rotation.x zgina od biodra/barku.
+	_leg_l = _make_pivot(_model, Vector3(-2.0 * VS, 8.0 * VS, 0.0))
+	_leg_r = _make_pivot(_model, Vector3( 2.0 * VS, 8.0 * VS, 0.0))
+	var leg_l := VoxelModel.VoxelDef.new(); _sculpt_leg(leg_l, -1)
+	var leg_r := VoxelModel.VoxelDef.new(); _sculpt_leg(leg_r, 1)
+	_add_model_mesh(_leg_l, leg_l, mat, Vector3i(-2, 8, 0))
+	_add_model_mesh(_leg_r, leg_r, mat, Vector3i( 2, 8, 0))
 
-	# --- Nogi: pivoty (zawiasy) w biodrach y=0.78; kończyny zwisają, stopy na y=0 ---
-	_leg_l = _make_pivot(_model, Vector3(-0.17, 0.78, 0.0))
-	_leg_r = _make_pivot(_model, Vector3(0.17, 0.78, 0.0))
-	for leg in [_leg_l, _leg_r]:
-		_cube(leg, Vector3(0.26, 0.56, 0.28), Vector3(0.0, -0.28, 0.0), pants)       # noga
-		_cube(leg, Vector3(0.30, 0.22, 0.36), Vector3(0.0, -0.67, -0.03), boots)     # but (spód na y=0)
+	# --- Ręce: pivoty (zawiasy) w barkach (logiczny y=14), kończyny zwisają ---
+	_arm_l = _make_pivot(_model, Vector3(-5.0 * VS, 14.0 * VS, 0.0))
+	_arm_r = _make_pivot(_model, Vector3( 5.0 * VS, 14.0 * VS, 0.0))
+	var arm_l := VoxelModel.VoxelDef.new(); _sculpt_arm(arm_l, -1)
+	var arm_r := VoxelModel.VoxelDef.new(); _sculpt_arm(arm_r, 1)
+	_add_model_mesh(_arm_l, arm_l, mat, Vector3i(-5, 14, 0))
+	_add_model_mesh(_arm_r, arm_r, mat, Vector3i( 5, 14, 0))
 
-	# --- Ręce: pivoty (zawiasy) w barkach y=1.37; kończyny zwisają ---
-	_arm_l = _make_pivot(_model, Vector3(-0.45, 1.37, 0.0))
-	_arm_r = _make_pivot(_model, Vector3(0.45, 1.37, 0.0))
-	for arm in [_arm_l, _arm_r]:
-		_cube(arm, Vector3(0.20, 0.50, 0.24), Vector3(0.0, -0.25, 0.0), tunic)       # rękaw
-		_cube(arm, Vector3(0.22, 0.18, 0.26), Vector3(0.0, -0.57, 0.0), skin)        # dłoń
+# Bakuje JEDNĄ grupę voxeli do zbatchowanego ArrayMesh i wiesza pod 'parent'.
+# pivot_vox = logiczny punkt obrotu (w voxelach); geometrię przesuwamy o -pivot*VS,
+# żeby zawias leżał w (0,0,0) węzła (animacja rotation.x bez zmian).
+func _add_model_mesh(parent: Node3D, def: VoxelModel.VoxelDef, mat: Material, pivot_vox: Vector3i) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelModel.build_mesh(def, VS, -Vector3(pivot_vox) * VS)
+	mi.material_override = mat
+	parent.add_child(mi)
+
+# Materiał postaci: vertex-color jako albedo, matowy. KAŻDA grupa dostaje WŁASNĄ kopię,
+# bo _flash_hit() modyfikuje material_override per mesh (gdyby był współdzielony, błysk
+# by się zdublował na tym samym obiekcie — niegroźne, ale duplicate() jest czystsze).
+func _make_char_material() -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.vertex_color_is_srgb = true   # spójnie z paletą sRGB (Blocks)
+	mat.roughness = 1.0
+	mat.metallic = 0.0
+	return mat
 
 # Tworzy węzeł-zawias (pivot) kończyny w danym punkcie modelu.
 func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:
@@ -204,19 +233,101 @@ func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:
 	parent.add_child(p)
 	return p
 
-# Pomocnik: dodaje jedną kostkę (rozmiar w metrach, środek, kolor) do rodzica.
-func _cube(parent: Node3D, size: Vector3, pos: Vector3, color: Color) -> void:
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 1.0
-	mat.metallic = 0.0
-	mi.material_override = mat
-	mi.position = pos
-	parent.add_child(mi)
+# --- RZEŹBIENIE GRUP CIAŁA (siatka voxeli całkowitych, y=0 = poziom stóp) ---
+# Konwencja: x = lewo(-)/prawo(+) WIDZA, y = w górę, z = przód(-)/tył(+). Front twarzy = -Z.
+
+# Paleta postaci (sRGB; vertex_color_is_srgb=true w materiale).
+const _C_SKIN    := Color(0.95, 0.78, 0.62)
+const _C_SKIN_SH := Color(0.86, 0.68, 0.53)   # cień skóry (szyja/nos)
+const _C_BLUSH   := Color(0.93, 0.62, 0.55)
+const _C_HAIR    := Color(0.40, 0.24, 0.12)
+const _C_HAIR_HI := Color(0.52, 0.33, 0.17)
+const _C_EYE_W   := Color(0.97, 0.97, 0.98)
+const _C_IRIS    := Color(0.20, 0.46, 0.72)
+const _C_PUPIL   := Color(0.05, 0.05, 0.07)
+const _C_MOUTH   := Color(0.62, 0.34, 0.34)
+const _C_TUNIC   := Color(0.20, 0.52, 0.36)
+const _C_TUNIC_SH := Color(0.15, 0.40, 0.28)
+const _C_TRIM    := Color(0.86, 0.78, 0.42)   # złota lamówka/naramiennik
+const _C_BELT    := Color(0.34, 0.22, 0.12)
+const _C_BUCKLE  := Color(0.82, 0.72, 0.34)
+const _C_PANTS   := Color(0.28, 0.32, 0.50)
+const _C_PANTS_SH := Color(0.22, 0.25, 0.40)
+const _C_BOOTS   := Color(0.26, 0.18, 0.12)
+const _C_BOOTS_HI := Color(0.36, 0.26, 0.17)
+
+# GŁOWA (chibi: duża) — czaszka + włosy + twarz. Logiczny y 14..25.
+func _sculpt_head(d: VoxelModel.VoxelDef) -> void:
+	# Czaszka 9×9×9 (x[-4..4], y[15..23], z[-4..4]).
+	d.fill_box(Vector3i(-4, 15, -4), Vector3i(5, 24, 5), _C_SKIN)
+	# Szyja (krótka, ciemniejsza skóra) łączy z tułowiem.
+	d.fill_box(Vector3i(-2, 14, -2), Vector3i(2, 15, 2), _C_SKIN_SH)
+	# Ścięcie górnych rogów czaszki (mniej „pudełkowo").
+	for cx in [-4, 4]:
+		for cz in [-4, 4]:
+			d.cells.erase(Vector3i(cx, 23, cz))
+	# WŁOSY: czapa na górze + boki/tył + grzywka.
+	d.fill_box(Vector3i(-4, 22, -4), Vector3i(5, 25, 5), _C_HAIR)   # czapa (y22..24)
+	d.fill_box(Vector3i(-4, 16, 3), Vector3i(5, 23, 5), _C_HAIR)    # tył (+Z)
+	d.fill_box(Vector3i(-4, 16, -4), Vector3i(-3, 23, 5), _C_HAIR)  # lewy bok
+	d.fill_box(Vector3i(4, 16, -4), Vector3i(5, 23, 5), _C_HAIR)    # prawy bok
+	d.fill_box(Vector3i(-4, 21, -5), Vector3i(5, 23, -4), _C_HAIR)  # grzywka na czole (front -Z)
+	for hx in [-4, -2, 0, 2, 4]:
+		d.set_voxel(Vector3i(hx, 21, -5), _C_HAIR_HI)               # opadające kosmyki (y21, by nie kolidowały z brwiami y20)
+	# TWARZ (front -Z, warstwa z=-5 jako „naklejka" na lico z=-4).
+	# Oczy duże (sygnatura chibi): białko 2×2 na y18..19.
+	for ex in [-3, 2]:
+		d.fill_box(Vector3i(ex, 18, -5), Vector3i(ex + 2, 20, -4), _C_EYE_W)
+	# Tęczówki + źrenice (patrzą lekko do środka).
+	d.set_voxel(Vector3i(-2, 18, -5), _C_IRIS); d.set_voxel(Vector3i(-2, 19, -5), _C_PUPIL)
+	d.set_voxel(Vector3i( 2, 18, -5), _C_IRIS); d.set_voxel(Vector3i( 2, 19, -5), _C_PUPIL)
+	# Brwi (kreska włosów nad oczami).
+	d.set_voxel(Vector3i(-3, 20, -5), _C_HAIR); d.set_voxel(Vector3i(-2, 20, -5), _C_HAIR)
+	d.set_voxel(Vector3i( 2, 20, -5), _C_HAIR); d.set_voxel(Vector3i( 3, 20, -5), _C_HAIR)
+	# Rumieńce.
+	d.set_voxel(Vector3i(-3, 17, -5), _C_BLUSH); d.set_voxel(Vector3i(3, 17, -5), _C_BLUSH)
+	# Nos (1 voxel) i usta (2 voxele).
+	d.set_voxel(Vector3i(0, 17, -5), _C_SKIN_SH)
+	d.set_voxel(Vector3i(-1, 16, -5), _C_MOUTH); d.set_voxel(Vector3i(0, 16, -5), _C_MOUTH)
+
+# TUŁÓW (tunika + pasek + lamówka). Logiczny y 8..15.
+func _sculpt_torso(d: VoxelModel.VoxelDef) -> void:
+	# Tunika x[-4..4] (9 voxeli, środek 0 — symetria z głową), y[8..14], z[-2..1].
+	d.fill_box(Vector3i(-4, 8, -2), Vector3i(5, 15, 2), _C_TUNIC)
+	# Cień/fałdy (bryła nie jest płaska).
+	d.fill_box(Vector3i(-4, 8, 1), Vector3i(5, 15, 2), _C_TUNIC_SH)    # plecy (+Z)
+	d.fill_box(Vector3i(-4, 8, -2), Vector3i(-3, 15, 2), _C_TUNIC_SH)  # lewy bok (x=-4)
+	d.fill_box(Vector3i(4, 8, -2), Vector3i(5, 15, 2), _C_TUNIC_SH)    # prawy bok (x=4, symetrycznie)
+	# Złota lamówka pod szyją (dekolt) + 2 guziki na froncie (z=-3 „nakładka").
+	d.fill_box(Vector3i(-2, 14, -3), Vector3i(2, 15, -2), _C_TRIM)
+	d.set_voxel(Vector3i(0, 13, -3), _C_TRIM)
+	d.set_voxel(Vector3i(0, 11, -3), _C_TRIM)
+	# Pasek (y8) dookoła + klamra na froncie. x[-4..4] spójnie z tuniką.
+	d.fill_box(Vector3i(-4, 8, -3), Vector3i(5, 9, 2), _C_BELT)
+	d.set_voxel(Vector3i(0, 8, -3), _C_BUCKLE)
+	d.set_voxel(Vector3i(-1, 8, -3), _C_BUCKLE)
+
+# NOGA (udo/łydka w spodniach + but). side = -1 (lewa) / +1 (prawa). Logiczny y 0..8.
+# X-zakres: lewa [-3..-1], prawa [1..2] -> 2 voxele szer.
+func _sculpt_leg(d: VoxelModel.VoxelDef, side: int) -> void:
+	var x0 := (-3 if side < 0 else 1)
+	# Nogawka spodni: y1..7 (stopa nad podeszwą buta).
+	d.fill_box(Vector3i(x0, 1, -1), Vector3i(x0 + 2, 8, 2), _C_PANTS)
+	d.fill_box(Vector3i(x0, 1, 1), Vector3i(x0 + 2, 8, 2), _C_PANTS_SH)   # cień z tyłu
+	# But: y0..1, dłuższy w przód (czubek na -Z); podeszwa (y0) najjaśniejsza.
+	d.fill_box(Vector3i(x0, 0, -2), Vector3i(x0 + 2, 2, 2), _C_BOOTS)
+	d.fill_box(Vector3i(x0, 0, -2), Vector3i(x0 + 2, 1, 2), _C_BOOTS_HI)
+
+# RĘKA (rękaw tuniki + naramiennik + dłoń). side = -1/+1. Logiczny y 6..14.
+# X tuż obok tułowia: lewa [-6..-5], prawa [4..5].
+func _sculpt_arm(d: VoxelModel.VoxelDef, side: int) -> void:
+	var x0 := (-6 if side < 0 else 4)
+	# Rękaw tuniki: y8..13 (zwisa od barku w dół).
+	d.fill_box(Vector3i(x0, 8, -1), Vector3i(x0 + 2, 14, 2), _C_TUNIC)
+	d.fill_box(Vector3i(x0, 8, 1), Vector3i(x0 + 2, 14, 2), _C_TUNIC_SH)   # cień rękawa
+	d.fill_box(Vector3i(x0, 13, -2), Vector3i(x0 + 2, 14, 2), _C_TRIM)     # naramiennik (złoto)
+	# Dłoń (skóra): y6..7.
+	d.fill_box(Vector3i(x0, 6, -1), Vector3i(x0 + 2, 8, 1), _C_SKIN)
 
 func _build_camera() -> void:
 	# Pivot: obraca się tylko w poziomie (yaw). NIE obracamy całej postaci,

@@ -60,6 +60,9 @@ const FLOWER_COLORS: Array[Color] = [
 const MUSHROOM_STEM: Color = Color(0.86, 0.82, 0.72)   # trzonek grzyba — kremowy
 const MUSHROOM_RED:  Color = Color(0.75, 0.18, 0.16)   # czerwony kapelusz (muchomor)
 const MUSHROOM_BROWN: Color = Color(0.52, 0.38, 0.24)  # brązowy grzyb — cieplejszy niż DIRT
+const MUSHROOM_SPOT: Color = Color(0.94, 0.92, 0.86)   # białe kropki muchomora (zbite < glow)
+# --- Detaliczne mikro-voxelowe propy (Cube World) ---
+const FLOWER_CORE: Color = Color(0.90, 0.78, 0.20)     # żółty środek kwiatu (przygaszony anty-bloom)
 
 ## Czy blok jest „stały” (pełny) z punktu widzenia face cullingu i kolizji.
 ## WATER traktujemy jak przezroczysty/niestały — nie zasłania ścian i nie ma kolizji.

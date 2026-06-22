@@ -50,18 +50,23 @@ const TREE_PROB: float = 0.006      # było 0.025
 const BUSH_PROB: float = 0.015      # było 0.06
 const ROCK_PROB: float = 0.003      # było 0.012
 
-# --- Drobne propy (osobny mesh, bez kolizji) ---
-# Prawdopodobieństwa per kafel trawy (osobny „rzut” na typ propa).
-const PROP_GRASS_PROB: float = 0.18     # kępki trawy (zmniejszone dla wydajności przy 0,5 m)
-const PROP_FLOWER_PROB: float = 0.06
-const PROP_MUSHROOM_PROB: float = 0.02
-# Twardy limit propów na chunk (wydajność). Podniesiony ze 160 (review #MAJOR):
-# przy ~0,53 łącznego prawdopodobieństwa i ~1024 kaflach trawy spodziewamy się ~540
-# propów; limit 160 ścinał je już po ~1/3 chunku (pętla idzie liniowo x->z), więc
-# propy kumulowały się w jednym rogu chunku, a reszta była łysa. 600 mieści cały
-# rozkład, a to nadal 1 draw call/chunk i ~<36k tri w skrajnym chunku — pomijalne.
-const MAX_PROPS_PER_CHUNK: int = 200
-const PROP_S: float = VOXEL_SIZE * 0.5  # bok mini-kostki = 0,25 m (pół voxela)
+# --- Drobne propy (osobny mesh, bez kolizji) — DETALICZNE MIKRO-VOXELE (styl Cube World) ---
+# Propy budujemy z MIKRO-VOXELI (MV = 0,0625 m = 1/8 voxela terenu), żeby były
+# ROZPOZNAWALNE (grzyb z białymi kropkami, kwiat z płatkami, źdźbła trawy) — kontrast
+# skali wobec terenu 0,5 m. Każdy detaliczny prop (z wewn. cullingiem w VoxelModel,
+# emitujemy tylko skorupę) mierzony realnie: grzyb ~288 ścian (~576 tri), kwiat ~94
+# ściany (~188 tri), kępka 5 źdźbeł ~34 ściany. Dlatego GĘSTOŚĆ i LIMIT są zbite:
+#   suma prob. 0,26 -> 0,082 (≈3,2× rzadziej); limit 200 -> 90.
+# Realny budżet tri/chunk (po przeliczeniu z modeli): typowy ~9-11k tri (≈74-90 propów
+# w naturalnym rozkładzie), patologiczny chunk 90×grzyb ≈ 52k tri. Czyli znacznie BEZPIECZNIEJ
+# niż dawne szacunki — limit 90 jest hojny i mógłby być nawet podniesiony. Nadal 1 draw
+# call/chunk (jeden PropsMesh, ten sam props_material). Komfortowe na RTX 3050 4GB.
+const MV: float = VOXEL_SIZE * 0.125    # 0,0625 m — bok mikro-voxela propów
+const PROP_GRASS_PROB: float = 0.060    # było 0.18 — kępki trawy
+const PROP_FLOWER_PROB: float = 0.018   # było 0.06
+const PROP_MUSHROOM_PROB: float = 0.004 # było 0.02 — grzyb jest najdroższy (najwięcej ścian) => najrzadszy
+const MAX_PROPS_PER_CHUNK: int = 90     # było 200 (twardy bezpiecznik tri/chunk)
+const PROP_S: float = VOXEL_SIZE * 0.5  # 0,25 m — referencja skali (kafel propa)
 
 # --- Rozdzielna przestrzeń saltów dla feature_hash (review #minor: bez korelacji) ---
 # Każda niezależna decyzja MUSI mieć własny, nienachodzący salt. Warianty per-voxel
@@ -85,6 +90,14 @@ const SALT_PROP_OZ: int = 15             # offset Z propa w kaflu
 const SALT_FLOWER_STEM: int = 16         # tint łodygi kwiatka
 const SALT_GRASS_TINT: int = 20          # tint źdźbeł: SALT_GRASS_TINT+i (rezerwuje 20..22)
 const SALT_MUSHROOM_CAP: int = 18        # czerwony vs brązowy kapelusz
+# --- Salty detalicznych mikro-voxelowych propów (rozłączne zakresy 60+, bez kolizji) ---
+const SALT_MUSHROOM_SPOT: int = 60       # rozsyp białych kropek: SALT_MUSHROOM_SPOT+ly (rezerwuje 60..64)
+const SALT_FLOWER_PETALS: int = 65       # 4 vs 6 płatków
+const SALT_GRASS_COUNT: int = 66         # liczba źdźbeł 3..5
+const SALT_GRASS_POSX: int = 67          # rozrzut podstaw źdźbeł X
+const SALT_GRASS_POSZ: int = 68          # rozrzut podstaw źdźbeł Z
+const SALT_GRASS_HEIGHT: int = 70        # wysokość źdźbła: +i (rezerwuje 70..74)
+const SALT_GRASS_LEAN: int = 75          # pochylenie źdźbła: +i (rezerwuje 75..79)
 
 # 6 kierunków sąsiadów dla face cullingu (kolejność: +X,-X,+Y,-Y,+Z,-Z).
 const NEIGHBORS: Array[Vector3i] = [
@@ -405,16 +418,18 @@ func _place_rock(world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -
 ## Wybiera i buduje jeden prop na kaflu trawy (deterministycznie). Inkrementuje _prop_count.
 func _place_props(st: SurfaceTool, world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -> void:
 	var roll := world.feature_hash(wx, wz, SALT_PROP_TYPE)
-	# Wierzch bloku trawy (lokalnie, w metrach) + losowy offset w obrębie kafla.
-	# OFFSET ZACIŚNIĘTY (review #minor): poprzednio ox/oz ∈ [0, 0,5 m), przez co
-	# najszersze propy (źdźbła trawy z offsetem +s, kapelusz grzyba 0,5 m) wychodziły
-	# poza obrys kafla, a na skraju chunku nawet poza chunk. Ograniczamy offset do
-	# PROP_OFFSET_MAX, tak by największy prop zmieścił się w kaflu 0,5 m.
-	const PROP_OFFSET_MAX: float = VOXEL_SIZE * 0.25   # 0,125 m
+	# Wierzch bloku trawy (lokalnie, w metrach). OFFSET=0 dla detalicznych modeli
+	# (review): modele mikro-voxelowe są szerokie (grzyb ~0,6 m) i są centrowane w XZ
+	# na środku kafla przez _build_* (przesunięcie base o -pół-szerokości). Dodatkowy
+	# losowy offset wypchnąłby najszersze propy poza kafel, a na skraju chunku poza chunk
+	# (nakładanie na szwie). Modele mają własny mikro-rozrzut (źdźbła/płatki), więc nic nie tracimy.
+	const PROP_OFFSET_MAX: float = 0.0
 	var top := float(sy + 1) * VOXEL_SIZE
 	var ox := world.feature_hash(wx, wz, SALT_PROP_OX) * PROP_OFFSET_MAX
 	var oz := world.feature_hash(wx, wz, SALT_PROP_OZ) * PROP_OFFSET_MAX
-	var base := Vector3(float(x) * VOXEL_SIZE + ox, top, float(z) * VOXEL_SIZE + oz)
+	# Środek kafla w XZ (model centrujemy względem tego punktu w _build_*).
+	var base := Vector3(float(x) * VOXEL_SIZE + ox + VOXEL_SIZE * 0.5, top,
+			float(z) * VOXEL_SIZE + oz + VOXEL_SIZE * 0.5)
 
 	if roll < PROP_MUSHROOM_PROB:
 		_build_mushroom(st, base, world, wx, wz)
@@ -427,28 +442,28 @@ func _place_props(st: SurfaceTool, world: VoxelWorld, x: int, sy: int, z: int, w
 		_prop_count += 1
 
 
-## Mała kostka o dowolnym rozmiarze i pozycji (lokalnej w chunku, w METRACH).
-## Używa TEGO SAMEGO nawijania CW co teren (FACE_VERTS/FACE_NORMALS) — bez ryzyka cullingu.
-## Bez AO — propy są małe, AO nic nie wnosi, a oszczędza obliczenia.
-func _emit_cube(st: SurfaceTool, origin: Vector3, size: float, col: Color, sway: float = 0.0) -> void:
-	# Wagę „sway" (0=podstawa, 1=czubek) zapisujemy w ALFIE koloru — props.gdshader
-	# używa jej do kołysania czubków na wietrze; RGB pozostaje albedo.
-	var c := Color(col.r, col.g, col.b, sway)
-	for fi in 6:
-		var normal: Vector3 = FACE_NORMALS[fi]
-		var corners: Array = FACE_VERTS[fi]
-		var p0 := origin + (corners[0] as Vector3) * size
-		var p1 := origin + (corners[1] as Vector3) * size
-		var p2 := origin + (corners[2] as Vector3) * size
-		var p3 := origin + (corners[3] as Vector3) * size
-		st.set_normal(normal)
-		# Trójkąt 1: p0,p2,p1  |  Trójkąt 2: p0,p3,p2  (CW od zewnątrz — jak _emit_face).
-		st.set_color(c); st.add_vertex(p0)
-		st.set_color(c); st.add_vertex(p2)
-		st.set_color(c); st.add_vertex(p1)
-		st.set_color(c); st.add_vertex(p0)
-		st.set_color(c); st.add_vertex(p3)
-		st.set_color(c); st.add_vertex(p2)
+## Renderuje detaliczny model mikro-voxelowy do współdzielonego PropsMesh (st).
+## Model (VoxelModel.VoxelDef) jest CENTROWANY w XZ na 'base' (środek kafla) i kładziony
+## dołem (min y) na base.y. Sway już zapisany per voxel w defie (COLOR.a). Wewnętrzny
+## culling ścian robi VoxelModel._emit — emitujemy tylko zewnętrzną skorupę.
+## Bok mikro-voxela = MV (0,0625 m). Nawijanie CW spójne z terenem i _emit_face.
+func _emit_model(st: SurfaceTool, def: VoxelModel.VoxelDef, base: Vector3) -> void:
+	if def.is_empty():
+		return
+	# Bounding box modelu (w jednostkach MV) do centrowania XZ i osadzenia dołu na base.y.
+	var min_x := 1 << 30; var max_x := -(1 << 30)
+	var min_y := 1 << 30
+	var min_z := 1 << 30; var max_z := -(1 << 30)
+	for k: Vector3i in def.cells:
+		min_x = mini(min_x, k.x); max_x = maxi(max_x, k.x)
+		min_y = mini(min_y, k.y)
+		min_z = mini(min_z, k.z); max_z = maxi(max_z, k.z)
+	# Środek XZ modelu (w MV) — przesuwamy tak, by trafił w base (środek kafla),
+	# a dół (min_y) na base.y. offset to wektor metrowy dodawany do p*MV w VoxelModel._emit.
+	var cx := float(min_x + max_x + 1) * 0.5
+	var cz := float(min_z + max_z + 1) * 0.5
+	var offset := Vector3(base.x - cx * MV, base.y - float(min_y) * MV, base.z - cz * MV)
+	VoxelModel.emit_to(st, def, offset, MV)
 
 
 ## Mikro-wariacja jasności koloru propa (deterministyczna, ±amp).
@@ -462,52 +477,152 @@ func _prop_tint(col: Color, world: VoxelWorld, wx: int, wz: int, salt: int, amp:
 	)
 
 
-## A) Kępka trawy — 3 źdźbła (mini-kostki) o różnej wysokości, ustawione obok siebie.
+## A) Kępka trawy — DETALICZNA: 3-5 cienkich źdźbeł (słupki 1×N MV) o różnej wysokości
+## i pochyleniu. Sway rośnie ku czubkowi (zakodowany w defie -> COLOR.a).
 func _build_grass_tuft(st: SurfaceTool, base: Vector3, world: VoxelWorld, wx: int, wz: int) -> void:
-	var s := PROP_S
-	# Trzy źdźbła: drabinka wysokości 1S / 1.5S / 2S, drobne offsety XZ w obrębie voxela.
-	# Offsety zmniejszone do ±0,5S (review #minor): razem z zaciśniętym ox/oz cała kępka
-	# (źdźbło o boku S) mieści się w kaflu 0,5 m i nie wchodzi na sąsiedni kafel/chunk.
-	var offsets: Array[Vector3] = [
-		Vector3(0.0, 0.0, 0.0),
-		Vector3(s * 0.5, 0.0, s * 0.25),
-		Vector3(-s * 0.25, 0.0, s * 0.5),
-	]
-	var heights: Array[float] = [s, s * 1.5, s * 2.0]
-	for i in 3:
-		# Tint per źdźbło: SALT_GRASS_TINT rezerwuje ciągły zakres (20,21,22) — bez kolizji saltów.
-		var col := _prop_tint(Blocks.PROP_GRASS_TUFT, world, wx + i, wz, SALT_GRASS_TINT + i, 0.06)
-		var o: Vector3 = base + offsets[i]
-		# Każde źdźbło to słupek z kostek o boku s, ułożonych w pionie.
-		var levels := int(round(heights[i] / s))
-		for lv in levels:
-			# Sway rośnie ku górze źdźbła (podstawa zakotwiczona, czubek gnie się najmocniej).
-			var sway := clampf((float(lv) + 0.5) / float(levels), 0.0, 1.0)
-			_emit_cube(st, o + Vector3(0.0, float(lv) * s, 0.0), s, col, sway)
+	_emit_model(st, _model_grass_tuft(world, wx, wz), base)
 
-
-## B) Kwiatek — łodyga (2 kostki S) + większa główka (1.5S) z palety kolorów.
+## B) Kwiatek — DETALICZNY: smukła łodyga + listek + główka (żółty środek 2×2 + 4-6 płatków).
 func _build_flower(st: SurfaceTool, base: Vector3, world: VoxelWorld, wx: int, wz: int) -> void:
-	var s := PROP_S
-	var stem_col := _prop_tint(Blocks.PROP_FLOWER_STEM, world, wx, wz, SALT_FLOWER_STEM, 0.05)
-	# Dwie kostki łodygi w pionie (sway rośnie ku górze; główka kołysze się najmocniej).
-	_emit_cube(st, base, s, stem_col, 0.1)
-	_emit_cube(st, base + Vector3(0.0, s, 0.0), s, stem_col, 0.5)
-	# Główka: większa kostka (1.5S), wycentrowana nad łodygą.
-	var head_col: Color = Blocks.FLOWER_COLORS[int(world.feature_hash(wx, wz, SALT_FLOWER_COLOR) * float(Blocks.FLOWER_COLORS.size()))]
-	var head_s := s * 1.5
-	var head_origin := base + Vector3((s - head_s) * 0.5, s * 2.0, (s - head_s) * 0.5)
-	_emit_cube(st, head_origin, head_s, head_col, 1.0)
+	_emit_model(st, _model_flower(world, wx, wz), base)
 
-
-## C) Grzybek — trzonek (1 kostka S) + szerszy kapelusz (2S), czerwony lub brązowy.
+## C) Grzybek — DETALICZNY muchomor: kremowy trzonek + kopulasty kapelusz z białymi kropkami.
 func _build_mushroom(st: SurfaceTool, base: Vector3, world: VoxelWorld, wx: int, wz: int) -> void:
-	var s := PROP_S
-	_emit_cube(st, base, s, Blocks.MUSHROOM_STEM, 0.0)
-	var cap_col := Blocks.MUSHROOM_RED if world.feature_hash(wx, wz, SALT_MUSHROOM_CAP) < 0.5 else Blocks.MUSHROOM_BROWN
-	var cap_s := s * 2.0
-	var cap_origin := base + Vector3((s - cap_s) * 0.5, s, (s - cap_s) * 0.5)
-	_emit_cube(st, cap_origin, cap_s, cap_col, 0.35)
+	_emit_model(st, _model_mushroom(world, wx, wz), base)
+
+
+# ============================================================================
+#  GENERATORY DETALICZNYCH MODELI PROPÓW (siatka mikro-voxeli Vector3i, y=0 = nasada)
+#  Sway w defie: 0 = nasada (zakotwiczona), rośnie ku górze (czubki gną się na wietrze).
+# ============================================================================
+
+## KĘPKA TRAWY: 3-5 cienkich źdźbeł (słupki 1×N MV), różna wysokość + lekkie pochylenie.
+func _model_grass_tuft(world: VoxelWorld, wx: int, wz: int) -> VoxelModel.VoxelDef:
+	var d := VoxelModel.VoxelDef.new()
+	var blades := 3 + int(world.feature_hash(wx, wz, SALT_GRASS_COUNT) * 3.0)   # 3,4,5
+	var cx := 4
+	var cz := 4
+	for i in blades:
+		# Podstawa źdźbła (deterministyczny rozrzut w obrębie małej kępki).
+		var bx := cx + int(round((world.feature_hash(wx + i, wz, SALT_GRASS_POSX) - 0.5) * 4.0))
+		var bz := cz + int(round((world.feature_hash(wx, wz + i, SALT_GRASS_POSZ) - 0.5) * 4.0))
+		# Wysokość 4..8 MV (0,25..0,5 m) — różna na źdźbło.
+		var h := 4 + int(world.feature_hash(wx + i * 3, wz + i * 5, SALT_GRASS_HEIGHT + i) * 5.0)
+		# Pochylenie (kierunek + siła; przesunięcie XZ rosnące ku górze).
+		var lean_x := (world.feature_hash(wx + i * 7, wz, SALT_GRASS_LEAN + i) - 0.5) * 1.6
+		var lean_z := (world.feature_hash(wx, wz + i * 11, SALT_GRASS_LEAN + i) - 0.5) * 1.6
+		# Tint per źdźbło (ciągły zakres saltów: SALT_GRASS_TINT 20..22).
+		var col := _prop_tint(Blocks.PROP_GRASS_TUFT, world, wx + i, wz, SALT_GRASS_TINT + (i % 3), 0.07)
+		for y in h:
+			var t := float(y) / float(maxi(1, h - 1))    # 0 u nasady, 1 na czubku
+			var ox := int(round(lean_x * t * float(h) * 0.5))
+			var oz := int(round(lean_z * t * float(h) * 0.5))
+			var c := col.lightened(0.10 * t)             # czubek lekko jaśniejszy
+			# Sway: nasada 0, czubek ~1 (źdźbła gną się najmocniej).
+			d.set_voxel(Vector3i(bx + ox, y, bz + oz), c, t)
+	return d
+
+
+## KWIAT: cienka łodyga MV + listek + główka (żółty środek 2×2 + 4-6 płatków wokół).
+func _model_flower(world: VoxelWorld, wx: int, wz: int) -> VoxelModel.VoxelDef:
+	var d := VoxelModel.VoxelDef.new()
+	var stem_col := _prop_tint(Blocks.PROP_FLOWER_STEM, world, wx, wz, SALT_FLOWER_STEM, 0.05)
+	var petal_col: Color = Blocks.FLOWER_COLORS[
+		int(world.feature_hash(wx, wz, SALT_FLOWER_COLOR) * float(Blocks.FLOWER_COLORS.size()))
+	]
+	var core_col := Blocks.FLOWER_CORE
+
+	var cx := 3
+	var cz := 3
+	var stem_h := 6
+	var max_y := stem_h + 2   # szczyt główki (do normalizacji sway)
+	# Łodyga 1×1 MV z lekkim wygięciem (przesunięcie X ku górze) + listek.
+	for y in stem_h:
+		var bend := int(round(float(y) * 0.25))
+		var sw := float(y) / float(max_y) * 0.5     # łodyga gnie się umiarkowanie
+		d.set_voxel(Vector3i(cx + bend, y, cz), stem_col, sw)
+		if y == 2:
+			d.set_voxel(Vector3i(cx + bend + 1, y, cz), stem_col, sw)
+			d.set_voxel(Vector3i(cx + bend + 2, y, cz), stem_col.lightened(0.05), sw)
+
+	var hx := cx + int(round(float(stem_h) * 0.25))
+	var hy := stem_h
+	# Żółty środek 2×2×2 (główka kołysze się najmocniej -> sway ~1).
+	for dy in 2:
+		for dx in 2:
+			for dz in 2:
+				d.set_voxel(Vector3i(hx + dx, hy + dy, cz + dz), core_col, 1.0)
+	# Płatki: 4 lub 6 wokół środka (warstwa dolna główki).
+	var six := world.feature_hash(wx, wz, SALT_FLOWER_PETALS) < 0.5
+	var py := hy
+	var dirs4: Array[Vector2i] = [
+		Vector2i( 2, 0), Vector2i(-2, 0), Vector2i(0,  2), Vector2i(0, -2)
+	]
+	var dirs6: Array[Vector2i] = [
+		Vector2i( 2, 0), Vector2i(-2, 0), Vector2i( 1,  2), Vector2i(-1,  2),
+		Vector2i( 1, -2), Vector2i(-1, -2)
+	]
+	var dirs: Array[Vector2i] = dirs6 if six else dirs4
+	for dd in dirs:
+		# Płatek + wypełnienie między środkiem a płatkiem (spójna główka).
+		d.set_voxel(Vector3i(hx + dd.x, py, cz + dd.y), petal_col, 1.0)
+		# Łącznik (szprycha) przez signi, NIE dd.x/2: int-dzielenie ucina nieparzyste
+		# kierunki dirs6 do 0, więc szprychy płatków diagonalnych nakładałyby się na jedną komórkę.
+		d.set_voxel(Vector3i(hx + signi(dd.x), py, cz + signi(dd.y)), petal_col.lightened(0.04), 1.0)
+	return d
+
+
+## GRZYB (muchomor): kremowy trzonek 2×2 MV + kopulasty kapelusz (dome) z białymi kropkami.
+## Czerwony lub brązowy kapelusz (SALT_MUSHROOM_CAP).
+func _model_mushroom(world: VoxelWorld, wx: int, wz: int) -> VoxelModel.VoxelDef:
+	var d := VoxelModel.VoxelDef.new()
+	var cap_col := Blocks.MUSHROOM_RED if world.feature_hash(wx, wz, SALT_MUSHROOM_CAP) < 0.5 \
+		else Blocks.MUSHROOM_BROWN
+	var stem_col := Blocks.MUSHROOM_STEM
+	var spot_col := Blocks.MUSHROOM_SPOT
+
+	# Trzonek: słupek 2×2 MV, wys. 4 (lekki cień u dołu). Sway minimalny (sztywny u ziemi).
+	var stem_h := 4
+	for y in stem_h:
+		for dx in 2:
+			for dz in 2:
+				var sc := stem_col.darkened(0.06 * float(stem_h - 1 - y) / float(stem_h))
+				d.set_voxel(Vector3i(dx + 3, y, dz + 3), sc, 0.0)
+
+	# Kapelusz: dome. Promień maleje ku górze (kopuła). Środek nad trzonkiem.
+	var cap_y0 := stem_h - 1            # kapelusz nachodzi 1 MV na trzonek (połączenie)
+	var cap_levels := 5
+	var R_BASE := 4.5                   # promień u podstawy kapelusza (MV)
+	var ccx := 4
+	var ccz := 4
+	var top_y := cap_y0 + cap_levels - 1
+	for ly in cap_levels:
+		var t := float(ly) / float(cap_levels - 1)      # 0 dół kapelusza, 1 czubek
+		var r := R_BASE * cos(t * 0.5 * PI) + 0.6       # dome: najszerszy u dołu
+		var y := cap_y0 + ly
+		var r2 := r * r
+		# Sway kapelusza: rośnie ku czubkowi, max ~0,20 (grzyb gnie się delikatnie).
+		var sw := 0.20 * float(y) / float(maxi(1, top_y))
+		for dx in range(-5, 6):
+			for dz in range(-5, 6):
+				var fx := float(dx) + 0.5
+				var fz := float(dz) + 0.5
+				if fx * fx + fz * fz > r2:
+					continue
+				# Ujemne klucze Vector3i są poprawne (słownik je przyjmuje), a _emit_model
+				# i tak recentruje model po bboxie — dawny guard gx<0/gz<0 ścinał kopułę
+				# tylko po stronie -X/-Z (asymetryczny grzyb). Usunięty => dome symetryczny.
+				var gx := ccx + dx
+				var gz := ccz + dz
+				# Białe kropki: deterministyczny pierścień plamek na górnej połowie kapelusza.
+				var col := cap_col
+				if t > 0.15 and t < 0.95:
+					var spot := world.feature_hash(wx + gx * 7, wz + gz * 13, SALT_MUSHROOM_SPOT + ly)
+					var edge_ring := (fx * fx + fz * fz) > (r2 * 0.25)
+					if spot < 0.16 and edge_ring:
+						col = spot_col
+				d.set_voxel(Vector3i(gx, y, gz), col, sw)
+	return d
 
 
 # --- 2) Budowa mesha (osobno: stała powierzchnia + woda) ---
