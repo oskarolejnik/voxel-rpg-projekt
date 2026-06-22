@@ -147,6 +147,18 @@ var _has_solid: bool = false
 # Licznik wygenerowanych propów (twardy limit MAX_PROPS_PER_CHUNK).
 var _prop_count: int = 0
 
+# --- Wyniki build_data() (wypełniane OFF-THREAD, czytane w finalize() na GŁÓWNYM watku) ---
+# To CZYSTE zasoby (ArrayMesh / Shape3D), wolno je tworzyć na wątku roboczym.
+# finalize() je tylko podpina do węzłów (MeshInstance3D / CollisionShape3D) i robi add_child.
+var _r_solid_mesh: ArrayMesh = null      # gotowy mesh stałej geometrii (lub null)
+var _r_water_mesh: ArrayMesh = null      # gotowy mesh wody (lub null)
+var _r_props_mesh: ArrayMesh = null      # gotowy mesh drobnych propów (lub null)
+var _r_collision_shape: Shape3D = null   # gotowy trimesh shape ze stałej geometrii (lub null)
+
+# Strażnicy cyklu życia (sanity): build_data() policzone? finalize() wykonany?
+var _data_ready: bool = false
+var _finalized: bool = false
+
 
 func _idx(x: int, y: int, z: int) -> int:
 	# Układ pamięci: x najszybciej, potem z, potem y.
@@ -166,11 +178,82 @@ func get_voxel(x: int, y: int, z: int) -> int:
 	return _voxels[_idx(x, y, z)]
 
 
-## Pełny cykl: dane → mesh → kolizja. Wołane przez VoxelWorld po add_child().
-func generate(chunk_coord: Vector2i, world: VoxelWorld) -> void:
+## OFF-THREAD. Liczy dane voxeli + składa GOTOWE zasoby (ArrayMesh solid/water/props) do pól
+## _r_*. Shape3D kolizji NIE jest tu liczony (create_trimesh_shape nie jest thread-safe —
+## godot#69076); powstaje na głównym watku w finalize(). ŻADNYCH operacji na drzewie sceny.
+## Może być wołane z WorkerThreadPool (jeden task = jeden chunk = własne SurfaceToole) ALBO
+## synchronicznie z głównego watku (prime). 'world' (VoxelWorld) i 'self' muszą żyć do końca taska.
+##
+## Thread-safety: czyta TYLKO niemutowane szumy world (surface_height/tint_at/biome_factor —
+## konfigurowane raz w _ready i nigdy potem) i czystą arytmetykę feature_hash. Pisze WYŁĄCZNIE
+## do własnych pól tego chunku (_voxels/_heightmap/_r_*). VoxelModel.emit_to jest static i bezstanowe.
+func build_data(chunk_coord: Vector2i, world: VoxelWorld) -> void:
 	_coord = chunk_coord
-	_generate_data(world)
-	_build_mesh(world)
+	_generate_data(world)        # _voxels + _heightmap + propy -> _r_props_mesh
+	_build_mesh(world)           # -> _r_solid_mesh / _r_water_mesh (kolizja liczona w finalize)
+	_data_ready = true
+
+
+## GŁÓWNY WĄTEK. Tworzy węzły (MeshInstance3D / CollisionShape3D) z gotowych zasobów build_data()
+## i podpina je przez add_child. NIC nie liczy. Wołane DOPIERO po is_task_completed()==true
+## (bariera pamięci wait_for_task_completion gwarantuje widoczność zapisów taska) albo wprost
+## po synchronicznym build_data() (prime). Idempotentne (guard _finalized).
+##
+## WYMAGANIE: self MUSI być już w drzewie (VoxelWorld robi add_child(chunk) tuż przed finalize),
+## żeby add_child dzieci i rejestracja kolizji w PhysicsServer działały na głównym watku.
+func finalize(world: VoxelWorld) -> void:
+	if _finalized:
+		return
+
+	# --- Powierzchnia stała ---
+	if _r_solid_mesh != null:
+		var solid_mi := MeshInstance3D.new()
+		solid_mi.name = "SolidMesh"
+		solid_mi.mesh = _r_solid_mesh
+		solid_mi.material_override = world.solid_material
+		add_child(solid_mi)
+
+	# --- Powierzchnia wody (BEZ kolizji) ---
+	if _r_water_mesh != null:
+		var water_mi := MeshInstance3D.new()
+		water_mi.name = "WaterMesh"
+		water_mi.mesh = _r_water_mesh
+		water_mi.material_override = world.water_material
+		add_child(water_mi)
+
+	# --- Drobne propy (BEZ kolizji) ---
+	if _r_props_mesh != null:
+		var props_mi := MeshInstance3D.new()
+		props_mi.name = "PropsMesh"
+		props_mi.mesh = _r_props_mesh
+		props_mi.material_override = world.props_material
+		add_child(props_mi)
+
+	# --- Kolizja: trimesh tylko ze stałej geometrii ---
+	# create_trimesh_shape() liczymy TU, na GŁÓWNYM watku (NIE off-thread — patrz BLOCKER
+	# w _build_mesh: godot#69076). Koszt ~0,1-0,5 ms/chunk, throttlowany MAX_FINALIZE_PER_FRAME.
+	# Guard `_r_collision_shape == null` chroni przed dublem, gdyby finalize zostało wywołane
+	# po wcześniejszym (hipotetycznym) wyliczeniu kształtu.
+	if _r_solid_mesh != null:
+		if _r_collision_shape == null:
+			_r_collision_shape = _r_solid_mesh.create_trimesh_shape()
+		if _r_collision_shape != null:
+			var col := CollisionShape3D.new()
+			col.shape = _r_collision_shape
+			add_child(col)
+
+	# Zwolnij surowe dane voxeli — niepotrzebne po zbudowaniu (oszczędność RAM przy wielu chunkach).
+	_voxels = PackedByteArray()
+	_heightmap = PackedInt32Array()
+	_finalized = true
+
+
+## Pełny cykl SYNCHRONICZNY: dane → mesh → kolizja → węzły. Dla prime()/kill-plane,
+## gdzie gracz nie może spaść przez niezaładowany teren (musi powstać od ręki, na głównym watku).
+## Wymaga, by self był już w drzewie (jak dotąd: VoxelWorld add_child(chunk) PRZED generate()).
+func generate(chunk_coord: Vector2i, world: VoxelWorld) -> void:
+	build_data(chunk_coord, world)
+	finalize(world)
 
 
 # --- 1) Generacja danych voxeli z heightmapy ---
@@ -282,15 +365,12 @@ func _place_features(world: VoxelWorld) -> void:
 			and z >= 1 and z <= CHUNK_SIZE - 2:
 				_place_props(st_props, world, x, sy, z, wx, wz)
 
-	# Po pętli: jeśli powstały jakiekolwiek propy, zbuduj jeden lekki MeshInstance3D.
+	# Po pętli: jeśli powstały jakiekolwiek propy, zcommituj ArrayMesh do POLA (OFF-THREAD).
+	# Węzeł MeshInstance3D + add_child powstaje dopiero w finalize() na GŁÓWNYM watku.
 	if _prop_count > 0:
 		var props_mesh := st_props.commit()
 		if props_mesh != null and props_mesh.get_surface_count() > 0:
-			var props_mi := MeshInstance3D.new()
-			props_mi.name = "PropsMesh"
-			props_mi.mesh = props_mesh
-			props_mi.material_override = world.props_material
-			add_child(props_mi)
+			_r_props_mesh = props_mesh   # tylko zapamiętaj gotowy zasób
 
 
 # Zapis tylko gdy w obrębie chunku (XZ) i w pionie (Y) — twardy bezpiecznik.
@@ -662,30 +742,21 @@ func _build_mesh(world: VoxelWorld) -> void:
 
 	_has_solid = solid_count > 0
 
-	# --- Powierzchnia stała: osobny ArrayMesh (źródło kolizji) ---
-	var solid_mesh: ArrayMesh = null
+	# --- OFF-THREAD: commit gotowych zasobów do pól. ZERO operacji na drzewie sceny.
+	#     Węzły (MeshInstance3D / CollisionShape3D) + add_child powstają w finalize() na głównym watku.
+
+	# Powierzchnia stała: osobny ArrayMesh (źródło kolizji).
+	# UWAGA (BLOCKER): create_trimesh_shape() NIE jest thread-safe w Godot 4.x (godot#69076 —
+	# wołane z WorkerThreadPool zawiesza/deadlockuje grę, bo sięga do PhysicsServer3D, który
+	# defer-uje na główny wątek; przy prime()/_exit_tree główny czeka blokująco na ten task
+	# => klasyczne zakleszczenie). Dlatego TUTAJ (off-thread) liczymy WYŁĄCZNIE commit() ArrayMesh.
+	# Trimesh shape powstaje na GŁÓWNYM watku w finalize() (PLAN B z notatek = teraz PLAN A).
 	if _has_solid:
-		solid_mesh = st_solid.commit()  # ArrayMesh z jedną powierzchnią
-		var solid_mi := MeshInstance3D.new()
-		solid_mi.name = "SolidMesh"
-		solid_mi.mesh = solid_mesh
-		solid_mi.material_override = world.solid_material
-		add_child(solid_mi)
+		_r_solid_mesh = st_solid.commit()  # ArrayMesh z jedną powierzchnią (czysty zasób, OK off-thread)
 
-	# --- Powierzchnia wody: osobny MeshInstance3D, BEZ kolizji ---
+	# Powierzchnia wody: osobny ArrayMesh, BEZ kolizji.
 	if water_count > 0:
-		var water_mesh := st_water.commit()
-		var water_mi := MeshInstance3D.new()
-		water_mi.name = "WaterMesh"
-		water_mi.mesh = water_mesh
-		water_mi.material_override = world.water_material
-		add_child(water_mi)
-
-	# --- Kolizja: trimesh tylko ze stałej geometrii ---
-	if _has_solid and solid_mesh != null:
-		var col := CollisionShape3D.new()
-		col.shape = solid_mesh.create_trimesh_shape()
-		add_child(col)
+		_r_water_mesh = st_water.commit()
 
 
 ## Czy ściana stałego voxela (x,y,z) w kierunku n powinna być narysowana.

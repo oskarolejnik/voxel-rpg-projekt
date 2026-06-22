@@ -29,7 +29,17 @@ const SEA_LEVEL: int = 24            # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 
 @export var render_distance: int = 4     # promień w chunkach (4 × 16 m = 64 m; jest zapas FPS)
-@export var chunks_per_frame: int = 2    # 2 chunki/klatkę — szybsze ładowanie (mamy zapas wydajności)
+@export var chunks_per_frame: int = 2    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
+
+# --- Streaming wielowątkowy (Faza 2A: WorkerThreadPool) ---
+# MAX_IN_FLIGHT: ile zadań build_data() może chodzić RÓWNOCZEŚNIE w puli. Pula jest
+# WSPÓŁDZIELONA z silnikiem (fizyka/audio/import), więc nie zalewamy jej — 3 zostawia
+# wątki dla reszty na laptopie (RTX 3050 4GB). Reszta kolejki czeka w _build_queue.
+const MAX_IN_FLIGHT: int = 3
+# Ile finalizacji (tworzenie węzłów + add_child na GŁÓWNYM watku) wykonujemy max/klatkę.
+# Limituje koszt finalize na głównym (add_child + rejestracja kolizji w PhysicsServer),
+# żeby odbiór kilku gotowych chunków naraz nie dał mikro-zacięcia.
+const MAX_FINALIZE_PER_FRAME: int = 2
 
 # --- Parametry terenu (w VOXELACH) ---
 # NAPRAWA SKALI BIOMÓW (review #MAJOR): poprzednio BASE=20, AMP=40 dawało
@@ -54,8 +64,16 @@ var _noise: FastNoiseLite
 var _tint_noise: FastNoiseLite
 var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C)
 
-# Słownik załadowanych chunków: Vector2i (chunk_coord) -> VoxelChunk.
+# Słownik załadowanych (W DRZEWIE + sfinalizowanych) chunków: Vector2i -> VoxelChunk.
 var _loaded: Dictionary = {}
+
+# Chunki z zadaniem build_data() W LOCIE (jeszcze nie w drzewie). coord -> { "chunk":, "task": }.
+# Węzeł żyje POZA drzewem do czasu finalize() (add_child dopiero po is_task_completed).
+var _pending: Dictionary = {}
+
+# Chunki, które wypadły z zasięgu, gdy ich zadanie było w locie. coord -> { "chunk":, "task": }.
+# NIE wolno ich zwalniać dopóki task chodzi (use-after-free) — reapujemy po is_task_completed().
+var _abandoned: Dictionary = {}
 
 # Kolejka coordów do zbudowania (posortowana: najbliżej gracza najpierw).
 var _build_queue: Array[Vector2i] = []
@@ -196,7 +214,7 @@ func world_to_chunk(pos: Vector3) -> Vector2i:
 	return Vector2i(floori(pos.x / span), floori(pos.z / span))
 
 
-# --- Pętla streamingu ---
+# --- Pętla streamingu (wielowątkowa: submit -> poll, BEZ blokowania głównego watku) ---
 func _process(_delta: float) -> void:
 	if _player == null:
 		return
@@ -206,16 +224,112 @@ func _process(_delta: float) -> void:
 		_update_chunks(center)
 		_last_center = center
 
-	# Buduj do chunks_per_frame chunków z kolejki.
-	var built := 0
-	while built < chunks_per_frame and not _build_queue.is_empty():
+	# 1) SUBMIT: dorzucaj zadania build_data() do puli, póki jest miejsce (MAX_IN_FLIGHT),
+	#    coś jest w kolejce i nie przekroczyliśmy throttlingu submitu (chunks_per_frame).
+	var submitted := 0
+	while submitted < chunks_per_frame \
+			and _pending.size() < MAX_IN_FLIGHT \
+			and not _build_queue.is_empty():
 		var coord: Vector2i = _build_queue.pop_front()
-		# Mogło się zdezaktualizować (np. odsunięcie), więc sprawdzamy ponownie.
-		if not _loaded.has(coord):
-			_build_chunk(coord)
-		built += 1
+		# Mogło się zdezaktualizować (już zbudowane / w locie / porzucone z żywym taskiem) —
+		# pomiń bez liczenia submitu w dół. _abandoned (review): nie submituj drugiej instancji
+		# coordu, którego stary task jeszcze chodzi (czeka na reap w _reap_abandoned).
+		if _loaded.has(coord) or _pending.has(coord) or _abandoned.has(coord):
+			continue
+		_submit_chunk(coord)
+		submitted += 1
+
+	# 2) POLL: odbierz ukończone zadania (nieblokująco) i sfinalizuj na GŁÓWNYM watku.
+	_poll_pending(center)
 
 	_check_kill_plane(center)
+
+
+## Zleca build_data() chunku do WorkerThreadPool. Węzeł powstaje na głównym watku, ale
+## NIE jest dodawany do drzewa — żyje w _pending do czasu finalize() (po ukończeniu taska).
+func _submit_chunk(coord: Vector2i) -> void:
+	var chunk := VoxelChunk.new()
+	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
+	# Pozycja w METRACH = coord * (CHUNK_SIZE * VOXEL_SIZE) = coord * 16 m. Ustawiana na węźle
+	# POZA drzewem (bezpieczne, brak sygnałów drzewa) — finalize() doda go już z tą pozycją.
+	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE   # 16 m
+	chunk.position = Vector3(coord.x * span, 0.0, coord.y * span)
+	# OFF-THREAD: build_data(coord, self). high_priority=false (chunki tła nie blokują gracza
+	# natychmiast — prime() obsługuje teren pod stopami synchronicznie). self żyje przez całą scenę.
+	var task_id := WorkerThreadPool.add_task(
+		chunk.build_data.bind(coord, self),
+		false,
+		"voxel_build_%d_%d" % [coord.x, coord.y]
+	)
+	_pending[coord] = { "chunk": chunk, "task": task_id }
+
+
+## Odbiera ukończone zadania: is_task_completed() jest TANI i NIEBLOKUJĄCY (właściwy poll).
+## wait_for_task_completion() wołamy TYLKO na już ukończonym tasku — zwraca natychmiast i
+## zwalnia wewnętrzny uchwyt (inaczej przeciek). NIGDY nie blokujemy tu głównego watku.
+func _poll_pending(center: Vector2i) -> void:
+	# Najpierw sprzątnij porzucone (chunki spoza zasięgu, których task w końcu dobiegł końca).
+	_reap_abandoned()
+
+	# Zbierz ukończone (nie modyfikujemy słownika w trakcie iteracji).
+	var done: Array[Vector2i] = []
+	for coord in _pending:
+		if WorkerThreadPool.is_task_completed(_pending[coord]["task"]):
+			done.append(coord)
+
+	# Finalizuj max MAX_FINALIZE_PER_FRAME/klatkę (reszta poczeka — i tak jest gotowa w polach).
+	var finalized := 0
+	for coord in done:
+		if finalized >= MAX_FINALIZE_PER_FRAME:
+			break
+		# Mógł zostać przejęty przez prime() między zebraniem 'done' a tą iteracją
+		# (prime eraseuje z _pending) — pomiń, jeśli już nie ma go w _pending.
+		if not _pending.has(coord):
+			continue
+		var entry: Dictionary = _pending[coord]
+		_pending.erase(coord)
+		# Już ukończony => zwraca od razu; służy do ZWOLNIENIA uchwytu taska (nie blokuje).
+		WorkerThreadPool.wait_for_task_completion(entry["task"])
+		var chunk: VoxelChunk = entry["chunk"]
+		# Twardy bezpiecznik niezmiennika „jeden chunk na coord” (review #minor): gdyby coord
+		# trafił już do _loaded inną ścieżką (np. prime), zwolnij ten węzeł zamiast nadpisywać.
+		if _loaded.has(coord):
+			if is_instance_valid(chunk):
+				chunk.free()
+			continue
+		# Gracz mógł się w międzyczasie odsunąć — chunk zbędny. Nigdy nie był w drzewie => free().
+		if not _coord_in_range(coord, center):
+			if is_instance_valid(chunk):
+				chunk.free()
+			continue
+		add_child(chunk)        # GŁÓWNY: wstaw węzeł do drzewa (z gotową pozycją/nazwą)
+		chunk.finalize(self)    # GŁÓWNY: zbuduj MeshInstance3D/CollisionShape3D z gotowych zasobów
+		_loaded[coord] = chunk
+		finalized += 1
+
+
+## Sprząta chunki porzucone (spoza zasięgu), ale TYLKO gdy ich task już ukończony.
+## Nigdy nie były w drzewie -> free() (nie queue_free). Para wait_for_task_completion zwalnia uchwyt.
+func _reap_abandoned() -> void:
+	var reaped: Array[Vector2i] = []
+	for coord in _abandoned:
+		if WorkerThreadPool.is_task_completed(_abandoned[coord]["task"]):
+			reaped.append(coord)
+	for coord in reaped:
+		var entry: Dictionary = _abandoned[coord]
+		_abandoned.erase(coord)
+		WorkerThreadPool.wait_for_task_completion(entry["task"])  # już ukończony => natychmiast
+		var chunk: VoxelChunk = entry["chunk"]
+		if is_instance_valid(chunk):
+			chunk.free()
+
+
+## Czy coord mieści się w aktualnym promieniu (kołowe odsianie, jak _update_chunks).
+func _coord_in_range(coord: Vector2i, center: Vector2i) -> bool:
+	var rd := render_distance
+	var dx := coord.x - center.x
+	var dz := coord.y - center.y
+	return float(dx * dx + dz * dz) <= (rd + 0.5) * (rd + 0.5)
 
 
 ## Aktualizuje zbiór potrzebnych chunków: dodaje brakujące do kolejki, usuwa nadmiarowe.
@@ -236,7 +350,16 @@ func _update_chunks(center: Vector2i) -> void:
 				continue
 			var coord := Vector2i(center.x + dx, center.y + dz)
 			needed[coord] = true
-			if not _loaded.has(coord) and not _build_queue.has(coord):
+			# Nie kolejkuj coordów już gotowych (_loaded), w kolejce, W LOCIE (_pending),
+			# ani PORZUCONYCH z żywym taskiem (_abandoned). Pominięcie _pending zapobiega
+			# podwójnemu budowaniu. Pominięcie _abandoned (BLOCKER review): bez tego coord,
+			# który właśnie wypadł z zasięgu z taskiem w locie, byłby NATYCHMIAST kolejkowany
+			# i submitowany jako DRUGA instancja — zmarnowany build + ryzyko nadpisania wpisu
+			# _abandoned (wyciek węzła i uchwytu taska) przy ganianiu po krawędzi zasięgu.
+			# Coord wróci do streamingu dopiero po zreapowaniu starego taska w _reap_abandoned().
+			if not _loaded.has(coord) and not _pending.has(coord) \
+					and not _abandoned.has(coord) \
+					and not _build_queue.has(coord):
 				to_queue.append(coord)
 
 	# Sortuj kandydatów rosnąco po dystansie od środka — najbliżej budujemy najpierw.
@@ -262,7 +385,7 @@ func _update_chunks(center: Vector2i) -> void:
 		return da < db
 	)
 
-	# Usuń (queue_free) chunki poza zasięgiem.
+	# Usuń (queue_free) chunki poza zasięgiem — te SĄ w drzewie i sfinalizowane, więc bezpiecznie.
 	var to_remove: Array[Vector2i] = []
 	for coord in _loaded.keys():
 		if not needed.has(coord):
@@ -273,22 +396,32 @@ func _update_chunks(center: Vector2i) -> void:
 			chunk.queue_free()
 		_loaded.erase(coord)
 
-
-## Buduje pojedynczy chunk i wstawia do drzewa.
-func _build_chunk(coord: Vector2i) -> void:
-	var chunk := VoxelChunk.new()
-	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
-	# NAPRAWA SKALI: pozycja chunku w METRACH = coord * (CHUNK_SIZE * VOXEL_SIZE) = coord * 16 m.
-	# Bez tego chunki stanęłyby w odstępie 32 m z 16-metrowymi dziurami w terenie.
-	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE   # 16 m
-	chunk.position = Vector3(coord.x * span, 0.0, coord.y * span)
-	add_child(chunk)
-	chunk.generate(coord, self)
-	_loaded[coord] = chunk
+	# Chunki W LOCIE, które wypadły z zasięgu: NIE wolno ich zwolnić teraz (task pisze do ich
+	# pól na wątku roboczym -> use-after-free). Przenosimy do _abandoned i zwalniamy w _reap_abandoned()
+	# dopiero po is_task_completed(). Zaczęte zadanie i tak doliczy się do końca (krótkie).
+	var pending_drop: Array[Vector2i] = []
+	for coord in _pending.keys():
+		if not needed.has(coord):
+			pending_drop.append(coord)
+	for coord in pending_drop:
+		# TWARDY BEZPIECZNIK (BLOCKER review): nie nadpisuj istniejącego wpisu _abandoned —
+		# inaczej stary {chunk,task} ginie bez wait_for_task_completion (wyciek uchwytu puli)
+		# i bez free() (wyciek węzła). Dzięki guardowi _abandoned w warunku kolejkowania powyżej
+		# ta kolizja klucza praktycznie nie powinna już zachodzić, ale zostawiamy bezpiecznik:
+		# stary wpis domykamy blokująco (task i tak był krótki) ZANIM wstawimy nowy.
+		if _abandoned.has(coord):
+			var old_entry: Dictionary = _abandoned[coord]
+			WorkerThreadPool.wait_for_task_completion(old_entry["task"])
+			var old_chunk: VoxelChunk = old_entry["chunk"]
+			if is_instance_valid(old_chunk):
+				old_chunk.free()
+		_abandoned[coord] = _pending[coord]   # { chunk, task }
+		_pending.erase(coord)
 
 
 ## Natychmiastowa (synchroniczna) budowa kwadratu (2*radius+1) wokół środka.
-## Wołane RAZ przed/po spawnie gracza, żeby nie spadł przez niezaładowany teren.
+## Wołane RAZ przed/po spawnie gracza oraz w kill-plane, żeby gracz nie spadł przez
+## niezaładowany teren. NIE używa WorkerThreadPool — teren pod stopami musi powstać OD RĘKI.
 ##
 ## WAŻNE: celowo NIE ustawiamy tu _last_center (sentinel wymusza pełne przeliczenie
 ## streamingu w pierwszym _process — inaczej świat zatrzymałby się na chunkach z prime).
@@ -296,8 +429,50 @@ func prime(center: Vector2i, radius: int = 1) -> void:
 	for dx in range(-radius, radius + 1):
 		for dz in range(-radius, radius + 1):
 			var coord := Vector2i(center.x + dx, center.y + dz)
-			if not _loaded.has(coord):
-				_build_chunk(coord)
+			if _loaded.has(coord):
+				continue
+			if _pending.has(coord):
+				# Chunk jest W LOCIE — dokończ go NATYCHMIAST (blokująco), bo prime musi dać
+				# gotowy teren w tej samej klatce. To jedyne miejsce, gdzie świadomie czekamy
+				# na pulę (prime jest rzadkie i krytyczne). Wyjmujemy z _pending, by _poll_pending
+				# nie sfinalizował go drugi raz.
+				var entry: Dictionary = _pending[coord]
+				_pending.erase(coord)
+				WorkerThreadPool.wait_for_task_completion(entry["task"])
+				var ch: VoxelChunk = entry["chunk"]
+				add_child(ch)
+				ch.finalize(self)
+				_loaded[coord] = ch
+				continue
+			if _abandoned.has(coord):
+				# Chunk jest PORZUCONY, ale jego task wciąż liczy (lub już skończył) tę samą
+				# geometrię (review #MAJOR). Przejmujemy go zamiast budować drugi raz od zera:
+				# bez tego prime() płaciłby pełny synchroniczny koszt (~98k voxeli na głównym
+				# watku!) dla chunku, którego budowa i tak trwała w tle — wprost przeciw celowi
+				# Fazy 2A. Wyjmujemy z _abandoned (by _reap_abandoned go nie zwolnił), dokańczamy
+				# blokująco i finalizujemy. self żył całą scenę => Callable bezpieczny.
+				var aentry: Dictionary = _abandoned[coord]
+				_abandoned.erase(coord)
+				WorkerThreadPool.wait_for_task_completion(aentry["task"])
+				var ach: VoxelChunk = aentry["chunk"]
+				add_child(ach)
+				ach.finalize(self)
+				_loaded[coord] = ach
+				continue
+			_build_chunk_sync(coord)
+
+
+## SYNCHRONICZNA budowa pojedynczego chunku na GŁÓWNYM watku (dla prime/kill-plane).
+func _build_chunk_sync(coord: Vector2i) -> void:
+	var chunk := VoxelChunk.new()
+	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
+	# NAPRAWA SKALI: pozycja chunku w METRACH = coord * (CHUNK_SIZE * VOXEL_SIZE) = coord * 16 m.
+	# Bez tego chunki stanęłyby w odstępie 32 m z 16-metrowymi dziurami w terenie.
+	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE   # 16 m
+	chunk.position = Vector3(coord.x * span, 0.0, coord.y * span)
+	add_child(chunk)
+	chunk.generate(coord, self)   # build_data + finalize synchronicznie (self już w drzewie)
+	_loaded[coord] = chunk
 
 
 # --- Bezpieczeństwo: gdyby gracz wypadł pod świat ---
@@ -315,3 +490,35 @@ func _check_kill_plane(center: Vector2i) -> void:
 			_player.set("velocity", Vector3.ZERO)
 		# Profilaktyka: wymuś przeliczenie streamingu w następnej klatce.
 		_last_center = Vector2i(2147483647, 2147483647)
+
+
+# --- Sprzątanie przy zamknięciu / przeładowaniu świata ---
+## Przy usuwaniu VoxelWorld są jeszcze taski w locie trzymające referencje do węzłów
+## chunków (przez Callable build_data.bind(coord, self)). MUSIMY je domknąć (blokująco —
+## to teardown, klatka i tak się nie liczy) ZANIM cokolwiek zwolnimy, inaczej wątek
+## roboczy sięgnie do zwolnionej pamięci (use-after-free). Po wait_for_task_completion
+## każdy uchwyt jest zwolniony, a węzły (nigdy nie w drzewie) zwalniamy przez free().
+func _exit_tree() -> void:
+	_drain_all_tasks()
+
+
+## Domyka WSZYSTKIE taski w locie (_pending + _abandoned) blokująco i zwalnia ich węzły
+## (nigdy nie były w drzewie => free()). Po tym wywołaniu żaden wątek roboczy nie pisze już
+## do pól chunków ani nie czyta szumu world. Używane przy teardownie (_exit_tree) i — na
+## przyszłość — PRZED jakąkolwiek mutacją FastNoiseLite (regeneracja świata / zmiana seeda),
+## inaczej równoległe get_noise_* w trakcie rekonfiguracji szumu = data race (notatka integratora).
+func _drain_all_tasks() -> void:
+	for coord in _pending:
+		var entry: Dictionary = _pending[coord]
+		WorkerThreadPool.wait_for_task_completion(entry["task"])
+		var chunk: VoxelChunk = entry["chunk"]
+		if is_instance_valid(chunk):
+			chunk.free()
+	for coord in _abandoned:
+		var aentry: Dictionary = _abandoned[coord]
+		WorkerThreadPool.wait_for_task_completion(aentry["task"])
+		var achunk: VoxelChunk = aentry["chunk"]
+		if is_instance_valid(achunk):
+			achunk.free()
+	_pending.clear()
+	_abandoned.clear()

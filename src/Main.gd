@@ -53,7 +53,49 @@ func _ready() -> void:
 	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
 	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE != "" — normalne F5 gra bez sondy.
 	if OS.get_environment("VOXEL_PROBE") != "":
-		_probe_shot()
+		if OS.get_environment("VOXEL_PROBE") == "stress":
+			_stress_run()   # test wątkowego streamingu pod ruchem (FPS + wycieki chunków)
+		else:
+			_probe_shot()
+
+## Test 2A: teleportuje gracza przez świat (wymusza streaming w ruchu) i loguje FPS +
+## liczbę chunków loaded/pending/abandoned. Wyciek = monotoniczny wzrost loaded/abandoned.
+func _stress_run() -> void:
+	DisplayServer.window_set_size(Vector2i(1280, 720))
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)   # prawdziwy FPS, bez capu 60
+	_day_night.running = false
+	await get_tree().create_timer(2.0).timeout   # pozwól prime + pierwszym chunkom dopłynąć
+	# Bieg PACOWANY CZASEM: 8 m/s (realny gracz) niezależnie od FPS. ~8 s ruchu.
+	var speed := 8.0
+	var t0 := Time.get_ticks_msec()
+	var loaded_min := 99999
+	var next_log := 0
+	while true:
+		var elapsed := float(Time.get_ticks_msec() - t0) / 1000.0
+		if elapsed > 8.0:
+			break
+		var px := speed * elapsed
+		var gy := _world.height_at(px, 0.0) + 3.0
+		_player_ref.global_position = Vector3(px, gy, 0.0)
+		await get_tree().process_frame
+		var loaded: int = _world._loaded.size()
+		if loaded < loaded_min: loaded_min = loaded
+		if int(elapsed) >= next_log:
+			next_log += 1
+			print("[STRESS] t=", int(elapsed), "s x=", int(px), " fps=", Engine.get_frames_per_second(),
+				" loaded=", loaded, " pending=", _world._pending.size(),
+				" abandoned=", _world._abandoned.size(), " queue=", _world._build_queue.size())
+	print("[STRESS] MOVE_DONE loaded_min_during_run=", loaded_min)
+	# Faza osiadania: STOP ruchu, pozwól dokończyć taski i zreapować porzucone.
+	# Poprawnie: abandoned->0, pending->0, loaded->~49 (chunki wokół ostatniej pozycji).
+	print("[STRESS] settling 180 frames (no movement)...")
+	for _s in 180:
+		await get_tree().process_frame
+	print("[STRESS] AFTER_SETTLE loaded=", _world._loaded.size(),
+		" pending=", _world._pending.size(),
+		" abandoned=", _world._abandoned.size(),
+		" queue=", _world._build_queue.size())
+	get_tree().quit()
 
 # Winieta — pełnoekranowy ColorRect z shaderem, pod HUD-em walki.
 func _setup_vignette() -> void:
