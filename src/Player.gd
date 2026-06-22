@@ -176,11 +176,12 @@ func _build_voxel_character() -> void:
 	_cube(_model, Vector3(0.68, 0.10, 0.42), Vector3(0.0, 0.78, 0.0), belt)
 
 	# --- Głowa + włosy + oczy — statyczne ---
-	_cube(_model, Vector3(0.56, 0.54, 0.54), Vector3(0.0, 1.68, 0.0), skin)
-	_cube(_model, Vector3(0.60, 0.16, 0.58), Vector3(0.0, 1.97, 0.0), hair)   # czapka włosów
-	_cube(_model, Vector3(0.60, 0.46, 0.14), Vector3(0.0, 1.74, 0.25), hair)  # tył głowy (+Z)
-	_cube(_model, Vector3(0.09, 0.11, 0.05), Vector3(-0.13, 1.70, -0.28), eyes)
-	_cube(_model, Vector3(0.09, 0.11, 0.05), Vector3(0.13, 1.70, -0.28), eyes)
+	# Większa głowa + większe oczy = sylwetka „chibi" (sygnatura looku Cube World, Faza 2D).
+	_cube(_model, Vector3(0.66, 0.62, 0.62), Vector3(0.0, 1.72, 0.0), skin)
+	_cube(_model, Vector3(0.70, 0.18, 0.66), Vector3(0.0, 2.04, 0.0), hair)   # czapka włosów
+	_cube(_model, Vector3(0.70, 0.50, 0.16), Vector3(0.0, 1.78, 0.28), hair)  # tył głowy (+Z)
+	_cube(_model, Vector3(0.15, 0.18, 0.05), Vector3(-0.16, 1.74, -0.33), eyes)
+	_cube(_model, Vector3(0.15, 0.18, 0.05), Vector3(0.16, 1.74, -0.33), eyes)
 
 	# --- Nogi: pivoty (zawiasy) w biodrach y=0.78; kończyny zwisają, stopy na y=0 ---
 	_leg_l = _make_pivot(_model, Vector3(-0.17, 0.78, 0.0))

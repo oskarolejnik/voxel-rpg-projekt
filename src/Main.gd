@@ -159,10 +159,14 @@ func _probe_shot() -> void:
 	await get_tree().create_timer(6.0).timeout
 	var spring := _find_node_of_type(_player_ref, "SpringArm3D")
 	if spring:
-		spring.spring_length = 6.0 if mode == "water" else 7.0
-		spring.rotation.x = deg_to_rad(-28.0) if mode == "water" else deg_to_rad(-20.0)
+		spring.spring_length = (2.6 if mode == "char" else (6.0 if mode == "water" else 7.0))
+		spring.rotation.x = deg_to_rad(-6.0 if mode == "char" else (-28.0 if mode == "water" else -20.0))
 		var pivot := spring.get_parent()
-		if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
+		var cam_yaw := 0.0 if mode == "char" else water_yaw_deg
+		if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(cam_yaw)
+		if mode == "char":
+			var m := _player_ref.get_node_or_null("Model")
+			if m: (m as Node3D).rotation.y = PI   # twarzą do kamery (oczy widoczne)
 	await get_tree().create_timer(0.6).timeout
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")
