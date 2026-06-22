@@ -1,0 +1,37 @@
+[gd_resource type="Resource" script_class="EnemyResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatBlock.gd" id="1_stat"]
+[ext_resource type="Script" path="res://data/resources/EnemyResource.gd" id="2_enemy"]
+[ext_resource type="Resource" path="res://data/db/enemies/goblin_loot.tres" id="3_loot"]
+
+[sub_resource type="Resource" id="StatBlock_ember_slinger"]
+script = ExtResource("1_stat")
+max_hp = 50.0
+damage = 14.0
+attack_speed = 0.5
+armor = 0.0
+move_speed = 3.0
+
+[resource]
+script = ExtResource("2_enemy")
+id = &"ember_slinger"
+display_name = "Zywiolak Zaru"
+stats = SubResource("StatBlock_ember_slinger")
+loot_table = ExtResource("3_loot")
+xp_reward = 28
+ai_profile = &"ranged"
+threat_tier = &"trash"
+biomes = Array[StringName]([&"emberwaste"])
+variant_meta = {
+"attack_windup": 0.5,
+"attack_range": 11.0,
+"attack_entry_delay": 0.4,
+"projectile_speed": 16.0,
+"projectile_gravity": 0.0,
+"projectile_pierce": 0,
+"aggro_radius": 16.0,
+"leash_radius": 24.0,
+"element": &"fire",
+"skin_tint": Color(0.66, 0.30, 0.18, 1.0),
+"eye_tint": Color(1.0, 0.6, 0.15, 1.0)
+}

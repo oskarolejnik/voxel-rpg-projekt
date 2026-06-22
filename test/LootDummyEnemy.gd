@@ -5,3 +5,5 @@ extends Node
 @export var loot_table: LootTableResource
 @export var loot_ilvl: int = 1
 @export var loot_biome: StringName = &"verdant"
+# ETAP 4: premia rzadkosci z loot_tier biomu (czytana przez LootService._enemy_loot_tier_bonus).
+@export var loot_tier_bonus: int = 0

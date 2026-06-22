@@ -44,6 +44,11 @@ signal died(enemy: Enemy)        # emitowany tuż przed queue_free() — Main li
 @export var loot_ilvl: int = 1
 # Biom dropu (filtr afiksow tematycznych); Etap 4 ustawi z get_biome. Domyslnie verdant.
 @export var loot_biome: StringName = &"verdant"
+# ETAP 4: PREMIA RZADKOSCI z loot_tier biomu (BiomeResource.loot_tier - 1). 0 = verdant (tier1),
+# 1 = emberwaste (tier2), 2 = frosthelm (tier3). Czytana przez LootService._roll_rarity — przesuwa
+# wagi rzadkosci ku wyzszym tierom (analogicznie do magic_find), wiec bogatszy biom realnie dropi
+# lepiej. Spawner ustawia ja z EnemyDB.biome(biome_id).loot_tier (wczesniej pole bylo martwe).
+@export var loot_tier_bonus: int = 0
 # Etap 2: emitowany przy smierci z policzonym dropem (Main spawnuje LootDrop). Niesie pozycje +
 # liste wpisow z LootService.drop_for (item/zloto). Pozwala spawnowac loot ZANIM encja zniknie.
 signal loot_dropped(world_pos: Vector3, drops: Array)
@@ -60,6 +65,74 @@ signal loot_dropped(world_pos: Vector3, drops: Array)
 # Krytyk pocisku/ciosu wroga (domyślnie bez krytyka — zwykły mob).
 @export var crit_chance: float = 0.0
 @export var crit_mult: float = 1.5
+
+# ============================================================================
+#  ETAP 4 — WARIANTY BIOMOWE + TELEGRAFY (threat_tier)
+# ============================================================================
+# Klasa zagrożenia (z EnemyResource.threat_tier): &"trash"/&"elite"/&"boss". Steruje TELEGRAFEM
+# ataku (elite/boss pokazują strefę-zapowiedź HazardZone preview przed ciosem — czytelność hordy).
+@export var threat_tier: StringName = &"trash"
+# Skala modelu (Brute = krępy/większy elite; default 1.0). Ustawiana z wariantu.
+@export var body_scale: float = 1.0
+# Reskin biomowy: nadpisuje paletę skóry/oczu (ognisty/lodowy wariant). Pusty -> domyślny goblin.
+@export var skin_tint: Color = Color(0, 0, 0, 0)        # a==0 => brak reskinu
+@export var eye_tint: Color = Color(0, 0, 0, 0)         # a==0 => domyślne żółte oczy
+# Element ciosu (tag dosypywany do HitData: &"fire"/&"frost"...). Pusty -> brak elementu.
+@export var element: StringName = &""
+# Identyfikator wariantu (diagnostyka / loot). Np. &"goblin"/&"brute"/&"slinger"/&"ember_brute".
+@export var variant_id: StringName = &"goblin"
+
+# Aktywny telegraf bieżącego ciosu (HazardZone preview). Zwalniany po zadaniu ciosu / przerwaniu.
+var _telegraph: HazardZone = null
+
+# ETAP 4: konfiguruje wroga z EnemyResource PRZED dodaniem do drzewa (więc _build_components
+# zobaczy już docelowe staty). WOŁAĆ tuż po Enemy.new(), ZANIM add_child / _ready. Mapuje
+# StatBlock -> eksporty (max_hp/dmg/armor/speed/krytyk), ai_profile, threat_tier, loot (table/biome).
+# Bezpieczne na null (zostają domyślne goblinowe wartości).
+func configure_from_resource(res: EnemyResource) -> void:
+	if res == null:
+		return
+	variant_id = res.id if res.id != &"" else variant_id
+	ai_profile = res.ai_profile
+	threat_tier = res.threat_tier
+	if res.loot_table != null:
+		loot_table = res.loot_table
+	var sb: StatBlock = res.stats
+	if sb != null:
+		max_hp = sb.max_hp
+		hp = sb.max_hp
+		attack_damage = sb.damage
+		armor = clampf(sb.armor, 0.0, 1.0)
+		crit_chance = sb.crit_chance
+		crit_mult = sb.crit_mult
+		move_speed = sb.move_speed
+		# attack_cooldown == 1/attack_speed (spójnie z StatBlock: attack_speed == 1/cooldown).
+		if sb.attack_speed > 0.0:
+			attack_cooldown = 1.0 / sb.attack_speed
+	# Parametry wariantu spoza StatBlock (windup/zasięg/telegraf/reskin) wnosi metadata zasobu.
+	_apply_variant_meta(res)
+
+# Czyta opcjonalne pola wariantu z EnemyResource.variant_meta (Dictionary) — windup, attack_range,
+# projectile, skala ciała, reskin (skin/eye), element. Pozwala trzymać liczby wariantów w .tres bez
+# rozszerzania StatBlock. Brak pola -> zostaje obecna (goblinowa) wartość.
+func _apply_variant_meta(res: EnemyResource) -> void:
+	if not ("variant_meta" in res):
+		return
+	var m: Dictionary = res.variant_meta
+	attack_windup = float(m.get("attack_windup", attack_windup))
+	attack_range = float(m.get("attack_range", attack_range))
+	attack_entry_delay = float(m.get("attack_entry_delay", attack_entry_delay))
+	aggro_radius = float(m.get("aggro_radius", aggro_radius))
+	leash_radius = float(m.get("leash_radius", leash_radius))
+	projectile_speed = float(m.get("projectile_speed", projectile_speed))
+	projectile_gravity = float(m.get("projectile_gravity", projectile_gravity))
+	projectile_pierce = int(m.get("projectile_pierce", projectile_pierce))
+	body_scale = float(m.get("body_scale", body_scale))
+	element = StringName(m.get("element", element))
+	if m.has("skin_tint"):
+		skin_tint = m["skin_tint"]
+	if m.has("eye_tint"):
+		eye_tint = m["eye_tint"]
 
 # ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). Gdy z jakiegoś
 # powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + wbudowana maszyna), więc gra działa.
@@ -201,6 +274,10 @@ func _build_voxel_goblin() -> void:
 	_model = Node3D.new()
 	_model.name = "Model"
 	add_child(_model)
+	# ETAP 4: skala ciała wariantu (Brute = krępy/większy elite). Pivoty/animacja niezmienione
+	# (dziedziczą skalę), kapsuła kolizji zostaje — większy model nie psuje chodu po terenie.
+	if body_scale != 1.0:
+		_model.scale = Vector3.ONE * body_scale
 
 	# Paleta goblina (albedo sRGB — kolory normalnie).
 	var skin := Color(0.30, 0.55, 0.22)    # zielona skóra
@@ -208,6 +285,12 @@ func _build_voxel_goblin() -> void:
 	var eyes := Color(1.00, 0.85, 0.10)    # świecące żółte oczy
 	var mouth := Color(0.10, 0.06, 0.05)   # paszcza
 	var loin := Color(0.35, 0.24, 0.14)    # przepaska brązowa
+	# ETAP 4: reskin biomowy (ognisty/lodowy). a>0 => nadpisz paletę; skin_d = przyciemniona skóra.
+	if skin_tint.a > 0.0:
+		skin = Color(skin_tint.r, skin_tint.g, skin_tint.b)
+		skin_d = skin.darkened(0.28)
+	if eye_tint.a > 0.0:
+		eyes = Color(eye_tint.r, eye_tint.g, eye_tint.b)
 
 	# --- Tułów (krępy) + przepaska — statyczne ---
 	_cube(_model, Vector3(0.56, 0.46, 0.36), Vector3(0.0, 0.78, 0.0), skin)
@@ -361,6 +444,51 @@ func ai_attack(target: Node3D) -> void:
 		_target = target
 	_attacking = true
 	_windup_timer = attack_windup
+	# ETAP 4: elite/boss pokazują TELEGRAF (HazardZone preview) na czas windupu — czytelna
+	# zapowiedź ciosu w hordzie. Trash (Goblin) nie telegrafuje (czysty błysk ręki wystarcza).
+	_spawn_telegraph()
+
+# ETAP 4: tworzy telegraf-zapowiedź ciosu (HazardZone w trybie preview = SAM WIZUAL, zero dmg).
+# Tylko elite/boss; promień rośnie z threat_tier (boss czytelniejszy). Ustawiany w miejsce ciosu
+# (przed wrogiem dla melee, na celu dla ranged). Zwalniany w _clear_telegraph po ciosie/przerwaniu.
+func _spawn_telegraph() -> void:
+	if threat_tier != &"elite" and threat_tier != &"boss":
+		return
+	_clear_telegraph()                       # nigdy dwóch naraz
+	var tz := HazardZone.new()
+	tz.preview = true                        # telegraf: bez obrażeń (dmg idzie hitboxem/pociskiem)
+	tz.duration = maxf(0.05, attack_windup + 0.15)   # żyje tylko przez windup (+zapas)
+	tz.radius = 1.6 if threat_tier == &"elite" else 2.4
+	# Kolor zależny od elementu wariantu (ognisty=pomarańcz, lodowy=błękit, neutralny=czerwień).
+	var col := Color(1.0, 0.35, 0.15, 0.35)
+	if element == &"frost":
+		col = Color(0.35, 0.7, 1.0, 0.35)
+	elif element == &"fire":
+		col = Color(1.0, 0.5, 0.1, 0.4)
+	tz.preview_color = col
+	tz.active_color = Color(col.r, col.g, col.b, 0.5)
+	# Telegraf jest CZYSTO WIZUALNY: dmg zadaje hitbox melee / Projectile, NIE ta strefa. Dlatego
+	# hit_builder jest pusty (preview nie tyka) i tej strefy NIE wolno arm() (HazardZone.arm ostrzega).
+	tz.setup(self, Callable(), (1 << 1))     # maska celu = ciało gracza; preview i tak nie tyka
+	var parent := get_parent()
+	if parent == null:
+		tz.free()
+		return
+	parent.add_child(tz)
+	# Pozycja: melee przed wrogiem (na kierunku _face_dir), ranged na celu (jeśli znany).
+	var p := global_position
+	if ai_profile == &"ranged" and _target != null and is_instance_valid(_target):
+		p = (_target as Node3D).global_position
+	elif _face_dir.length() > 0.01:
+		p = global_position + _face_dir * (attack_range * 0.6)
+	tz.global_position = Vector3(p.x, p.y, p.z)
+	_telegraph = tz
+
+# Zwalnia aktywny telegraf (po ciosie, przerwaniu ataku, leashu lub śmierci).
+func _clear_telegraph() -> void:
+	if _telegraph != null and is_instance_valid(_telegraph):
+		_telegraph.queue_free()
+	_telegraph = null
 
 # Tyka windup ataku po stronie autorytetu; po jego zejściu zadaje cios (melee = okno hitboxa,
 # ranged = Projectile). Histereza zasięgu *1.3 jak dawniej — gracz może odskoczyć w trakcie windupu.
@@ -382,6 +510,7 @@ func _process_attack_windup(delta: float, has_target: bool, dist: float) -> void
 				_hitbox.open_window(0.12, _face_dir)
 			elif _target != null and is_instance_valid(_target):
 				DamageService.request_hit(self, _target, _build_hit())
+	_clear_telegraph()                       # telegraf znika z ciosem (czytelność)
 	_attacking = false
 	_attack_timer = attack_cooldown
 
@@ -439,12 +568,14 @@ func _state_attack(delta: float, has_target: bool, dist: float) -> void:
 
 	if not has_target:
 		_attacking = false
+		_clear_telegraph()
 		_patrol_target = _home
 		_state = State.PATROL
 		return
 	# Leash ma priorytet — nawet w trakcie ataku.
 	if dist > leash_radius:
 		_attacking = false
+		_clear_telegraph()
 		_patrol_target = _home
 		_state = State.PATROL
 		return
@@ -459,6 +590,7 @@ func _state_attack(delta: float, has_target: bool, dist: float) -> void:
 	if not _attacking and _attack_timer <= 0.0:
 		_attacking = true
 		_windup_timer = attack_windup
+		_spawn_telegraph()    # ETAP 4: zapowiedź ciosu dla elite/boss (fallback bez AIComponent)
 		# (opcjonalnie: unieś prawą rękę — robi to _process gdy _attacking)
 	if _attacking:
 		_windup_timer -= delta
@@ -470,6 +602,7 @@ func _state_attack(delta: float, has_target: bool, dist: float) -> void:
 					_spawn_projectile()
 				elif _target != null and is_instance_valid(_target):
 					DamageService.request_hit(self, _target, _build_hit())
+			_clear_telegraph()
 			_attacking = false
 			_attack_timer = attack_cooldown
 
@@ -618,6 +751,7 @@ func _die() -> void:
 		return                # idempotencja: HealthComponent.died + ewentualny fallback nie dublują
 	_dead_emitted = true
 	hp = 0.0
+	_clear_telegraph()        # ETAP 4: nie zostawiaj wiszącej zapowiedzi po śmierci elite/boss
 	# ETAP 2: policz drop ZANIM encja zniknie (LootService HOST-ONLY/deterministyczny). Emitujemy
 	# pozycje + liste dropow, by Main zespawnowal LootDrop-y w SWIECIE (nie pod zwalnianym wrogiem).
 	# LootService to autoload (zawsze obecny w runtime/teście headless).
@@ -642,6 +776,9 @@ func _build_hit() -> HitData:
 	# typed: HitData.tags to Array[StringName] (4.x strict — literal/ternary daje goly Array).
 	var t: Array[StringName] = []
 	t.append(&"ranged" if ai_profile == &"ranged" else &"melee")
+	# ETAP 4: element wariantu biomowego (fire/frost...) — DamageService czyta tagi pod odporności.
+	if element != &"":
+		t.append(element)
 	hit.tags = t
 	return hit
 

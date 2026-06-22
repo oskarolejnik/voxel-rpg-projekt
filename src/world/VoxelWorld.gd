@@ -76,12 +76,21 @@ const KILL_PLANE_Y: float = -8.0         # poniżej tego Y „ratujemy” gracza
 # --- Deterministyczny hash pozycji świata -> [0,1). Stały seed => stabilny świat. ---
 const FEATURE_SEED: int = 0x9E37  # stały „ziarno” roślinności
 
+# --- ETAP 4: identyfikatory biomów (StringName). Spójne z BiomeResource.id i loot_biome wroga.
+#   verdant   = Verdant Hollow (umiarkowany, tier 1, start)
+#   emberwaste= Emberwaste     (pustynia/ogień, tier 2, mid)
+#   frosthelm = Frosthelm Peaks(śnieg/mróz, tier 3, szczyt)
+const BIOME_VERDANT: StringName = &"verdant"
+const BIOME_EMBERWASTE: StringName = &"emberwaste"
+const BIOME_FROSTHELM: StringName = &"frosthelm"
+
 # Szum wysokości terenu (deterministyczny seed).
 var _noise: FastNoiseLite
 
 # Drugi, wolniejszy szum do drobnej wariacji koloru (tint per blok).
 var _tint_noise: FastNoiseLite
-var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C)
+var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C) == temperatura (Etap 4)
+var _humid_noise: FastNoiseLite   # ETAP 4: wilgotność (drugi wymiar podziału biomów)
 
 # Słownik załadowanych (W DRZEWIE + sfinalizowanych) chunków: Vector2i -> VoxelChunk.
 var _loaded: Dictionary = {}
@@ -148,7 +157,15 @@ func _setup_noise() -> void:
 	_biome_noise = FastNoiseLite.new()
 	_biome_noise.noise_type = FastNoiseLite.TYPE_PERLIN
 	_biome_noise.seed = 4242
-	_biome_noise.frequency = 0.0025   # duże strefy biomów koloru (anty-powtarzalność)
+	_biome_noise.frequency = 0.0025   # duże strefy biomów koloru (anty-powtarzalność) == TEMPERATURA
+
+	# ETAP 4: drugi niskoczęstotliwościowy szum = WILGOTNOŚĆ. Inny seed => niezależny od temperatury,
+	# więc temperatura×wilgotność daje 2D podział na strefy (a nie jeden pas). Ta sama częstotliwość
+	# co _biome_noise (duże, czytelne strefy). Deterministyczny: stały seed -> stały podział z mapy.
+	_humid_noise = FastNoiseLite.new()
+	_humid_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_humid_noise.seed = 2024
+	_humid_noise.frequency = 0.0025
 
 
 # --- Konfiguracja materiałów ---
@@ -229,6 +246,43 @@ func feature_hash(wx: int, wz: int, salt: int = 0) -> float:
 ## Regionalny współczynnik biomu koloru [-1,1] (niska częstotliwość => duże strefy). Faza 2C.
 func biome_factor(world_x: int, world_z: int) -> float:
 	return _biome_noise.get_noise_2d(float(world_x), float(world_z))
+
+
+## ETAP 4 (DoD): zwraca ID biomu dla kolumny świata (StringName). DETERMINISTYCZNY — czysta
+## funkcja niemutowanych szumów (temperatura=_biome_noise, wilgotność=_humid_noise) + stałego
+## offsetu dystansu: ten sam (world_x, world_z) ZAWSZE daje ten sam biom; 3 strefy są realnie
+## obecne na mapie. Spójny z biome_factor (2C) — temperatura to ten sam szum, więc paleta trawy
+## (sucha/bujna w Chunk._solid_color) idzie w parze z biomem (ciepły<->Emberwaste, chłodny<->bujny).
+##
+## Model temperatura×wilgotność (klasyczny Whittaker-light, 3 strefy z dwuwymiarowego szumu):
+##   temp = _biome_noise [-1,1]  (ciepło na +; chłód na -)
+##   hum  = _humid_noise [-1,1]  (wilgotno na +; sucho na -)
+##   - chłodno (temp <= COLD_T)                -> Frosthelm Peaks (mróz)
+##   - ciepło (temp >= HOT_T) i SUCHO (hum<0)  -> Emberwaste (pustynia/ogień)
+##   - reszta (umiarkowane / ciepłe+wilgotne)  -> Verdant Hollow (start)
+## Progi dobrane tak, by każda strefa zajmowała sensowny ułamek mapy (test E4 weryfikuje 3 strefy).
+const BIOME_COLD_TEMP: float = -0.15      # poniżej tego = mróz (Frosthelm)
+const BIOME_HOT_TEMP: float = 0.12        # powyżej tego (i sucho) = pustynia (Emberwaste)
+
+func get_biome(world_x: int, world_z: int) -> StringName:
+	var temp := _biome_noise.get_noise_2d(float(world_x), float(world_z))   # [-1,1]
+	var hum := _humid_noise.get_noise_2d(float(world_x), float(world_z))    # [-1,1]
+	if temp <= BIOME_COLD_TEMP:
+		return BIOME_FROSTHELM
+	if temp >= BIOME_HOT_TEMP and hum < 0.0:
+		return BIOME_EMBERWASTE
+	return BIOME_VERDANT
+
+
+## ETAP 4: tier lootu wg dystansu od spawnu (model Cube World — „skalowanie po dystansie”).
+## Deterministyczny, niezależny od biomu (biom daje TEMAT lootu, dystans daje MOC/ilvl). Zwraca
+## krok 1..N: 1 blisko spawnu, rośnie co RING_METERS. Używany przez spawner do ilvl wrogów.
+const DISTANCE_RING_METERS: float = 80.0   # co tyle metrów od spawnu rośnie tier dystansu
+const DISTANCE_TIER_MAX: int = 5
+
+func distance_tier(world_x: float, world_z: float) -> int:
+	var d := Vector2(world_x, world_z).length()
+	return clampi(1 + int(floor(d / DISTANCE_RING_METERS)), 1, DISTANCE_TIER_MAX)
 
 func height_at(x: float, z: float) -> float:
 	var sy := surface_height(int(floor(x)), int(floor(z)))

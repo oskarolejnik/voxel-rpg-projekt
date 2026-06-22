@@ -14,3 +14,9 @@ extends Resource
 @export var tameable: bool = false                   # pet od lvl 5
 @export var tame_difficulty_mult: float = 1.0
 @export var biomes: Array[StringName] = []
+## ETAP 4: parametry wariantu spoza StatBlock (windup/zasięg/pocisk/skala/reskin/element).
+## Czytane przez Enemy._apply_variant_meta. Klucze (wszystkie opcjonalne):
+##   attack_windup, attack_range, attack_entry_delay, aggro_radius, leash_radius (float)
+##   projectile_speed, projectile_gravity (float), projectile_pierce (int)
+##   body_scale (float), element (StringName), skin_tint/eye_tint (Color)
+@export var variant_meta: Dictionary = {}

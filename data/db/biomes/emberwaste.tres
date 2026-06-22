@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="BiomeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/BiomeResource.gd" id="1_biome"]
+
+[resource]
+script = ExtResource("1_biome")
+id = &"emberwaste"
+display_name = "Emberwaste"
+loot_tier = 2
+enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"ember_slinger",
+"weight": 5.0,
+"max_alive": 5
+}, {
+"enemy_id": &"goblin",
+"weight": 3.0,
+"max_alive": 6
+}, {
+"enemy_id": &"ember_brute",
+"weight": 2.0,
+"max_alive": 2
+}])
+affix_themes = Array[StringName]([&"flaming", &"of_endurance", &"of_regen"])
+entrance_chance = 0.02
+fog_color = Color(0.78, 0.55, 0.35, 1.0)
+ambient_light = Color(0.85, 0.6, 0.4, 1.0)

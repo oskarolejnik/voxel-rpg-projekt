@@ -41,6 +41,8 @@ var _fireflies: GPUParticles3D
 # HUD walki + licznik żywych wrogów.
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
+# ETAP 4: deterministyczny spawner wrogów wg biomu + seeda (zastępuje stały 3×).
+var _spawner: WorldSpawner
 
 # ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
 var _inv_ui: InventoryUI
@@ -220,6 +222,12 @@ func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: 
 func _process(_delta: float) -> void:
 	if _fps_label != null:
 		_fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
+	# ETAP 4: HUD licznika wrogów śledzi DYNAMICZNY spawn (regiony aktywują się w czasie).
+	if _spawner != null and _hud != null and _hud.has_method("set_enemy_count"):
+		var n := _spawner.active_count()
+		if n != _enemies_alive:
+			_enemies_alive = n
+			_hud.set_enemy_count(n)
 	if _player_ref == null or _fireflies == null:
 		return
 	var pos := _player_ref.global_position
@@ -549,23 +557,21 @@ func _spawn_player() -> void:
 			_player_ref.read_progression_from_save(sd)
 
 func _spawn_enemies() -> void:
-	# 3 wrogów wokół gracza (offsety 6–10 m). Teren wokół spawnu jest już sprimowany
-	# w _spawn_player(), więc height_at() da grunt; +1 m zapasu na osiadnięcie.
-	var offsets: Array[Vector2] = [
-		Vector2(7.0, 0.0),
-		Vector2(-6.0, 6.0),
-		Vector2(2.0, -9.0),
-	]
-	for off in offsets:
-		var ex := off.x
-		var ez := off.y
-		var e := EnemyScript.new()
-		e.position = Vector3(ex, _world.height_at(ex, ez) + 1.0, ez)
-		add_child(e)
-		e.set_target(_player_ref)
-		e.died.connect(_on_enemy_died)
-		e.loot_dropped.connect(_on_enemy_loot_dropped)   # ETAP 2: spawn LootDrop w świecie
-		_enemies_alive += 1
+	# ETAP 4: DETERMINISTYCZNY spawn wg biomu + seeda (WorldSpawner) zamiast stałego 3×.
+	# Spawner aktywuje regiony wokół gracza z LOKALNEGO RNG (base_seed = RNGService.world_seed()),
+	# dobiera wrogów z BiomeResource.enemy_spawn_table biomu regionu, skaluje ilvl dystansem, i pilnuje
+	# TWARDEGO limitu aktywnych (anti-flood — nie psuje FPS 2A/2B). Sygnały wroga (śmierć/loot) lecą
+	# do tych samych slotów Main co wcześniej (HUD licznik + spawn LootDrop). Teren wokół spawnu jest
+	# już sprimowany w _spawn_player(), więc pierwsze regiony mają grunt pod height_at().
+	_spawner = WorldSpawner.new()
+	_spawner.name = "WorldSpawner"
+	add_child(_spawner)
+	_spawner.setup(_world, _player_ref,
+		Callable(self, "_on_enemy_died"),
+		Callable(self, "_on_enemy_loot_dropped"))
+	# Pierwszy tick natychmiast (zamiast czekać TICK_INTERVAL) — gracz od razu ma towarzystwo.
+	_spawner._update_regions()
+	_enemies_alive = _spawner.active_count()
 
 func _setup_hud() -> void:
 	# --- Stara podpowiedź ze sterowaniem (przeniesiona na dół, by nie kryła pasków) ---
@@ -655,9 +661,15 @@ func _on_player_died() -> void:
 			_player_ref.respawn()
 	)
 
-# Wróg zginął: dekrementuj licznik, przyznaj XP graczowi (ETAP 3) i odśwież HUD.
+# Wróg zginął: zsynchronizuj licznik z aktywnymi w spawnerze (ETAP 4 — spawn jest dynamiczny,
+# nie stała trójka), przyznaj XP graczowi (ETAP 3) i odśwież HUD.
 func _on_enemy_died(e: Enemy) -> void:
-	_enemies_alive = maxi(0, _enemies_alive - 1)
+	# Spawner dekrementuje swój licznik w SWOIM _on_enemy_died; tu czytamy go po fakcie. Sygnał
+	# spawnera podpięty PRZED tym callbackiem (connect kolejnościowo), więc active_count() już aktualny.
+	if _spawner != null:
+		_enemies_alive = _spawner.active_count()
+	else:
+		_enemies_alive = maxi(0, _enemies_alive - 1)
 	if _hud != null and _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
 	# ETAP 3: XP za zabicie wroga (hook smierci -> grant_xp). Skala wg HP (goblin HP 30 -> 12 XP).

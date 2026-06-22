@@ -156,8 +156,10 @@ func drop_for(enemy: Node) -> Array:
 
 	# --- Item(y) ---
 	# Z tabeli: szansa per-wpis pominieta (vertical slice) — losujemy 1 item z rarity_weights.
-	# Magic find (gracza) podbija rzadkosc — czytane z autorytetu, jesli dostepne.
-	var rarity := _roll_rarity(table, _player_magic_find())
+	# Magic find (gracza) podbija rzadkosc — czytane z autorytetu, jesli dostepne. ETAP 4: do magic
+	# find DODAJEMY premie z loot_tier biomu wroga (_enemy_loot_tier_bonus) — bogatszy biom (ember/
+	# frost) realnie czesciej dropi wyzsza rzadkosc, nie tylko deklaratywnie (review #MAJOR).
+	var rarity := _roll_rarity(table, _player_magic_find() + _enemy_loot_tier_bonus(enemy))
 	if rarity >= 0:
 		var slot := _roll_slot(table)
 		var base_id := _roll_base_id(table, slot)
@@ -343,6 +345,18 @@ func _enemy_biome(enemy: Node) -> StringName:
 	if enemy != null and "loot_biome" in enemy and StringName(enemy.loot_biome) != &"":
 		return StringName(enemy.loot_biome)
 	return &"verdant"
+
+
+## ETAP 4: premia rzadkosci z loot_tier biomu wroga jako wspolczynnik typu "magic find".
+## enemy.loot_tier_bonus to (BiomeResource.loot_tier - 1): 0 verdant / 1 ember / 2 frost. Mnoznik
+## BIOME_TIER_MF na stopien przeklada to na to samo przesuniecie wag co magic_find w _roll_rarity,
+## wiec frost (bonus 2) realnie czesciej dropi wyzsza rzadkosc niz verdant (bonus 0). Bezpieczne 0.0.
+const BIOME_TIER_MF: float = 0.5
+
+func _enemy_loot_tier_bonus(enemy: Node) -> float:
+	if enemy != null and "loot_tier_bonus" in enemy:
+		return maxf(0.0, float(enemy.loot_tier_bonus)) * BIOME_TIER_MF
+	return 0.0
 
 
 ## Magic find lokalnego gracza (jesli osiagalny przez GameState). Bezpieczne 0.0 gdy brak.

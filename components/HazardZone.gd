@@ -84,9 +84,15 @@ func _refresh_color() -> void:
 
 
 ## Uzbraja telegraf: preview -> aktywna strefa (wlacza monitorowanie + obrazenia).
+## UWAGA (review #minor): jesli strefa nie ma waznego _hit_builder, po uzbrojeniu _do_tick nie zada
+## obrazen (is_valid()==false). Telegrafy elite/boss z Enemy._spawn_telegraph sa CZYSTO WIZUALNE
+## (dmg idzie hitboxem/Projectile) i NIE wolno ich arm() — ostrzegamy, by ewentualne przyszle
+## uzycie arm() na takim telegrafie nie "zjadlo" ciosu po cichu.
 func arm() -> void:
 	if not preview:
 		return
+	if not _hit_builder.is_valid():
+		push_warning("HazardZone.arm() bez waznego hit_builder — strefa nie zada obrazen (telegraf czysto wizualny?).")
 	preview = false
 	monitoring = true
 	_age = 0.0

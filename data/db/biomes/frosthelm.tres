@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="BiomeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/BiomeResource.gd" id="1_biome"]
+
+[resource]
+script = ExtResource("1_biome")
+id = &"frosthelm"
+display_name = "Frosthelm Peaks"
+loot_tier = 3
+enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"frost_slinger",
+"weight": 4.0,
+"max_alive": 4
+}, {
+"enemy_id": &"slinger",
+"weight": 2.0,
+"max_alive": 3
+}, {
+"enemy_id": &"frost_brute",
+"weight": 1.5,
+"max_alive": 1
+}])
+affix_themes = Array[StringName]([&"icy", &"stormy", &"of_shadow", &"of_mage"])
+entrance_chance = 0.03
+fog_color = Color(0.78, 0.85, 0.95, 1.0)
+ambient_light = Color(0.75, 0.82, 0.95, 1.0)

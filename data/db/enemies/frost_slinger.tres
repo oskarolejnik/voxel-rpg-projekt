@@ -1,0 +1,37 @@
+[gd_resource type="Resource" script_class="EnemyResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatBlock.gd" id="1_stat"]
+[ext_resource type="Script" path="res://data/resources/EnemyResource.gd" id="2_enemy"]
+[ext_resource type="Resource" path="res://data/db/enemies/goblin_loot.tres" id="3_loot"]
+
+[sub_resource type="Resource" id="StatBlock_frost_slinger"]
+script = ExtResource("1_stat")
+max_hp = 55.0
+damage = 16.0
+attack_speed = 0.45
+armor = 0.0
+move_speed = 3.0
+
+[resource]
+script = ExtResource("2_enemy")
+id = &"frost_slinger"
+display_name = "Wraith Mrozny"
+stats = SubResource("StatBlock_frost_slinger")
+loot_table = ExtResource("3_loot")
+xp_reward = 36
+ai_profile = &"ranged"
+threat_tier = &"elite"
+biomes = Array[StringName]([&"frosthelm"])
+variant_meta = {
+"attack_windup": 0.55,
+"attack_range": 12.0,
+"attack_entry_delay": 0.45,
+"projectile_speed": 15.0,
+"projectile_gravity": 0.0,
+"projectile_pierce": 0,
+"aggro_radius": 17.0,
+"leash_radius": 26.0,
+"element": &"frost",
+"skin_tint": Color(0.6, 0.78, 0.95, 1.0),
+"eye_tint": Color(0.5, 0.8, 1.0, 1.0)
+}

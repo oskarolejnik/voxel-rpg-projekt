@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="EnemyResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatBlock.gd" id="1_stat"]
+[ext_resource type="Script" path="res://data/resources/EnemyResource.gd" id="2_enemy"]
+[ext_resource type="Resource" path="res://data/db/enemies/goblin_loot.tres" id="3_loot"]
+
+[sub_resource type="Resource" id="StatBlock_brute"]
+script = ExtResource("1_stat")
+max_hp = 120.0
+damage = 18.0
+attack_speed = 0.5
+armor = 0.3
+move_speed = 2.8
+
+[resource]
+script = ExtResource("2_enemy")
+id = &"brute"
+display_name = "Brutal"
+stats = SubResource("StatBlock_brute")
+loot_table = ExtResource("3_loot")
+xp_reward = 48
+ai_profile = &"melee"
+threat_tier = &"elite"
+biomes = Array[StringName]([&"verdant"])
+variant_meta = {
+"attack_windup": 0.55,
+"attack_range": 2.4,
+"attack_entry_delay": 0.45,
+"body_scale": 1.45,
+"aggro_radius": 13.0,
+"leash_radius": 20.0
+}
