@@ -643,15 +643,21 @@ func _emit_face(st: SurfaceTool, pos: Vector3i, face_index: int, base_color: Col
 ## Kolor stałego bloku: baza z palety + gradient trawy (wysokość) + dodatkowy „akwarelowy”
 ## rozsyp na kanale G dla roślin + deterministyczna mikro-wariacja per blok.
 func _solid_color(world: VoxelWorld, t: int, x: int, y: int, z: int) -> Color:
+	var wx := _coord.x * CHUNK_SIZE + x
+	var wz := _coord.y * CHUNK_SIZE + z
 	var base := Blocks.color_of(t)
 
 	# Gradient trawy nizina -> wyżyna (kotwice z Blocks; progi z JEDNEGO źródła prawdy).
 	if t == Blocks.Type.GRASS:
 		var f := clampf(float(y - BEACH_MAX_Y) / float(ROCK_MIN_Y - BEACH_MAX_Y), 0.0, 1.0)
 		base = Blocks.GRASS_LOW.lerp(Blocks.GRASS_HIGH, f)
+		# Regionalny biom koloru (2C): sucha (żółto-zielona) vs bujna (chłodna) łąka.
+		var bf := world.biome_factor(wx, wz)   # [-1,1]
+		if bf < 0.0:
+			base = base.lerp(Blocks.GRASS_DRY, minf(1.0, -bf * 0.7))
+		else:
+			base = base.lerp(Blocks.GRASS_COOL, minf(1.0, bf * 0.55))
 
-	var wx := _coord.x * CHUNK_SIZE + x
-	var wz := _coord.y * CHUNK_SIZE + z
 	var v := world.tint_at(wx, y, wz)   # ~[-0.055, 0.055]
 
 	# Dodatkowy rozsyp na zielonym kanale dla typów roślinnych => „akwarelowa” zieleń.

@@ -41,6 +41,9 @@ const COLORS: Dictionary = {
 # trawę z wysokością. Interpolacja w Chunk._solid_color między BEACH_MAX_Y a ROCK_MIN_Y.
 const GRASS_LOW:  Color = Color(0.42, 0.64, 0.24)   # nizina: cieplejsza, jaśniejsza łąka
 const GRASS_HIGH: Color = Color(0.30, 0.52, 0.30)   # wyżyna: chłodniejsza, ciemniejsza zieleń górska
+# Regionalne warianty łąki (Faza 2C) — biom koloru ze szumu, by świat nie był „jedną zielenią".
+const GRASS_DRY:  Color = Color(0.60, 0.58, 0.26)   # region ciepły/suchy: żółto-zielona łąka
+const GRASS_COOL: Color = Color(0.22, 0.54, 0.34)   # region wilgotny: bujna, chłodniejsza zieleń
 
 # --- Akcenty kolorystyczne drobnych propów (trawa/kwiaty/grzyby — osobny mesh, nie _voxels).
 # Nasycone, ale nie neonowe — pod ACES+glow małe voxele i tak „świecą”.

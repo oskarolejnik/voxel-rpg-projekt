@@ -52,6 +52,7 @@ var _noise: FastNoiseLite
 
 # Drugi, wolniejszy szum do drobnej wariacji koloru (tint per blok).
 var _tint_noise: FastNoiseLite
+var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C)
 
 # Słownik załadowanych chunków: Vector2i (chunk_coord) -> VoxelChunk.
 var _loaded: Dictionary = {}
@@ -94,6 +95,11 @@ func _setup_noise() -> void:
 	_tint_noise.seed = 9001
 	# /2 względem 0.35: ziarno ma przypadać „na voxel”, a voxele są 2× gęstsze.
 	_tint_noise.frequency = 0.175
+
+	_biome_noise = FastNoiseLite.new()
+	_biome_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_biome_noise.seed = 4242
+	_biome_noise.frequency = 0.0025   # duże strefy biomów koloru (anty-powtarzalność)
 
 
 # --- Konfiguracja materiałów ---
@@ -171,6 +177,10 @@ func feature_hash(wx: int, wz: int, salt: int = 0) -> float:
 
 ## Wysokość (Y wierzchu terenu, w metrach) dla pozycji w metrach — do spawnu gracza.
 ## POPRAWNE bez zmian skali: sy rośnie 2× (amplituda ×2), VOXEL_SIZE maleje 2× -> metry stałe.
+## Regionalny współczynnik biomu koloru [-1,1] (niska częstotliwość => duże strefy). Faza 2C.
+func biome_factor(world_x: int, world_z: int) -> float:
+	return _biome_noise.get_noise_2d(float(world_x), float(world_z))
+
 func height_at(x: float, z: float) -> float:
 	var sy := surface_height(int(floor(x)), int(floor(z)))
 	# Wierzch bloku powierzchni = (sy + 1) * VOXEL_SIZE.
