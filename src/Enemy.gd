@@ -36,6 +36,28 @@ signal died(enemy: Enemy)        # emitowany tuż przed queue_free() — Main li
 @export var armor: float = 0.0
 
 # ============================================================================
+#  ETAP 1 — WARIANTY (Brute/Slinger) + droga komponentowa
+# ============================================================================
+# Profil AI / sposób ataku: &"melee" (zwarcie) lub &"ranged" (Slinger — spawnuje pocisk).
+@export var ai_profile: StringName = &"melee"
+# Slinger: prędkość pocisku (m/s) i lekka grawitacja (>0 = łuk; 0 = prosto). Pierce 0 (1 cel).
+@export var projectile_speed: float = 16.0
+@export var projectile_gravity: float = 0.0
+@export var projectile_pierce: int = 0
+# Krytyk pocisku/ciosu wroga (domyślnie bez krytyka — zwykły mob).
+@export var crit_chance: float = 0.0
+@export var crit_mult: float = 1.5
+
+# ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). Gdy z jakiegoś
+# powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + wbudowana maszyna), więc gra działa.
+var _stats: StatsComponent = null               # JEDYNE źródło staty (gdy wpięty)
+var _health: HealthComponent = null             # JEDYNE źródło HP (gdy wpięty); hp niżej je mirroruje
+var _hurtbox: HurtboxComponent = null           # cel hitboxów gracza (Area3D, warstwa enemy_hurtbox)
+var _hitbox: HitboxComponent = null             # okno ataku w zwarciu (Area3D); ranged używa Projectile
+# Maszyna stanów jako komponent (host-only). Gdy null -> używamy wbudowanej maszyny w tym pliku.
+var _ai: AIComponent = null
+
+# ============================================================================
 #  STAN
 # ============================================================================
 enum State { IDLE, PATROL, CHASE, ATTACK }
@@ -85,6 +107,67 @@ func _ready() -> void:
 	_patrol_target = _home
 	_idle_timer = randf_range(1.5, 3.5)
 	_build_body()
+	_build_components()            # ETAP 1: Stats/Health/Hurtbox/Hitbox/AI (droga komponentowa)
+
+# ETAP 1: buduje stos komponentów encji i wpina go w istniejące pola/sygnały.
+# Po tym: HP żyje w HealthComponent (hp mirroruje), trafienia gracza lecą do _hurtbox (Area3D) ->
+# DamageService -> HealthComponent, AI tyka przez AIComponent, atak melee otwiera okno _hitbox.
+func _build_components() -> void:
+	# 1) StatsComponent z base StatBlock zbudowanym z eksportów (jedno źródło staty wroga).
+	_stats = StatsComponent.new()
+	var block := StatBlock.new()
+	block.max_hp = max_hp
+	block.damage = attack_damage
+	block.armor = clampf(armor, 0.0, 1.0)
+	block.crit_chance = crit_chance
+	block.crit_mult = crit_mult
+	block.move_speed = move_speed
+	_stats.base = block
+	add_child(_stats)
+
+	# 2) HealthComponent — JEDYNE źródło HP. Śmierć -> _die (hook pod loot Etap 2). hp mirroruje.
+	_health = HealthComponent.new()
+	add_child(_health)
+	_health.died.connect(_on_health_died)
+	_health.hp_changed.connect(_on_health_hp_changed)
+	hp = _health.current_hp
+
+	# 3) HurtboxComponent (Area3D) — cel hitboxów gracza. Kształt ~ kapsuła ciała.
+	_hurtbox = HurtboxComponent.new()
+	_hurtbox.setup_as_enemy()
+	var hs := CollisionShape3D.new()
+	var hcap := CapsuleShape3D.new()
+	hcap.height = 1.3
+	hcap.radius = 0.45
+	hs.shape = hcap
+	hs.position = Vector3(0.0, 0.65, 0.0)
+	_hurtbox.add_child(hs)
+	add_child(_hurtbox)
+
+	# 4) HitboxComponent (Area3D) — okno ataku w zwarciu (ranged używa Projectile, hitbox nieaktywny).
+	_hitbox = HitboxComponent.new()
+	_hitbox.setup_as_enemy(0.2)                 # wąski łuk z przodu wroga
+	_hitbox.set_hit_builder(func(_t: Node) -> HitData: return _build_hit())
+	var bs := CollisionShape3D.new()
+	var bsph := SphereShape3D.new()
+	bsph.radius = attack_range
+	bs.shape = bsph
+	_hitbox.add_child(bs)
+	add_child(_hitbox)
+
+	# 5) AIComponent — maszyna stanów host-only (refaktor wbudowanej maszyny). Konfiguracja z eksportów.
+	_ai = AIComponent.new()
+	add_child(_ai)
+	_ai.configure({
+		"move_speed": move_speed,
+		"attack_range": attack_range,
+		"aggro_radius": aggro_radius,
+		"leash_radius": leash_radius,
+		"patrol_radius": patrol_radius,
+		"attack_entry_delay": attack_entry_delay,
+		"allegiance_hostile": true,
+	})
+	_ai.set_home(_home)
 
 # ============================================================================
 #  BUDOWA: kolizja + model voxelowy
@@ -199,16 +282,22 @@ func _physics_process(delta: float) -> void:
 		var d := _target.global_position - global_position
 		dist = Vector2(d.x, d.z).length()
 
-	# 4) Wybór stanu + 5) ruch poziomy wg stanu
-	match _state:
-		State.IDLE:
-			_state_idle(delta, has_target, dist)
-		State.PATROL:
-			_state_patrol(delta, has_target, dist)
-		State.CHASE:
-			_state_chase(delta, has_target, dist)
-		State.ATTACK:
-			_state_attack(delta, has_target, dist)
+	# 4) Wybór stanu + 5) ruch poziomy: ETAP 1 deleguje do AIComponent (host-only, TDD 6.2).
+	# W SP NetManager.has_authority(self)==true -> AIComponent.tick() liczy lokalnie; w Etapie 7
+	# klient pomija tick (velocity przyjdzie przez Synchronizer), ale grawitacja/knockback/
+	# move_and_slide nadal działają u niego (płynna interpolacja). Windup ciosu tyka tu zawsze
+	# po stronie autorytetu, niezależnie od przejść stanów AI (czytelny zamach + okno na unik).
+	if NetManager.has_authority(self):
+		if _ai != null:
+			_state = _ai.tick(delta) as State    # mapowanie enum 1:1 (IDLE/PATROL/CHASE/ATTACK)
+			_process_attack_windup(delta, has_target, dist)
+		else:
+			# Fallback gdyby AIComponent nie powstał — wbudowana maszyna (bezpieczeństwo).
+			match _state:
+				State.IDLE:    _state_idle(delta, has_target, dist)
+				State.PATROL:  _state_patrol(delta, has_target, dist)
+				State.CHASE:   _state_chase(delta, has_target, dist)
+				State.ATTACK:  _state_attack(delta, has_target, dist)
 
 	# 5b) Knockback poziomy: doliczamy PO wyborze stanu (stany nadpisują/zerują velocity.x/z),
 	# żeby odrzut był widoczny mimo logiki AI. Wygaszamy go przez move_toward co klatkę.
@@ -224,6 +313,64 @@ func _physics_process(delta: float) -> void:
 
 	# 7) Ruch z kolizją
 	move_and_slide()
+
+# ============================================================================
+#  ETAP 1 — KONTRAKT AIComponent (encja = "ciało", AIComponent = "mózg")
+# ============================================================================
+# AIComponent woła te metody w tick(); cała decyzyjność (stany/leash/histereza) siedzi w komponencie.
+func ai_get_position() -> Vector3:
+	return global_position
+
+func ai_get_target() -> Node3D:
+	return _target if (_target != null and is_instance_valid(_target)) else null
+
+func ai_move_towards(point: Vector3, spd: float) -> void:
+	_move_towards(point, spd)
+
+func ai_stop() -> void:
+	velocity.x = 0.0
+	velocity.z = 0.0
+
+func ai_face(dir: Vector3) -> void:
+	if dir.length() > 0.01:
+		_face_dir = dir.normalized()
+
+# Czy CD ataku zszedł i nie trwa już cykl zamachu (windup). AIComponent pyta przed ai_attack().
+func ai_can_attack() -> bool:
+	return not _attacking and _attack_timer <= 0.0
+
+# Inicjuje cykl ataku: melee -> windup -> okno hitboxa; ranged i tak idzie windup -> Projectile.
+# Faktyczne zadanie obrażeń dzieje się po windupie w _process_attack_windup (czytelny zamach).
+func ai_attack(target: Node3D) -> void:
+	if _attacking or _attack_timer > 0.0:
+		return
+	if target != null and is_instance_valid(target):
+		_target = target
+	_attacking = true
+	_windup_timer = attack_windup
+
+# Tyka windup ataku po stronie autorytetu; po jego zejściu zadaje cios (melee = okno hitboxa,
+# ranged = Projectile). Histereza zasięgu *1.3 jak dawniej — gracz może odskoczyć w trakcie windupu.
+func _process_attack_windup(delta: float, has_target: bool, dist: float) -> void:
+	if not _attacking:
+		return
+	_windup_timer -= delta
+	if _windup_timer > 0.0:
+		return
+	# Windup zakończony — zadaj cios, jeśli cel nadal w zasięgu (mógł odskoczyć).
+	if has_target and dist <= attack_range * 1.3:
+		if ai_profile == &"ranged":
+			_spawn_projectile()
+		else:
+			# Melee: otwórz okno hitboxa (Area3D) skierowane na cel. Hitbox zbierze ciało/hurtbox
+			# gracza i wywoła DamageService (jedno źródło). Fallback bez hitboxa: bezpośredni request.
+			if _hitbox != null:
+				_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
+				_hitbox.open_window(0.12, _face_dir)
+			elif _target != null and is_instance_valid(_target):
+				DamageService.request_hit(self, _target, _build_hit())
+	_attacking = false
+	_attack_timer = attack_cooldown
 
 # --- IDLE: stoi, tyka licznik, potem PATROL. Aggro → CHASE. ---
 func _state_idle(delta: float, has_target: bool, dist: float) -> void:
@@ -304,8 +451,12 @@ func _state_attack(delta: float, has_target: bool, dist: float) -> void:
 		_windup_timer -= delta
 		if _windup_timer <= 0.0:
 			# Zadaj dmg TYLKO jeśli gracz nadal w zasięgu (mógł odskoczyć). Histereza *1.3.
-			if dist <= attack_range * 1.3 and _target.has_method("take_damage"):
-				_target.take_damage(attack_damage, self)
+			# ETAP 1: melee przez DamageService (host-authoritative, TDD 4); ranged spawnuje pocisk.
+			if dist <= attack_range * 1.3:
+				if ai_profile == &"ranged":
+					_spawn_projectile()
+				elif _target != null and is_instance_valid(_target):
+					DamageService.request_hit(self, _target, _build_hit())
 			_attacking = false
 			_attack_timer = attack_cooldown
 
@@ -395,32 +546,107 @@ func _animate_legs(delta: float, hspeed: float) -> void:
 # ============================================================================
 #  HP, OBRAŻENIA, ŚMIERĆ
 # ============================================================================
-func take_damage(amount: float, from: Node = null) -> void:
-	if hp <= 0.0:
+# ETAP 1: take_damage to teraz HOOK FX + (fallback) HP. DamageService woła go z amount=0, gdy HP
+# liczy HealthComponent (FX-only: knockback/flash/wybudzenie AI bez podwójnego odejmowania HP).
+# Bezpośrednie wywołanie (np. test) z amount>0 i wpiętym HealthComponent kieruje obrażenia do
+# komponentu (jedno źródło HP). knockback>=0 nadpisuje knockback_force (siła per-cios z HitData).
+func take_damage(amount: float, from: Node = null, knockback: float = -1.0) -> void:
+	if is_dead():
 		return
-	hp -= amount
-	_flash_timer = hit_flash_time          # mignięcie na biało (w _process)
 
-	# Trafienie wybudza wroga do pościgu, nawet jeśli źródło poza aggro.
+	# FX/zachowanie: błysk + wybudzenie AI do pościgu (nawet gdy źródło poza aggro).
+	_flash_timer = hit_flash_time
 	if from != null and from is Node3D:
 		_target = from as Node3D
+	if _ai != null:
+		_ai.wake_to_chase()
 	if _state == State.IDLE or _state == State.PATROL:
 		_state = State.CHASE
 
-	# Odrzut: w kierunku OD źródła trafienia (XZ) + lekkie podbicie.
-	# Ustawiamy gasnący wektor _knockback (nie velocity wprost), bo w następnej klatce
-	# match _state nadpisałby velocity (CHASE→ku graczowi, IDLE/PATROL/ATTACK→zero) i odrzut
-	# byłby niewidoczny. _physics_process dolicza _knockback PO wyborze stanu i wygasza go.
+	# Odrzut: w kierunku OD źródła (XZ) + lekkie podbicie. Siła z HitData (knockback>=0) lub eksport.
+	# Gasnący wektor _knockback (nie velocity wprost) — _physics_process dolicza go PO wyborze stanu.
 	if from != null and from is Node3D:
 		var away := global_position - (from as Node3D).global_position
 		away.y = 0.0
 		if away.length() > 0.01:
-			_knockback = away.normalized() * knockback_force
+			var force := knockback if knockback >= 0.0 else knockback_force
+			_knockback = away.normalized() * force
 			_knockback.y = 3.0         # jednorazowy impuls w górę (zerowany po doliczeniu)
 
+	# HP: gdy wpięty HealthComponent — to ON liczy HP/śmierć (DoD). amount>0 kierujemy do niego
+	# (bezpośrednie wywołania działają), amount==0 to czysty hook FX (DamageService już odjął HP).
+	if _health != null:
+		if amount > 0.0:
+			_health.apply_damage(amount, from)
+		return
+	# Fallback (brak HealthComponent): klasyczne odejmowanie HP w tym pliku.
+	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0:
 		_die()
 
+# Czy wróg jest martwy — jedno źródło prawdy (HealthComponent jeśli wpięty, inaczej hp/flaga).
+func is_dead() -> bool:
+	if _health != null:
+		return _health.is_dead
+	return hp <= 0.0
+
+var _dead_emitted: bool = false
+
+# Mostek z HealthComponent: HP zmienione -> mirror do publicznego pola hp (HUD/AI/gracz czytają hp).
+func _on_health_hp_changed(current: float, _maximum: float) -> void:
+	hp = current
+
+# Śmierć przez HealthComponent -> wspólna ścieżka _die (idempotentna).
+func _on_health_died(_from: Node) -> void:
+	_die()
+
 func _die() -> void:
-	died.emit(self)          # Main/świat policzy ubitych
+	if _dead_emitted:
+		return                # idempotencja: HealthComponent.died + ewentualny fallback nie dublują
+	_dead_emitted = true
+	hp = 0.0
+	died.emit(self)          # Main/świat policzy ubitych (hook pod loot Etap 2)
 	queue_free()
+
+# ============================================================================
+#  ETAP 1 — HitData wroga + Slinger (pocisk)
+# ============================================================================
+
+# Buduje HitData ciosu/pocisku wroga (przez StatsComponent jeśli wpięty, inaczej eksporty).
+func _build_hit() -> HitData:
+	var hit := HitData.new()
+	hit.source = self
+	hit.base_damage = _stat(&"damage", attack_damage)
+	hit.crit_chance = crit_chance
+	hit.crit_mult = crit_mult
+	hit.knockback = knockback_force
+	# typed: HitData.tags to Array[StringName] (4.x strict — literal/ternary daje goly Array).
+	var t: Array[StringName] = []
+	t.append(&"ranged" if ai_profile == &"ranged" else &"melee")
+	hit.tags = t
+	return hit
+
+func _stat(key: StringName, fallback: float) -> float:
+	if _stats != null:
+		return _stats.get_stat(key)
+	return fallback
+
+# Slinger: spawnuje Projectile lecący w stronę celu. CCD pociska sam liczy trafienie/teren przez
+# DamageService (jedno źródło obrażeń). Maska: teren | ciało gracza (warstwa 2).
+func _spawn_projectile() -> void:
+	if _target == null or not is_instance_valid(_target):
+		return
+	var proj := Projectile.new()
+	var origin := global_position + Vector3(0.0, 1.0, 0.0)         # z wysokości tułowia
+	var aim: Vector3 = (_target as Node3D).global_position + Vector3(0.0, 0.9, 0.0)
+	var dir := (aim - origin)
+	var mask := (1 << 0) | (1 << 1)                                # teren | ciało gracza
+	# Builder HitData per cel (Projectile woła go przy trafieniu) — domknięcie na self.
+	proj.setup(self, dir, projectile_speed, func(_t: Node) -> HitData: return _build_hit(),
+		mask, projectile_gravity, projectile_pierce)
+	proj.global_position = origin
+	# Dodaj do drzewa świata (rodzic Enemy = Main/świat), żeby pocisk żył niezależnie od wroga.
+	var parent := get_parent()
+	if parent != null:
+		parent.add_child(proj)
+		proj.global_position = origin

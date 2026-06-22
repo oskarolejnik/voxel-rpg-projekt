@@ -217,6 +217,35 @@ var _shake_time: float = 0.0
 var _shake_noise: FastNoiseLite
 var _was_on_floor: bool = true
 var _hitstop_active: bool = false
+var _local_freeze_t: float = 0.0                # co-op: lokalny freeze-frame pozy ataku (s, w _process)
+
+# --- ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). ---
+# Gdy z jakiegoś powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + ręczna pętla), więc
+# gra pozostaje grywalna. Ścieżka docelowa: AbilityComponent -> HitboxComponent -> DamageService ->
+# HurtboxComponent(wroga) -> HealthComponent(wroga); a obrażenia gracza wchodzą jego HealthComponent.
+var _stats: StatsComponent = null               # JEDYNE źródło staty (gdy wpięte)
+var _health: HealthComponent = null             # JEDYNE źródło HP gracza (gdy wpięte); hp mirroruje
+var _hurtbox: HurtboxComponent = null           # cel hitboxów wroga (Area3D, warstwa player_body)
+var _hitbox: HitboxComponent = null             # okno ataku LMB (Area3D) zamiast ręcznej pętli dot()
+var _ability: AbilityComponent = null           # wykonuje atak/dash jako SkillResource (bufor/cancel)
+var _skill_attack: SkillResource = null         # podstawowy atak (LMB)
+var _skill_dash: SkillResource = null           # unik (RMB/Q)
+var _dead_emitted: bool = false                 # idempotencja śmierci (HealthComponent.died + fallback)
+
+# --- ETAP 1: bufor inputu ataku/uniku (ROADMAP 4 krok 3) ---
+@export var attack_buffer_time: float = 0.18    # s: klik LMB tuż przed końcem CD zostaje zapamiętany
+@export var dodge_buffer_time: float = 0.18     # s: klik uniku w trakcie ataku/CD zostaje zapamiętany
+var _attack_buffered: float = 0.0               # >0 = zakolejkowany atak
+var _dodge_buffered: float = 0.0                # >0 = zakolejkowany unik
+
+# --- ETAP 1: perfect-dodge (ROADMAP 6: okno 0.12s -> lokalny bullet-time + premia) ---
+@export var perfect_dodge_window: float = 0.12  # s od startu uniku, w których trafienie = perfect
+@export var perfect_dodge_slowmo: float = 0.35  # time_scale lokalnego bullet-time (SP)
+@export var perfect_dodge_slowmo_time: float = 0.35  # s trwania bullet-time (realny czas)
+@export var perfect_dodge_pierce_bonus: float = 0.5  # +50% przebicia na następny cios po perfect
+var _dodge_active_t: float = 0.0                # ile czasu już trwa bieżący unik (do okna perfect)
+var _perfect_bonus_next: bool = false           # następny cios dostaje premię za perfect-dodge
+signal perfect_dodge()                          # HUD/FX: udany perfect-dodge
 
 # --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
 @export var base_fov: float = 75.0          # bazowe FOV kamery
@@ -249,11 +278,90 @@ func _ready() -> void:
 	# Punkt odrodzenia = miejsce startu. Main ustawia position PRZED add_child, więc w _ready()
 	# global_position jest już poprawne (na terenie z 2 m zapasu). Main może to też nadpisać.
 	respawn_point = global_position
+	_build_components()              # ETAP 1: Stats/Health/Hurtbox/Hitbox/Ability (droga komponentowa)
 	# Emisja startowa w call_deferred — HUD podłącza sygnały dopiero po _ready() gracza.
 	call_deferred("emit_signal", "hp_changed", hp, max_hp)
 	call_deferred("emit_signal", "stamina_changed", stamina, max_stamina)
 
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # chowamy i łapiemy kursor
+
+# ETAP 1: buduje stos komponentów gracza i wpina go w istniejące pola/sygnały. Po tym:
+# HP żyje w HealthComponent (hp mirroruje), atak LMB idzie AbilityComponent -> HitboxComponent
+# (Area3D) -> DamageService -> Hurtbox/HealthComponent wroga, a obrażenia gracza wchodzą jego
+# HealthComponent. Gdyby coś nie powstało, fallbacki w _try_attack/take_damage trzymają grę.
+func _build_components() -> void:
+	# 1) StatsComponent z base StatBlock z eksportów gracza (jedno źródło staty; krytyk wg GDD 6).
+	_stats = StatsComponent.new()
+	var block := StatBlock.new()
+	block.max_hp = max_hp
+	block.max_stamina = max_stamina
+	block.stamina_regen = stamina_regen
+	block.damage = attack_damage
+	block.attack_speed = 1.0 / maxf(0.01, attack_cooldown)
+	block.crit_chance = 0.05                       # GDD/ROADMAP 6: gracz lvl 1 = 5% / x1.5
+	block.crit_mult = 1.5
+	block.move_speed = speed
+	block.area_radius = attack_range
+	block.dodge_iframes = dodge_iframes
+	_stats.base = block
+	add_child(_stats)
+
+	# 2) HealthComponent — JEDYNE źródło HP gracza. Śmierć -> _die; HP -> mirror do pola hp + HUD.
+	_health = HealthComponent.new()
+	add_child(_health)
+	_health.damage_gate = _damage_gate          # i-frames/perfect-dodge wetują cios (HP nietknięte)
+	_health.died.connect(_on_health_died)
+	_health.hp_changed.connect(_on_health_hp_changed)
+	hp = _health.current_hp
+
+	# 3) HurtboxComponent (Area3D) — cel hitboxów wroga (warstwa player_body). Kształt ~ kapsuła gracza.
+	_hurtbox = HurtboxComponent.new()
+	_hurtbox.setup_as_player()
+	var hs := CollisionShape3D.new()
+	var hcap := CapsuleShape3D.new()
+	hcap.height = 1.6
+	hcap.radius = 0.45
+	hs.shape = hcap
+	hs.position = Vector3(0.0, 0.9, 0.0)
+	_hurtbox.add_child(hs)
+	add_child(_hurtbox)
+
+	# 4) HitboxComponent (Area3D) — okno ataku LMB. Łuk = attack_arc_dot (reuse). set_hit_builder
+	#    wstrzykuje _build_hit (combo->przebicie/krytyk/lifesteal liczone ze STATSCOMPONENT gracza).
+	#    Juice (combo/hitstop/trauma) odpalamy z sygnałów hit_landed/window_ended (nie z pętli).
+	_hitbox = HitboxComponent.new()
+	_hitbox.setup_as_player(attack_arc_dot)
+	_hitbox.set_hit_builder(func(_t: Node) -> HitData: return _build_hit())
+	var bs := CollisionShape3D.new()
+	var bsph := SphereShape3D.new()
+	bsph.radius = attack_range
+	bs.shape = bsph
+	_hitbox.add_child(bs)
+	add_child(_hitbox)
+	_hitbox.hit_landed.connect(_on_hitbox_hit_landed)
+	_hitbox.window_ended.connect(_on_hitbox_window_ended)
+
+	# 5) AbilityComponent — wykonuje atak/dash jako SkillResource (bufor + cancel w komponencie).
+	#    LMB/dash przechodzą przez try_use() -> perform_skill (encja deleguje wykonanie). To literalna
+	#    ścieżka DoD: AbilityComponent -> HitboxComponent (perform_skill atak otwiera okno hitboxa).
+	_ability = AbilityComponent.new()
+	add_child(_ability)
+	_ability.resource_pool = func(name: StringName) -> float:
+		return stamina if name == &"stamina" else 0.0
+	_ability.resource_spend = func(name: StringName, amount: float) -> void:
+		if name == &"stamina":
+			stamina = maxf(0.0, stamina - amount)
+			_stamina_idle = 0.0
+			stamina_changed.emit(stamina, max_stamina)
+	_ability.perform_skill = _perform_skill
+	_skill_attack = SkillResource.new()
+	_skill_attack.id = &"basic_attack"
+	_skill_attack.cooldown = attack_cooldown
+	_skill_dash = SkillResource.new()
+	_skill_dash.id = &"dash"
+	_skill_dash.cooldown = dodge_cooldown
+	_skill_dash.cost_resource = &"stamina"
+	_skill_dash.cost_amount = dodge_stamina_cost
 
 # ============================================================================
 #  WYLICZENIE PROPORCJI: pivoty + skala VS z parametrów P_* (wołane w _ready
@@ -1002,9 +1110,16 @@ func _physics_process(delta: float) -> void:
 	_attack_cd      = maxf(0.0, _attack_cd - delta)
 	_dodge_cd       = maxf(0.0, _dodge_cd - delta)
 	_iframes        = maxf(0.0, _iframes - delta)
-	_attack_anim_t  = maxf(0.0, _attack_anim_t - delta)
-	if _attack_anim_t <= 0.0:
-		is_attacking = false
+	# ETAP 1 (krok 4): LOKALNY freeze-frame co-opu. Gdy aktywny (_local_freeze_t>0, ustawiany w
+	# _hitstop/_on_perfect_dodge na drodze has_network()==true), ZAMRAŻAMY pozę zamachu: nie
+	# dekrementujemy postępu animacji ataku (_attack_anim_t stoi), więc ramię zastyga na klatce
+	# trafienia. Ruch poziomy gracza też wstrzymujemy niżej (velocity.x/z=0). W SP ta gałąź jest
+	# nieaktywna (tam globalny Engine.time_scale daje bezczas — patrz _hitstop()).
+	var _frozen := _local_freeze_t > 0.0
+	if not _frozen:
+		_attack_anim_t  = maxf(0.0, _attack_anim_t - delta)
+		if _attack_anim_t <= 0.0:
+			is_attacking = false
 	if _combo_timer > 0.0:
 		_combo_timer = maxf(0.0, _combo_timer - delta)
 		if _combo_timer == 0.0:
@@ -1012,6 +1127,7 @@ func _physics_process(delta: float) -> void:
 			combo_changed.emit(_combo_count)   # HUD: schowaj "Combo xN"
 	if _dodge_t > 0.0:
 		_dodge_t = maxf(0.0, _dodge_t - delta)
+		_dodge_active_t += delta          # ETAP 1: czas trwania uniku (do okna perfect-dodge)
 		if _dodge_t == 0.0:
 			is_dodging = false
 	# Obsługa KEY_Q jako alternatywy uniku (debounce) — tylko gdy kursor złapany.
@@ -1019,6 +1135,21 @@ func _physics_process(delta: float) -> void:
 	if q_down and not _q_was_down:
 		_try_dodge()
 	_q_was_down = q_down
+
+	# ETAP 1: BUFOR inputu (ROADMAP 4 krok 3). Klik tuż przed końcem CD/ataku zostaje zapamiętany
+	# i odpalany, gdy tylko okno się otworzy — koniec „połykania" inputu na styku akcji.
+	if _local_freeze_t > 0.0:
+		_local_freeze_t = maxf(0.0, _local_freeze_t - delta)
+	if _dodge_buffered > 0.0:
+		_dodge_buffered = maxf(0.0, _dodge_buffered - delta)
+		if _dodge_buffered > 0.0 and _can_dodge():
+			_dodge_buffered = 0.0
+			_try_dodge()
+	if _attack_buffered > 0.0:
+		_attack_buffered = maxf(0.0, _attack_buffered - delta)
+		if _attack_buffered > 0.0 and _can_attack():
+			_attack_buffered = 0.0
+			_try_attack()
 
 	# 1) Grawitacja (mocniejsza przy opadaniu — mniej „księżycowy" skok)
 	if not is_on_floor():
@@ -1069,6 +1200,14 @@ func _physics_process(delta: float) -> void:
 	_move_vel.z = move_toward(_move_vel.z, direction.z * current_speed, accel * delta)
 	velocity.x = _move_vel.x + _knockback.x
 	velocity.z = _move_vel.z + _knockback.z
+	# ETAP 1 (krok 4): podczas LOKALNEGO freeze-frame (co-op) wstrzymujemy WŁASNĄ lokomocję, żeby
+	# bezczas był odczuwalny u nas, nie zamrażając całego świata globalnym time_scale. Grawitacja i
+	# knockback (niżej) działają dalej; dash (perfect-dodge) celowo dozwolony jako nagroda ruchowa.
+	if _frozen and _dodge_t <= 0.0:
+		_move_vel.x = 0.0
+		_move_vel.z = 0.0
+		velocity.x = _knockback.x
+		velocity.z = _knockback.z
 
 	# (AUTO-STEP wykonujemy PO move_and_slide — _try_step_up() algorytmem góra->przód->dół.
 	#  Niezawodne wchodzenie na schodki voxela 0,5 m bez skakania, BEZ wspinania po ścianach.)
@@ -1153,70 +1292,151 @@ func _try_step_up(dir: Vector3, spd: float, delta: float) -> void:
 #  WALKA — ATAK
 # ============================================================================
 
+# Czy można TERAZ zaatakować (CD zszedł, nie martwy, nie w uniku).
+func _can_attack() -> bool:
+	return not is_dead and _attack_cd <= 0.0 and not is_dodging
+
+# Czy można TERAZ wykonać unik (CD, nie martwy, nie w uniku, jest stamina).
+func _can_dodge() -> bool:
+	return not is_dead and _dodge_cd <= 0.0 and not is_dodging and stamina >= dodge_stamina_cost
+
 func _try_attack() -> void:
-	if is_dead or _attack_cd > 0.0 or is_dodging:
+	if is_dead:
+		return
+	if not _can_attack():
+		# ETAP 1: nie teraz -> buforuj (odpali się, gdy CD zejdzie / unik się skończy).
+		if not is_dodging:                 # w trakcie uniku nie kolejkujemy ataku (unik = ucieczka)
+			_attack_buffered = attack_buffer_time
 		return
 	_attack_cd = attack_cooldown
 	_attack_anim_t = attack_anim_time   # start animacji zamachu
 	is_attacking = true
 
 	# WARIANT A (rekomendacja): pierwszy cios serii już z 15% przebicia.
-	# Inkrement combo PRZED pętlą trafień (pudło zresetuje go do 0 poniżej).
+	# Inkrement combo PRZED oknem trafień (pudło zresetuje go do 0 w _on_hitbox_window_ended).
 	_combo_count += 1
+	combo_changed.emit(_combo_count)      # HUD: pokaż "Combo xN" (reset przy pudle po oknie)
 
 	# Cios idzie TAM, GDZIE PATRZY KAMERA (yaw pivota), nie w kierunku modelu.
-	# Model obraca się do kamery dopiero przez kolejne klatki (lerp w _process), więc
-	# liczenie trafienia z forward modelu pudłowało, gdy gracz stał i obrócił kamerę
-	# na wroga. Liczymy forward z yaw kamery — natychmiast celne. Dla spójności wizualnej
-	# od razu ustawiamy yaw modelu na yaw kamery (animacja zamachu startuje "w stronę celu").
+	# Model obraca się do kamery dopiero przez kolejne klatki (lerp w _process), więc filtr łuku
+	# liczymy z yaw kamery — natychmiast celny. Dla spójności wizualnej od razu ustawiamy yaw modelu.
 	var fyaw := _pivot.rotation.y
 	var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
 	_model.rotation.y = fyaw
-	var origin := global_position
 
+	# ETAP 1 (DoD): atak idzie ścieżką AbilityComponent -> HitboxComponent -> DamageService ->
+	# Hurtbox/HealthComponent wroga. _perform_skill() ustawia hitbox i otwiera okno z kierunkiem
+	# `forward` (filtr łuku). Fallback (brak komponentów) = dawna ręczna pętla dot() w _melee_sweep.
+	if _ability != null and _hitbox != null:
+		_ability.try_use(_skill_attack)
+	else:
+		_melee_sweep(forward)
+
+# perform_skill z AbilityComponent: faktyczne wykonanie skilla deleguje encja (TDD 1.2).
+# Atak -> otwórz okno hitboxa (Area3D) w stronę kamery; dash -> uruchom zryw uniku.
+func _perform_skill(skill: SkillResource, _target: Node) -> void:
+	if skill == _skill_attack:
+		var fyaw := _pivot.rotation.y
+		var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+		if _hitbox != null:
+			_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
+			_hitbox.open_window(0.12, forward)   # okno aktywnych klatek; hity przez DamageService
+		else:
+			_melee_sweep(forward)
+	elif skill == _skill_dash:
+		_begin_dash()
+
+# Hitbox trafił cel: juice (combo-okno + hitstop + trauma) raz na klatkę trafienia. HP już zadane
+# przez DamageService z poziomu hitboxa — tu tylko odczucie walki.
+func _on_hitbox_hit_landed(_target: Node) -> void:
+	_combo_timer = combo_window
+	if not _hitstop_active:
+		_hitstop(0.06)
+	add_trauma(0.12)
+
+# Okno hitboxa zamknięte: gdy 0 trafień -> pudło = reset combo (kasuje inkrement z _try_attack).
+func _on_hitbox_window_ended(hit_count: int) -> void:
+	if hit_count <= 0:
+		_combo_count = 0
+		_combo_timer = 0.0
+		combo_changed.emit(_combo_count)
+
+# Fallback ręcznej pętli (gdy komponenty nie powstały) — dawna logika _try_attack jako jedno źródło.
+func _melee_sweep(forward: Vector3) -> void:
+	var origin := global_position
 	var hit_any := false
 	for enemy in get_tree().get_nodes_in_group("enemies"):
 		if not is_instance_valid(enemy) or not (enemy is Node3D):
 			continue
 		var to_enemy: Vector3 = (enemy as Node3D).global_position - origin
-		to_enemy.y = 0.0                  # liczymy w płaszczyźnie (ignoruj różnicę wysokości)
+		to_enemy.y = 0.0
 		var dist := to_enemy.length()
 		if dist > attack_range or dist < 0.05:
 			continue
-		if forward.dot(to_enemy / dist) < attack_arc_dot:   # poza przednim łukiem
+		if forward.dot(to_enemy / dist) < attack_arc_dot:
 			continue
 		_deal_damage_to(enemy)
 		hit_any = true
-
 	if hit_any:
-		_combo_timer = combo_window       # odśwież okno combo
-		_hitstop(0.06)                    # juice: krótki bezczas przy trafieniu
-		add_trauma(0.12)                  # lekki trzask kamery przy trafieniu
+		_combo_timer = combo_window
+		_hitstop(0.06)
+		add_trauma(0.12)
 	else:
-		_combo_count = 0                  # pudło = reset combo (kasuje wcześniejszy inkrement)
+		_combo_count = 0
 		_combo_timer = 0.0
-	combo_changed.emit(_combo_count)      # HUD: pokaż/ukryj "Combo xN"
+		combo_changed.emit(_combo_count)
 
-# Zadaje obrażenia jednemu wrogowi z uwzględnieniem combo→przebicia i jego pancerza.
+# Zadaje obrażenia jednemu wrogowi — ETAP 1: przez DamageService (host-authoritative).
+# Combo→przebicie i krytyk/lifesteal pakujemy w HitData; DamageService liczy pancerz po przebiciu,
+# odporności i krytyk w JEDNYM miejscu (TDD 4). W SP NetManager.has_authority()==true -> rozstrzyga
+# lokalnie, więc odczucie gry jest identyczne jak przy dawnym inline'ie.
 func _deal_damage_to(enemy: Node) -> void:
-	# _combo_count jest już zinkrementowane (wariant A) — pierwszy cios = 15% przebicia.
-	var pierce := minf(armor_pierce_max, float(_combo_count) * armor_pierce_per_combo)
-	var armor := 0.0
-	if "armor" in enemy:                       # wróg może mieć pole 0..1 (% redukcji)
-		armor = clampf(enemy.armor, 0.0, 1.0)
-	var effective_armor := armor * (1.0 - pierce)
-	var dmg := attack_damage * (1.0 - effective_armor)
-	if enemy.has_method("take_damage"):
-		enemy.take_damage(dmg, self)           # kontrakt wroga: take_damage(amount, from)
+	DamageService.request_hit(self, enemy, _build_hit())
+
+# Buduje HitData bieżącego ciosu z combo→przebicia i (jeśli jest) StatsComponent gracza.
+# combo_count jest już zinkrementowane (wariant A) — pierwszy cios = 15% przebicia.
+func _build_hit() -> HitData:
+	var hit := HitData.new()
+	hit.source = self
+	hit.base_damage = _stat(&"damage", attack_damage)
+	var pierce := float(_combo_count) * armor_pierce_per_combo
+	if _perfect_bonus_next:                            # premia za perfect-dodge: +przebicie na 1 cios
+		pierce += perfect_dodge_pierce_bonus
+		_perfect_bonus_next = false
+	hit.armor_pierce = minf(armor_pierce_max, pierce)
+	hit.crit_chance = _stat(&"crit_chance", 0.0)      # 0 gdy brak StatsComponent (zachowanie sprzed Etapu 1)
+	hit.crit_mult = _stat(&"crit_mult", 1.5)
+	hit.lifesteal = _stat(&"lifesteal", 0.0)
+	hit.knockback = 6.0
+	# typed: HitData.tags to Array[StringName] (4.x strict — literal daje goly Array).
+	var t: Array[StringName] = []
+	t.append(&"melee")
+	hit.tags = t
+	return hit
+
+# Odczyt staty przez StatsComponent (jeśli wpięty), inaczej fallback na eksport (Etap 0/1 most).
+func _stat(key: StringName, fallback: float) -> float:
+	if _stats != null:
+		return _stats.get_stat(key)
+	return fallback
 
 # Hitstop (0C): krótki bezczas przy trafieniu — najsilniejszy „juice" walki.
+# ETAP 1 (TDD 6.4): globalny Engine.time_scale ZAMRAŻA wszystkich w co-opie. Dlatego globalny
+# bezczas dozwolony TYLKO w prawdziwym single-player (brak transportu sieciowego). W co-opie
+# robimy „local freeze-frame" — krótkie zamrożenie własnej pozy ataku + trauma kamery (lokalne FX).
 func _hitstop(dur: float) -> void:
 	if _hitstop_active:
 		return
 	_hitstop_active = true
-	Engine.time_scale = 0.05
-	await get_tree().create_timer(dur, true, false, true).timeout  # ignore_time_scale=true (realny czas)
-	Engine.time_scale = 1.0
+	if not NetManager.has_network():
+		# SP: globalny time_scale wolno (nikogo nie zamrażamy poza sobą — jesteśmy sami).
+		Engine.time_scale = 0.05
+		await get_tree().create_timer(dur, true, false, true).timeout  # ignore_time_scale=true (realny czas)
+		Engine.time_scale = 1.0
+	else:
+		# CO-OP: lokalny freeze-frame pozy ataku (nie ruszamy globalnego czasu).
+		_local_freeze_t = dur
+		await get_tree().create_timer(dur, true, false, true).timeout
 	_hitstop_active = false
 
 # ============================================================================
@@ -1224,17 +1444,39 @@ func _hitstop(dur: float) -> void:
 # ============================================================================
 
 func _try_dodge() -> void:
-	if is_dead or _dodge_cd > 0.0 or is_dodging or stamina < dodge_stamina_cost:
+	if is_dead:
 		return
-	stamina -= dodge_stamina_cost
-	_stamina_idle = 0.0
-	stamina_changed.emit(stamina, max_stamina)
-	_dodge_cd = dodge_cooldown
+	if not _can_dodge():
+		# ETAP 1: nie teraz -> buforuj (np. wciśnięty w trakcie ataku, odpali po CD uniku).
+		_dodge_buffered = dodge_buffer_time
+		return
+	# ETAP 1 (DoD): unik jako SkillResource przez AbilityComponent (koszt staminy + CD w komponencie).
+	# perform_skill (_perform_skill) zdeleguje do _begin_dash(). Fallback (brak komponentu) = wprost.
+	if _ability != null and _skill_dash != null:
+		# Koszt/CD pilnuje AbilityComponent (cost_resource=stamina, cooldown=dodge_cooldown). Dodatkowo
+		# trzymamy stary _dodge_cd zsynchronizowany, by _can_dodge() (input gate) działał spójnie.
+		_dodge_cd = dodge_cooldown
+		_ability.try_use(_skill_dash)
+	else:
+		stamina -= dodge_stamina_cost
+		_stamina_idle = 0.0
+		stamina_changed.emit(stamina, max_stamina)
+		_dodge_cd = dodge_cooldown
+		_begin_dash()
+
+# Wykonanie zrywu uniku (ruch + i-frames + perfect-dodge + cancel ataku). Wołane przez
+# AbilityComponent.perform_skill (droga komponentowa) lub bezpośrednio w fallbacku.
+func _begin_dash() -> void:
 	_dodge_t = dodge_time
+	_dodge_active_t = 0.0           # ETAP 1: start okna perfect-dodge
 	_iframes = maxf(_iframes, dodge_iframes)
 	is_dodging = true
-	is_attacking = false           # unik przerywa atak (priorytet ucieczki)
+	# ETAP 1: CANCEL ataku w unik (unik przerywa atak — priorytet ucieczki). Czyści też bufor ataku.
+	is_attacking = false
 	_attack_anim_t = 0.0
+	_attack_buffered = 0.0
+	if _ability != null:
+		_ability.cancel()          # anuluj ewentualny zakolejkowany/trwający atak w AbilityComponent
 
 	# Kierunek: WASD jeśli się ruszasz, inaczej forward modelu; fallback = forward kamery.
 	var dir := _wish_direction()
@@ -1258,22 +1500,58 @@ func _wish_direction() -> Vector3:
 	var yaw := _pivot.rotation.y
 	return Vector3(input_dir.x, 0.0, input_dir.y).rotated(Vector3.UP, yaw)
 
+# ETAP 1: nagroda za perfect-dodge. Bullet-time GLOBALNY tylko w SP (TDD 6.4: w co-opie zamroziłby
+# wszystkich — wtedy lokalny freeze-frame). Premia przebicia leci na następny cios (_build_hit).
+func _on_perfect_dodge() -> void:
+	_perfect_bonus_next = true
+	add_trauma(0.18)
+	perfect_dodge.emit()
+	if _hitstop_active:
+		return
+	_hitstop_active = true
+	if not NetManager.has_network():
+		Engine.time_scale = perfect_dodge_slowmo
+		await get_tree().create_timer(perfect_dodge_slowmo_time, true, false, true).timeout
+		Engine.time_scale = 1.0
+	else:
+		_local_freeze_t = perfect_dodge_slowmo_time
+		await get_tree().create_timer(perfect_dodge_slowmo_time, true, false, true).timeout
+	_hitstop_active = false
+
 # ============================================================================
 #  HP, OBRAŻENIA, ŚMIERĆ, RESPAWN
 # ============================================================================
 
-# PUBLICZNA — wołana przez wrogów: take_damage(amount, from).
-# 'from' to węzeł źródła (Enemy przekazuje self). Z jego pozycji liczymy knockback.
-func take_damage(amount: float, from: Node = null) -> void:
+# ETAP 1: BRAMKA obrażeń wpięta w HealthComponent.damage_gate. Zwraca true -> cios ZABLOKOWANY
+# (HP nietknięte). Trzyma nietykalność gracza (i-frames / perfect-dodge) PRZED HealthComponent,
+# który pozostaje jedynym źródłem HP. Perfect-dodge (cios w oknie 0.12 s aktywnego uniku) odpala
+# nagrodę i też blokuje cios.
+func _damage_gate(_amount: float, _from: Node) -> bool:
+	if is_dead:
+		return true
+	if _iframes > 0.0:
+		if is_dodging and _dodge_active_t <= perfect_dodge_window:
+			_on_perfect_dodge()
+		return true
+	return false
+
+# PUBLICZNA — wołana przez DamageService (FX-only: amount=0 + knockback) i jako fasada (amount>0).
+# 'from' to węzeł źródła. Knockback>=0 nadpisuje hardkod 6.0 (siła per-cios z HitData).
+# i-frames/perfect-dodge oraz odjęcie HP załatwia HealthComponent (przez damage_gate/apply_damage);
+# tu robimy FX (błysk + odrzut) i — w fallbacku bez HealthComponent — klasyczne odjęcie HP.
+func take_damage(amount: float, from: Node = null, knockback: float = -1.0) -> void:
 	if is_dead:
 		return
-	if _iframes > 0.0:        # nietykalność (unik / po respawnie) — ignoruj cios
+	# Gdy HP liczy HealthComponent: i-frames/perfect-dodge sprawdza damage_gate (wywołany z
+	# apply_damage). Tu, dla FX (błysk/odrzut), respektujemy tę samą nietykalność.
+	if _iframes > 0.0:
+		if _health == null and is_dodging and _dodge_active_t <= perfect_dodge_window:
+			_on_perfect_dodge()    # w trybie komponentowym perfect-dodge odpala damage_gate
 		return
-	hp = maxf(0.0, hp - amount)
-	hp_changed.emit(hp, max_hp)
+
 	_flash_hit()              # błysk koloru modelu (czerwień)
 
-	# Knockback: odpychamy w bok OD źródła trafienia (poziomo) + lekko w górę.
+	# Knockback: odpychamy w bok OD źródła trafienia (poziomo) + lekko w górę. Siła z HitData lub 6.0.
 	var src := global_position
 	if from != null and from is Node3D:
 		src = (from as Node3D).global_position
@@ -1282,23 +1560,50 @@ func take_damage(amount: float, from: Node = null) -> void:
 	if dir.length() < 0.01:
 		dir = -global_transform.basis.z    # gdy pozycje się nakładają — pchnij do tyłu
 		dir.y = 0.0
-	_knockback = dir.normalized() * 6.0
+	var force := knockback if knockback >= 0.0 else 6.0
+	_knockback = dir.normalized() * force
 	_knockback.y = 3.0
 
+	# HP: gdy wpięty HealthComponent — to ON liczy HP/śmierć (DoD). amount>0 (bezpośrednie wywołanie)
+	# kierujemy do niego; amount==0 to czysty hook FX (DamageService już zadał obrażenia komponentowi).
+	if _health != null:
+		if amount > 0.0:
+			_health.apply_damage(amount, from)
+		return
+	# Fallback (brak HealthComponent): klasyczne odjęcie HP w tym pliku.
+	hp = maxf(0.0, hp - amount)
+	hp_changed.emit(hp, max_hp)
 	if hp <= 0.0:
 		_die()
 
+# Mostek z HealthComponent: HP zmienione -> mirror do pola hp (HUD/wrogowie czytają hp) + sygnał HUD.
+func _on_health_hp_changed(current: float, _maximum: float) -> void:
+	hp = current
+	hp_changed.emit(hp, max_hp)
+
+# Śmierć przez HealthComponent -> wspólna ścieżka _die.
+func _on_health_died(_from: Node) -> void:
+	_die()
+
 func _die() -> void:
+	if _dead_emitted:
+		return                # idempotencja: HealthComponent.died + ewentualny fallback nie dublują
+	_dead_emitted = true
 	is_dead = true
 	is_attacking = false
 	is_dodging = false
 	_attack_anim_t = 0.0
 	_dodge_t = 0.0
+	hp = 0.0
+	hp_changed.emit(hp, max_hp)
 	died.emit()
 	# Uwaga: faktyczny respawn z opóźnieniem steruje Main (timer + wywołanie respawn()).
 
 func respawn() -> void:
 	is_dead = false
+	_dead_emitted = false
+	if _health != null:
+		_health.revive_full()       # HealthComponent: zdejmij flagę śmierci + pełne HP
 	hp = max_hp
 	stamina = max_stamina
 	velocity = Vector3.ZERO

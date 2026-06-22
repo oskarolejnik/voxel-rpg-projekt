@@ -17,6 +17,11 @@ signal hp_changed(current_hp: float, max_hp: float)
 var current_hp: float = 0.0
 var is_dead: bool = false
 
+## Opcjonalna BRAMKA obrażeń (i-frames/unik/perfect-dodge gracza). func(amount, from) -> bool:
+## zwróć true, by ZABLOKOWAĆ to trafienie (HP nietknięte). Pozwala encji trzymać nietykalność,
+## a HealthComponentowi pozostać JEDYNYM źródłem HP. Pusta -> brak bramki (zawsze przyjmuje cios).
+var damage_gate: Callable = Callable()
+
 var _stats: StatsComponent = null
 
 
@@ -61,6 +66,9 @@ func _on_stats_changed() -> void:
 ## Zadaje obrazenia (juz policzone przez DamageService w Etapie 1). Etap 0: prosta redukcja HP.
 func apply_damage(amount: float, from: Node = null) -> void:
 	if is_dead or amount <= 0.0:
+		return
+	# Bramka nietykalności (i-frames/perfect-dodge): encja może zawetować trafienie (HP nietknięte).
+	if damage_gate.is_valid() and bool(damage_gate.call(amount, from)):
 		return
 	current_hp = maxf(current_hp - amount, 0.0)
 	damaged.emit(amount, from, current_hp)
