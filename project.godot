@@ -8,6 +8,16 @@
 
 config_version=5
 
+[autoload]
+
+NetManager="*res://autoload/NetManager.gd"
+GameState="*res://autoload/GameState.gd"
+RNGService="*res://autoload/RNGService.gd"
+ItemDB="*res://autoload/ItemDB.gd"
+SkillDB="*res://autoload/SkillDB.gd"
+EnemyDB="*res://autoload/EnemyDB.gd"
+SaveManager="*res://autoload/SaveManager.gd"
+
 [animation]
 
 compatibility/default_parent_skeleton_in_mesh_instance_3d=true
