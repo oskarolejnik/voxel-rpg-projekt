@@ -349,7 +349,10 @@ func _setup_environment() -> void:
 	# rendering/environment/volumetric_fog/volume_size oraz .../volume_depth. Realne dźwignie budżetu
 	# 4GB to: zmniejszyć te dwa ustawienia projektu ALBO wyłączyć volumetric (sama depth fog +
 	# fog_depth_* rozpuszcza krawędź praktycznie za darmo). length zostaje wyłącznie jako zakres głębi.
-	_environment.volumetric_fog_enabled = true
+	# WYŁĄCZONE na 4GB: mgła wolumetryczna (froxele) to jeden z najdroższych efektów GPU,
+	# a atmosferę dali daje już TANIA depth fog (fog_depth_* z 2B). Wyłączenie zauważalnie
+	# podnosi FPS na słabszym GPU, prawie nie zmieniając looku. (Włącz z powrotem na mocniejszym.)
+	_environment.volumetric_fog_enabled = false
 	_environment.volumetric_fog_density = 0.018
 	_environment.volumetric_fog_albedo = Color(0.80, 0.86, 0.95)   # ~dzienny horyzont; DayNight nadpisze
 	_environment.volumetric_fog_length = 48.0     # zakres GŁĘBI froxeli (nie VRAM); VRAM tnij volume_size/depth

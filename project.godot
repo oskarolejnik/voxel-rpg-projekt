@@ -22,6 +22,9 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 [physics]
 
 3d/default_gravity=18.0
+; Interpolacja fizyki: silnik interpoluje wizualne transformacje MIĘDZY krokami fizyki
+; => płynny ruch postaci i kamery niezależnie od FPS (fix „kamera skacze / ruch jak beton").
+common/physics_interpolation=true
 
 [rendering]
 

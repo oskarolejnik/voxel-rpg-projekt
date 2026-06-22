@@ -78,7 +78,7 @@ const MV: float = VOXEL_SIZE * 0.125    # 0,0625 m — bok mikro-voxela propów
 const PROP_GRASS_PROB: float = 0.060    # było 0.18 — kępki trawy
 const PROP_FLOWER_PROB: float = 0.018   # było 0.06
 const PROP_MUSHROOM_PROB: float = 0.004 # było 0.02 — grzyb jest najdroższy (najwięcej ścian) => najrzadszy
-const MAX_PROPS_PER_CHUNK: int = 90     # było 200 (twardy bezpiecznik tri/chunk)
+const MAX_PROPS_PER_CHUNK: int = 35     # odchudzone na 4GB (było 90) — mniej tri/draw bez utraty „runa"
 const PROP_S: float = VOXEL_SIZE * 0.5  # 0,25 m — referencja skali (kafel propa)
 
 # --- Rozdzielna przestrzeń saltów dla feature_hash (review #minor: bez korelacji) ---

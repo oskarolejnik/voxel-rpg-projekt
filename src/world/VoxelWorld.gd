@@ -33,9 +33,9 @@ const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 # FAR  (near_dist < r <= far_dist): zgrubny step=2, BEZ kolizji/propów/wody (_lod_step=2).
 # far_dist = najdalszy budowany pierścień => render_distance to teraz alias far_dist.
 # 4 -> 7 daje 64 m -> 112 m zasięgu, a koszt rośnie głównie na TANICH chunkach FAR.
-@export var near_dist: int = 4           # promień pełnego detalu (4 × 16 m = 64 m)
-@export var far_dist: int = 7            # najdalszy zgrubny pierścień (7 × 16 m = 112 m)
-@export var chunks_per_frame: int = 4    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
+@export var near_dist: int = 3           # promień pełnego detalu (3 × 16 m = 48 m) — odchudzone na 4GB
+@export var far_dist: int = 5            # najdalszy zgrubny pierścień (5 × 16 m = 80 m) — mniej draw calls/VRAM
+@export var chunks_per_frame: int = 2    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
 
 # Kroki próbkowania LOD przekazywane chunkowi (1=NEAR pełny, 2=FAR zgrubny). MUSZĄ być
 # spójne z VoxelChunk.LOD_FAR_STEP (=2). Trzymamy jako stałe dla czytelności wyboru per chunk.
@@ -54,11 +54,11 @@ var render_distance: int:
 # MAX_IN_FLIGHT: ile zadań build_data() może chodzić RÓWNOCZEŚNIE w puli. Pula jest
 # WSPÓŁDZIELONA z silnikiem (fizyka/audio/import), więc nie zalewamy jej — 3 zostawia
 # wątki dla reszty na laptopie (RTX 3050 4GB). Reszta kolejki czeka w _build_queue.
-const MAX_IN_FLIGHT: int = 6
+const MAX_IN_FLIGHT: int = 3
 # Ile finalizacji (tworzenie węzłów + add_child na GŁÓWNYM watku) wykonujemy max/klatkę.
 # Limituje koszt finalize na głównym (add_child + rejestracja kolizji w PhysicsServer),
 # żeby odbiór kilku gotowych chunków naraz nie dał mikro-zacięcia.
-const MAX_FINALIZE_PER_FRAME: int = 3
+const MAX_FINALIZE_PER_FRAME: int = 1
 
 # --- Parametry terenu (w VOXELACH) ---
 # NAPRAWA SKALI BIOMÓW (review #MAJOR): poprzednio BASE=20, AMP=40 dawało

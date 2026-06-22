@@ -350,6 +350,10 @@ func _build_camera() -> void:
 	# Game feel (0C): kamera ODPIĘTA od gracza (top_level) — podąża z wygładzeniem w _process.
 	_pivot.top_level = true
 	_pivot.global_position = global_position + Vector3(0.0, 1.6, 0.0)
+	# Interpolacja fizyki jest WŁ. globalnie, ale pivot pozycjonujemy ręcznie w _process
+	# (już w tempie klatek) — wyłączamy go z interpolacji silnika, by nie był wygładzany
+	# podwójnie (co dawałoby lag/smużenie kamery). Dzieci (spring/kamera) dziedziczą OFF.
+	_pivot.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	_shake_noise = FastNoiseLite.new()
 	_shake_noise.seed = 7
 	_shake_noise.frequency = 1.0
@@ -383,7 +387,9 @@ func _toggle_mouse() -> void:
 func _update_camera(delta: float) -> void:
 	if _pivot == null:
 		return
-	var target := global_position + Vector3(0.0, 1.6, 0.0)
+	# Podążaj za INTERPOLOWANĄ pozycją gracza (gładką między krokami fizyki), nie za
+	# surową global_position (skokową w tempie fizyki) — inaczej kamera „skacze".
+	var target := get_global_transform_interpolated().origin + Vector3(0.0, 1.6, 0.0)
 	_pivot.global_position = _pivot.global_position.lerp(target, 1.0 - exp(-cam_follow * delta))
 	_trauma = maxf(0.0, _trauma - trauma_decay * delta)
 	var s := _trauma * _trauma
@@ -745,6 +751,10 @@ func respawn() -> void:
 	is_dodging = false
 	_iframes = respawn_iframes   # nietykalność po odrodzeniu
 	global_position = respawn_point
+	# Teleport: wyzeruj interpolację, żeby postać nie „smużyła" z punktu śmierci do respawnu.
+	reset_physics_interpolation()
+	if _pivot != null:
+		_pivot.global_position = global_position + Vector3(0.0, 1.6, 0.0)
 	hp_changed.emit(hp, max_hp)
 	stamina_changed.emit(stamina, max_stamina)
 	combo_changed.emit(_combo_count)   # HUD: wyzeruj wskaźnik combo po respawnie
