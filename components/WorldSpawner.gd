@@ -242,3 +242,13 @@ func _on_enemy_died(_e: Enemy) -> void:
 ## Diagnostyka: liczba aktywnych wrogów z tego spawnera.
 func active_count() -> int:
 	return _active
+
+
+## Zeruje licznik aktywnych wrogów (review #MAJOR). Wołane przez DungeonManager przy wejściu do
+## dungeonu PO usunięciu wrogów świata (queue_free NIE emituje Enemy.died, więc _on_enemy_died nie
+## zdejmuje licznika — bez tego _active zostaje zawyżone i _update_regions robi early-return na
+## _active >= MAX_ACTIVE, blokując spawn po powrocie). Po wyjściu spawner znów aktywuje regiony.
+## NIE czyści _activated: odwiedzone regiony świata pozostają „zapamiętane” (świeży spawn z tego
+## samego ziarna => ci sami wrogowie dopiero po zapomnieniu regionu — kontrakt determinizmu Etapu 4).
+func reset_active() -> void:
+	_active = 0

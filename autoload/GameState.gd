@@ -21,6 +21,37 @@ var local_player: Node = null
 var current_biome: StringName = &""
 var current_run_seed: int = 0
 
+## ETAP 5 — biezaca RUNA dungeonu (instancja efemeryczna). null = gracz w otwartym swiecie.
+## Trzyma kontekst aktywnego DungeonRun (seed/tier/biome) + zapamietana pozycje gracza w SWIECIE
+## (powrot po pokonaniu bossa/wyjsciu). Instancja jest EFEMERYCZNA — tu trzymamy tylko lekkie dane
+## sesji (NIE wezel), zgodnie z zasada "GameState nie trzyma stanu encji" (TDD 1.3). Zapis hybrydowy:
+## swiat trwaly zostaje (SaveManager.save_world), runa NIE jest zapisywana (efemeryczna, GDD 8).
+##   current_run = {} gdy brak runy; inaczej { seed:int, tier:int, biome:StringName }.
+var current_run: Dictionary = {}
+## Pozycja gracza w SWIECIE zapamietana przy wejsciu do dungeonu (powrot po wyjsciu).
+var world_return_position: Vector3 = Vector3.ZERO
+signal run_changed(in_dungeon: bool)
+
+
+## ETAP 5 — wejscie do runy: zapamietaj kontekst + pozycje powrotu w swiecie. in_dungeon -> true.
+func enter_run(seed: int, tier: int, biome: StringName, return_pos: Vector3) -> void:
+	current_run = { "seed": seed, "tier": tier, "biome": biome }
+	current_run_seed = seed
+	world_return_position = return_pos
+	run_changed.emit(true)
+
+
+## ETAP 5 — wyjscie z runy (boss pokonany / wyjscie). Czysci kontekst; in_dungeon -> false.
+## Pozycja powrotu zostaje w world_return_position (Main stawia tam gracza). Loot/postep sa juz na
+## postaci (SaveManager) — runa efemeryczna znika bez zapisu.
+func exit_run() -> void:
+	current_run = {}
+	run_changed.emit(false)
+
+
+func in_dungeon() -> bool:
+	return not current_run.is_empty()
+
 ## Zloto sesji (Etap 2: drop zlota z wrogow trafia tutaj; pelna ekonomia w SaveData/Etap 3).
 var gold: int = 0
 signal gold_changed(amount: int)

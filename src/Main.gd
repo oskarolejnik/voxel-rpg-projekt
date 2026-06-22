@@ -43,6 +43,8 @@ var _hud: CanvasLayer
 var _enemies_alive: int = 0
 # ETAP 4: deterministyczny spawner wrogów wg biomu + seeda (zastępuje stały 3×).
 var _spawner: WorldSpawner
+# ETAP 5: orkiestracja wejść dungeonów + przejście świat<->dungeon (instancja efemeryczna).
+var _dungeon_mgr: DungeonManager
 
 # ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
 var _inv_ui: InventoryUI
@@ -573,6 +575,16 @@ func _spawn_enemies() -> void:
 	_spawner._update_regions()
 	_enemies_alive = _spawner.active_count()
 
+	# ETAP 5: menedżer dungeonów — skanuje wejścia (deterministyczne z seeda chunka), obsługuje
+	# wejście [E] -> instancja DungeonRun -> boss -> loot DO POSTACI -> powrót na zapamiętaną pozycję.
+	# Loot/śmierć wrogów RUNU lecą do TYCH SAMYCH slotów Main co świat (LootDrop + XP).
+	_dungeon_mgr = DungeonManager.new()
+	_dungeon_mgr.name = "DungeonManager"
+	add_child(_dungeon_mgr)
+	_dungeon_mgr.setup(_world, _player_ref, _spawner, self,
+		Callable(self, "_on_enemy_loot_dropped"),
+		Callable(self, "_on_enemy_died"))
+
 func _setup_hud() -> void:
 	# --- Stara podpowiedź ze sterowaniem (przeniesiona na dół, by nie kryła pasków) ---
 	var layer := CanvasLayer.new()
@@ -648,6 +660,20 @@ func _save_progression() -> void:
 	if _player_ref != null and _player_ref.has_method("save_progression"):
 		_player_ref.save_progression()
 
+# ETAP 5 — ZAPIS HYBRYDOWY po wyjściu z dungeonu (DungeonManager woła to przez save_after_dungeon).
+# Postać (loot/postęp zdobyte w runie) trafia do save'a postaci; świat (host) zapisuje swój seed +
+# zmiany. Runa jest EFEMERYCZNA — NIE zapisujemy jej (GDD 8). Autosave na evencie "wyjście z dungeonu"
+# (TDD 8). Bezpieczne na brak metod/autoloadów (headless/test).
+func save_after_dungeon() -> void:
+	# 1) Postać (przenośna): loot/poziom/waluty zebrane w dungeonie zostają na postaci.
+	_save_progression()
+	# 2) Świat (tylko host): seed + ewentualne zmiany. Runa NIE wchodzi do world_entities (efemeryczna).
+	if SaveManager == null or NetManager == null or not NetManager.is_host():
+		return
+	var sd := SaveData.new()
+	sd.world_seed = RNGService.world_seed() if RNGService != null else VoxelWorld.FEATURE_SEED
+	SaveManager.save_world(sd)
+
 # Zamkniecie okna (X) / zadanie wyjscia: zapisz progresje ZANIM silnik zwolni sceny.
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_WM_GO_BACK_REQUEST:
@@ -664,9 +690,13 @@ func _on_player_died() -> void:
 # Wróg zginął: zsynchronizuj licznik z aktywnymi w spawnerze (ETAP 4 — spawn jest dynamiczny,
 # nie stała trójka), przyznaj XP graczowi (ETAP 3) i odśwież HUD.
 func _on_enemy_died(e: Enemy) -> void:
-	# Spawner dekrementuje swój licznik w SWOIM _on_enemy_died; tu czytamy go po fakcie. Sygnał
-	# spawnera podpięty PRZED tym callbackiem (connect kolejnościowo), więc active_count() już aktualny.
-	if _spawner != null:
+	# ETAP 5: w dungeonie licznik bierzemy z aktywnej runy (spawner świata jest spauzowany), inaczej
+	# ze spawnera świata. Spawner/run dekrementuje swój licznik w SWOIM callbacku PRZED tym (connect
+	# kolejnościowo), więc odczyt jest już aktualny.
+	if _dungeon_mgr != null and _dungeon_mgr.in_dungeon():
+		var run := _dungeon_mgr.current_run()
+		_enemies_alive = run.enemies_alive() if run != null else _enemies_alive
+	elif _spawner != null:
 		_enemies_alive = _spawner.active_count()
 	else:
 		_enemies_alive = maxi(0, _enemies_alive - 1)
