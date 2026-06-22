@@ -28,18 +28,37 @@ const WORLD_HEIGHT: int = 96         # 96 voxeli = 48 m
 const SEA_LEVEL: int = 24            # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 
-@export var render_distance: int = 4     # promień w chunkach (4 × 16 m = 64 m; jest zapas FPS)
-@export var chunks_per_frame: int = 2    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
+# --- LOD / zasięg (Faza 2B): render_distance ROZBITY na dwa pierścienie (w chunkach) ---
+# NEAR (<= near_dist): pełny detal + kolizja + propy + woda (ścieżka 2A, _lod_step=1).
+# FAR  (near_dist < r <= far_dist): zgrubny step=2, BEZ kolizji/propów/wody (_lod_step=2).
+# far_dist = najdalszy budowany pierścień => render_distance to teraz alias far_dist.
+# 4 -> 7 daje 64 m -> 112 m zasięgu, a koszt rośnie głównie na TANICH chunkach FAR.
+@export var near_dist: int = 4           # promień pełnego detalu (4 × 16 m = 64 m)
+@export var far_dist: int = 7            # najdalszy zgrubny pierścień (7 × 16 m = 112 m)
+@export var chunks_per_frame: int = 4    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
+
+# Kroki próbkowania LOD przekazywane chunkowi (1=NEAR pełny, 2=FAR zgrubny). MUSZĄ być
+# spójne z VoxelChunk.LOD_FAR_STEP (=2). Trzymamy jako stałe dla czytelności wyboru per chunk.
+const LOD_STEP_NEAR: int = 1
+const LOD_STEP_FAR: int = 2
+
+## Alias zgodności: render_distance == far_dist (najdalszy budowany pierścień). Stary kod/
+## debug odwołujący się do render_distance dalej działa (np. logi). Setter mapuje na far_dist.
+var render_distance: int:
+	get:
+		return far_dist
+	set(value):
+		far_dist = value
 
 # --- Streaming wielowątkowy (Faza 2A: WorkerThreadPool) ---
 # MAX_IN_FLIGHT: ile zadań build_data() może chodzić RÓWNOCZEŚNIE w puli. Pula jest
 # WSPÓŁDZIELONA z silnikiem (fizyka/audio/import), więc nie zalewamy jej — 3 zostawia
 # wątki dla reszty na laptopie (RTX 3050 4GB). Reszta kolejki czeka w _build_queue.
-const MAX_IN_FLIGHT: int = 3
+const MAX_IN_FLIGHT: int = 6
 # Ile finalizacji (tworzenie węzłów + add_child na GŁÓWNYM watku) wykonujemy max/klatkę.
 # Limituje koszt finalize na głównym (add_child + rejestracja kolizji w PhysicsServer),
 # żeby odbiór kilku gotowych chunków naraz nie dał mikro-zacięcia.
-const MAX_FINALIZE_PER_FRAME: int = 2
+const MAX_FINALIZE_PER_FRAME: int = 3
 
 # --- Parametry terenu (w VOXELACH) ---
 # NAPRAWA SKALI BIOMÓW (review #MAJOR): poprzednio BASE=20, AMP=40 dawało
@@ -67,15 +86,27 @@ var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C)
 # Słownik załadowanych (W DRZEWIE + sfinalizowanych) chunków: Vector2i -> VoxelChunk.
 var _loaded: Dictionary = {}
 
-# Chunki z zadaniem build_data() W LOCIE (jeszcze nie w drzewie). coord -> { "chunk":, "task": }.
+# Chunki z zadaniem build_data() W LOCIE (jeszcze nie w drzewie). coord -> { "chunk":, "task":, "lod": }.
 # Węzeł żyje POZA drzewem do czasu finalize() (add_child dopiero po is_task_completed).
 var _pending: Dictionary = {}
 
-# Chunki, które wypadły z zasięgu, gdy ich zadanie było w locie. coord -> { "chunk":, "task": }.
+# Chunki, które wypadły z zasięgu, gdy ich zadanie było w locie. coord -> { "chunk":, "task":, "lod": }.
 # NIE wolno ich zwalniać dopóki task chodzi (use-after-free) — reapujemy po is_task_completed().
 var _abandoned: Dictionary = {}
 
-# Kolejka coordów do zbudowania (posortowana: najbliżej gracza najpierw).
+# REBUILD (Faza 2B): chunki, których ZAŁADOWANY LOD ≠ potrzebny — nowa wersja budowana W TLE,
+# podczas gdy STARA (innego lod) wciąż wisi w _loaded i JEST WIDOCZNA. coord -> { "chunk":, "task":, "lod": }.
+# Anty-migotanie: stary węzeł znika DOPIERO po finalize nowego (zero błysku/dziury na zmianie LOD).
+# Niezmiennik "jeden chunk na coord" zachowany — klucz to coord, a nie (coord,lod): w danej chwili
+# coord ma dokładnie jeden docelowy LOD, więc nigdy nie potrzeba dwóch wpisów naraz.
+var _rebuild: Dictionary = {}
+
+# Kolejka chunków do zbudowania: TYLKO coordy (posortowane: najbliżej najpierw).
+# LOD (krok próbkowania) NIE jest tu trzymany (review #MAJOR — usuwa klasę nieaktualnego 'lod'):
+# coord może wisieć w kolejce wiele klatek, a w międzyczasie gracz przekracza granicę near_dist.
+# Gdybyśmy zapamiętali lod przy DODAWANIU do kolejki, chunk zbudowałby się ze STARYM lodem (np. FAR
+# bezkolizyjny pod nadchodzącym graczem). Dlatego lod liczymy DOPIERO w _submit_chunk (pop), z
+# AKTUALNEGO środka => wpis w kolejce nigdy nie niesie przeterminowanego lod.
 var _build_queue: Array[Vector2i] = []
 
 # Referencja do gracza (do liczenia środka streamingu i kill-plane).
@@ -226,17 +257,21 @@ func _process(_delta: float) -> void:
 
 	# 1) SUBMIT: dorzucaj zadania build_data() do puli, póki jest miejsce (MAX_IN_FLIGHT),
 	#    coś jest w kolejce i nie przekroczyliśmy throttlingu submitu (chunks_per_frame).
+	#    UWAGA (2B): MAX_IN_FLIGHT liczy _pending + _rebuild razem — rebuildy też zajmują pulę,
+	#    więc nie zalewamy jej przy wielu zmianach LOD naraz (budżet wątków pod 4GB nietknięty).
 	var submitted := 0
 	while submitted < chunks_per_frame \
-			and _pending.size() < MAX_IN_FLIGHT \
+			and (_pending.size() + _rebuild.size()) < MAX_IN_FLIGHT \
 			and not _build_queue.is_empty():
 		var coord: Vector2i = _build_queue.pop_front()
 		# Mogło się zdezaktualizować (już zbudowane / w locie / porzucone z żywym taskiem) —
 		# pomiń bez liczenia submitu w dół. _abandoned (review): nie submituj drugiej instancji
 		# coordu, którego stary task jeszcze chodzi (czeka na reap w _reap_abandoned).
-		if _loaded.has(coord) or _pending.has(coord) or _abandoned.has(coord):
+		# Jeśli coord JEST w _loaded ale o złym LOD, to ścieżka rebuild (_update_chunks), nie tu.
+		if _loaded.has(coord) or _pending.has(coord) or _abandoned.has(coord) or _rebuild.has(coord):
 			continue
-		_submit_chunk(coord)
+		# LOD liczony TERAZ, z AKTUALNEGO środka (review #MAJOR — nie z chwili wrzucenia do kolejki).
+		_submit_chunk(coord, _lod_for(coord, center))
 		submitted += 1
 
 	# 2) POLL: odbierz ukończone zadania (nieblokująco) i sfinalizuj na GŁÓWNYM watku.
@@ -245,23 +280,56 @@ func _process(_delta: float) -> void:
 	_check_kill_plane(center)
 
 
-## Zleca build_data() chunku do WorkerThreadPool. Węzeł powstaje na głównym watku, ale
-## NIE jest dodawany do drzewa — żyje w _pending do czasu finalize() (po ukończeniu taska).
-func _submit_chunk(coord: Vector2i) -> void:
+## Wybór docelowego LOD-kroku dla coordu wg dystansu od środka. NEAR (krok 1) w promieniu
+## near_dist (z półchunkowym zapasem, jak _coord_in_range), FAR (krok 2) dalej. Determinizm:
+## czysta funkcja dystansu => ten sam coord ma w danej chwili dokładnie jeden docelowy LOD.
+func _lod_for(coord: Vector2i, center: Vector2i) -> int:
+	var dx := coord.x - center.x
+	var dz := coord.y - center.y
+	var d2 := float(dx * dx + dz * dz)
+	if d2 <= (near_dist + 0.5) * (near_dist + 0.5):
+		return LOD_STEP_NEAR
+	return LOD_STEP_FAR
+
+
+## Zleca build_data() chunku do WorkerThreadPool z wybranym LOD (krok próbkowania). Węzeł
+## powstaje na głównym watku, ale NIE jest dodawany do drzewa — żyje w _pending do finalize().
+## _lod_step ustawiamy PRZED add_task (niemutowane w trakcie taska => thread-safe wg kontraktu 2A).
+func _submit_chunk(coord: Vector2i, lod: int) -> void:
 	var chunk := VoxelChunk.new()
 	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
+	chunk._lod_step = lod
 	# Pozycja w METRACH = coord * (CHUNK_SIZE * VOXEL_SIZE) = coord * 16 m. Ustawiana na węźle
 	# POZA drzewem (bezpieczne, brak sygnałów drzewa) — finalize() doda go już z tą pozycją.
 	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE   # 16 m
 	chunk.position = Vector3(coord.x * span, 0.0, coord.y * span)
-	# OFF-THREAD: build_data(coord, self). high_priority=false (chunki tła nie blokują gracza
+	# OFF-THREAD: build_data(coord, self, lod). high_priority=false (chunki tła nie blokują gracza
 	# natychmiast — prime() obsługuje teren pod stopami synchronicznie). self żyje przez całą scenę.
 	var task_id := WorkerThreadPool.add_task(
-		chunk.build_data.bind(coord, self),
+		chunk.build_data.bind(coord, self, lod),
 		false,
-		"voxel_build_%d_%d" % [coord.x, coord.y]
+		"voxel_build_%d_%d_l%d" % [coord.x, coord.y, lod]
 	)
-	_pending[coord] = { "chunk": chunk, "task": task_id }
+	_pending[coord] = { "chunk": chunk, "task": task_id, "lod": lod }
+
+
+## REBUILD (2B): buduje NOWĄ wersję chunku o 'new_lod' W TLE, podczas gdy stara (innego lod)
+## wciąż wisi w _loaded i jest widoczna. Stary węzeł znika dopiero po finalize nowego
+## (_poll_rebuild) => zero migotania/dziur na zmianie LOD. Nie tworzy 2. instancji w _loaded.
+func _request_rebuild(coord: Vector2i, new_lod: int) -> void:
+	if _rebuild.has(coord):
+		return                                    # już się przebudowuje
+	var chunk := VoxelChunk.new()
+	chunk.name = "Chunk_%d_%d_rebuild" % [coord.x, coord.y]
+	chunk._lod_step = new_lod
+	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE
+	chunk.position = Vector3(coord.x * span, 0.0, coord.y * span)
+	var task_id := WorkerThreadPool.add_task(
+		chunk.build_data.bind(coord, self, new_lod),
+		false,
+		"voxel_rebuild_%d_%d_l%d" % [coord.x, coord.y, new_lod]
+	)
+	_rebuild[coord] = { "chunk": chunk, "task": task_id, "lod": new_lod }
 
 
 ## Odbiera ukończone zadania: is_task_completed() jest TANI i NIEBLOKUJĄCY (właściwy poll).
@@ -270,6 +338,9 @@ func _submit_chunk(coord: Vector2i) -> void:
 func _poll_pending(center: Vector2i) -> void:
 	# Najpierw sprzątnij porzucone (chunki spoza zasięgu, których task w końcu dobiegł końca).
 	_reap_abandoned()
+	# Obsłuż gotowe rebuildy LOD (swap stary->nowy bez migotania) PRZED nowymi finalizacjami:
+	# rebuildy do NEAR niosą kolizję pod nadchodzącego gracza => najwyższy priorytet.
+	_poll_rebuild(center)
 
 	# Zbierz ukończone (nie modyfikujemy słownika w trakcie iteracji).
 	var done: Array[Vector2i] = []
@@ -324,23 +395,95 @@ func _reap_abandoned() -> void:
 			chunk.free()
 
 
+## Obsługa gotowych REBUILDÓW LOD (2B). Gdy task nowej wersji ukończony: dodaj nowy węzeł do
+## drzewa i sfinalizuj, a DOPIERO POTEM zwolnij starą wersję z _loaded => stary znika gdy nowy
+## już renderuje (anty-migotanie/anty-dziura). Throttling: max MAX_FINALIZE_PER_FRAME (finalize
+## NEAR liczy create_trimesh_shape na głównym watku — to samo gardło co zwykłe finalizacje).
+func _poll_rebuild(center: Vector2i) -> void:
+	var done: Array[Vector2i] = []
+	for coord in _rebuild:
+		if WorkerThreadPool.is_task_completed(_rebuild[coord]["task"]):
+			done.append(coord)
+
+	var finalized := 0
+	for coord in done:
+		if finalized >= MAX_FINALIZE_PER_FRAME:
+			break
+		var entry: Dictionary = _rebuild[coord]
+		_rebuild.erase(coord)
+		WorkerThreadPool.wait_for_task_completion(entry["task"])  # ukończony => natychmiast, zwalnia uchwyt
+		var new_chunk: VoxelChunk = entry["chunk"]
+		# Coord mógł wypaść z zasięgu w międzyczasie — nowy węzeł zbędny, nigdy nie był w drzewie.
+		# Stary (jeśli wciąż w _loaded) usunie normalnie _update_chunks; tu tylko zwalniamy nowy.
+		if not _coord_in_range(coord, center):
+			if is_instance_valid(new_chunk):
+				new_chunk.free()
+			continue
+		# Stary mógł zniknąć inną ścieżką (np. wypadł z zasięgu i queue_free w _update_chunks).
+		# Wtedy traktujemy nowy jak świeże wczytanie (o ile coord nadal potrzebny).
+		var old_chunk: VoxelChunk = _loaded.get(coord, null)
+		add_child(new_chunk)        # GŁÓWNY: nowy do drzewa (z gotową pozycją/nazwą)
+		new_chunk.finalize(self)    # GŁÓWNY: zbuduj MeshInstance3D/CollisionShape3D (kolizja tylko NEAR)
+		_loaded[coord] = new_chunk
+		# DOPIERO TERAZ usuń starą wersję — nowy już renderuje, brak błysku/dziury.
+		if old_chunk != null and is_instance_valid(old_chunk) and old_chunk != new_chunk:
+			old_chunk.queue_free()
+		finalized += 1
+
+
+## Kwadrat dystansu chunkowego coord->center (do sortowania kolejki/priorytetów).
+func _dist2(coord: Vector2i, center: Vector2i) -> int:
+	var dx := coord.x - center.x
+	var dz := coord.y - center.y
+	return dx * dx + dz * dz
+
+
+## Czy coord jest już w kolejce budowania (_build_queue trzyma teraz same coordy).
+func _queued(coord: Vector2i) -> bool:
+	return _build_queue.has(coord)
+
+
 ## Czy coord mieści się w aktualnym promieniu (kołowe odsianie, jak _update_chunks).
 func _coord_in_range(coord: Vector2i, center: Vector2i) -> bool:
-	var rd := render_distance
+	var rd := far_dist
 	var dx := coord.x - center.x
 	var dz := coord.y - center.y
 	return float(dx * dx + dz * dz) <= (rd + 0.5) * (rd + 0.5)
 
 
-## Aktualizuje zbiór potrzebnych chunków: dodaje brakujące do kolejki, usuwa nadmiarowe.
+## Sprawdza, czy coord o aktualnym lod 'have' powinien ZOSTAĆ na swoim lodzie mimo że
+## _lod_for sugeruje inny — pas histerezy zapobiega thrashingowi (rebuild tam i z powrotem)
+## gdy gracz drepcze/krąży wokół granicy NEAR|FAR.
+##
+## DWUSTRONNA MARTWA STREFA (review #minor THRASHING): _lod_for przełącza próg na (near_dist+0.5)^2.
+##  - Już-NEAR schodzi do FAR DOPIERO za GÓRNYM progiem d2 > (near_dist+1)^2 ("trzymaj NEAR dłużej",
+##    kolizja z zapasem przed graczem).
+##  - Już-FAR awansuje do NEAR DOPIERO po wejściu GŁĘBIEJ niż DOLNY próg d2 <= (near_dist-0.5)^2
+##    (a NIE od razu na (near_dist+0.5)^2 z _lod_for). Między progami (near_dist-0.5 .. near_dist+1)
+##    jest martwa strefa: chunk trzyma swój obecny LOD, więc oscylacja gracza dokładnie na granicy
+##    NIE generuje par rebuildów NEAR(~356 ms)/FAR w kółko (te nasycały MAX_IN_FLIGHT i głodziły dal).
+## Kolizja bezpieczna: nadchodzący gracz przekracza dolny próg, dostaje NEAR raz i już zostaje.
+func _within_hysteresis(coord: Vector2i, center: Vector2i, have: int) -> bool:
+	var dx := coord.x - center.x
+	var dz := coord.y - center.y
+	var d2 := float(dx * dx + dz * dz)
+	if have == LOD_STEP_NEAR:
+		# Już-NEAR: zostań NEAR póki w pasie (near_dist+1). Dopiero dalej pozwól zejść na FAR.
+		return d2 <= (near_dist + 1.0) * (near_dist + 1.0)
+	# Już-FAR: NIE awansuj do NEAR, dopóki nie wejdzie głębiej niż dolny próg (martwa strefa).
+	return d2 > (near_dist - 0.5) * (near_dist - 0.5)
+
+
+## Aktualizuje zbiór potrzebnych chunków: dodaje brakujące do kolejki (z docelowym LOD),
+## zleca rebuild gdy załadowany LOD ≠ potrzebny (z histerezą), usuwa nadmiarowe.
 func _update_chunks(center: Vector2i) -> void:
-	var rd := render_distance
+	var rd := far_dist
 	var rd_sq := (rd + 0.5) * (rd + 0.5)   # kołowe odsianie rogów (mniej chunków)
 
 	# Zbiór potrzebnych coordów (do szybkiego sprawdzania przy usuwaniu).
 	var needed: Dictionary = {}
 
-	# Kandydaci do zbudowania, z dystansem do środka (do sortowania).
+	# Kandydaci do zbudowania: same coordy (lod liczony dopiero przy submitcie).
 	var to_queue: Array[Vector2i] = []
 
 	for dx in range(-rd, rd + 1):
@@ -350,24 +493,42 @@ func _update_chunks(center: Vector2i) -> void:
 				continue
 			var coord := Vector2i(center.x + dx, center.y + dz)
 			needed[coord] = true
-			# Nie kolejkuj coordów już gotowych (_loaded), w kolejce, W LOCIE (_pending),
-			# ani PORZUCONYCH z żywym taskiem (_abandoned). Pominięcie _pending zapobiega
-			# podwójnemu budowaniu. Pominięcie _abandoned (BLOCKER review): bez tego coord,
-			# który właśnie wypadł z zasięgu z taskiem w locie, byłby NATYCHMIAST kolejkowany
-			# i submitowany jako DRUGA instancja — zmarnowany build + ryzyko nadpisania wpisu
-			# _abandoned (wyciek węzła i uchwytu taska) przy ganianiu po krawędzi zasięgu.
+			var want_lod := _lod_for(coord, center)
+
+			# Już załadowany: sprawdź czy LOD się zgadza; jeśli nie i nie ma rebuildu w locie,
+			# zleć rebuild (z histerezą NEAR->FAR). Stary węzeł zostaje widoczny do gotowości nowego.
+			if _loaded.has(coord):
+				var have: int = (_loaded[coord] as VoxelChunk)._lod_step
+				if have != want_lod and not _rebuild.has(coord):
+					if not _within_hysteresis(coord, center, have):
+						_request_rebuild(coord, want_lod)
+				continue
+
+			# W LOCIE (_pending) o złym LOD (review #MAJOR — DZIURA KOLIZJI): coord, który wciąż
+			# buduje się jako FAR (bezkolizyjny), a gracz w międzyczasie wszedł w near_dist, MUSI
+			# dostać korektę NA AWANS (FAR->NEAR) JESZCZE ZANIM stara wersja trafi do _loaded —
+			# inaczej sfinalizuje się jako FAR pod nadchodzącym graczem i dopiero NASTĘPNE
+			# _update_chunks zleci rebuild (okno ~356 ms bez kolizji przy 8 m/s). Zlecamy rebuild
+			# do NEAR mimo braku wpisu w _loaded; _poll_rebuild ma ścieżkę old_chunk==null (świeże
+			# wczytanie), więc swap jest bezpieczny, a stary FAR-pending dokończy się i (gdy coord
+			# już w _loaded jako NEAR) zostanie odrzucony guardem _loaded.has w _poll_pending.
+			# Tylko AWANS (want NEAR): degradacja NEAR->FAR w locie jest nieszkodliwa (poczeka).
+			if _pending.has(coord) and want_lod == LOD_STEP_NEAR \
+					and int(_pending[coord]["lod"]) != LOD_STEP_NEAR and not _rebuild.has(coord):
+				_request_rebuild(coord, LOD_STEP_NEAR)
+				continue
+
+			# Nie kolejkuj coordów już W LOCIE (_pending), PORZUCONYCH z żywym taskiem (_abandoned),
+			# ani będących w trakcie rebuildu (_rebuild). Pominięcie _pending zapobiega podwójnemu
+			# budowaniu. Pominięcie _abandoned (BLOCKER review): bez tego coord, który właśnie
+			# wypadł z zasięgu z taskiem w locie, byłby NATYCHMIAST kolejkowany i submitowany jako
+			# DRUGA instancja — zmarnowany build + ryzyko nadpisania wpisu _abandoned (wyciek).
 			# Coord wróci do streamingu dopiero po zreapowaniu starego taska w _reap_abandoned().
-			if not _loaded.has(coord) and not _pending.has(coord) \
-					and not _abandoned.has(coord) \
-					and not _build_queue.has(coord):
+			if not _pending.has(coord) and not _abandoned.has(coord) \
+					and not _rebuild.has(coord) and not _queued(coord):
 				to_queue.append(coord)
 
-	# Sortuj kandydatów rosnąco po dystansie od środka — najbliżej budujemy najpierw.
-	to_queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		var da := (a.x - center.x) * (a.x - center.x) + (a.y - center.y) * (a.y - center.y)
-		var db := (b.x - center.x) * (b.x - center.x) + (b.y - center.y) * (b.y - center.y)
-		return da < db
-	)
+	# Dorzuć nowych kandydatów (cała kolejka i tak zostanie posortowana niżej).
 	for coord in to_queue:
 		_build_queue.append(coord)
 
@@ -378,11 +539,9 @@ func _update_chunks(center: Vector2i) -> void:
 			filtered.append(coord)
 	_build_queue = filtered
 
-	# Posortuj CAŁĄ kolejkę względem AKTUALNEGO środka — nie tylko nowych kandydatów.
+	# Posortuj CAŁĄ kolejkę względem AKTUALNEGO środka — najbliżej budujemy najpierw.
 	_build_queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		var da := (a.x - center.x) * (a.x - center.x) + (a.y - center.y) * (a.y - center.y)
-		var db := (b.x - center.x) * (b.x - center.x) + (b.y - center.y) * (b.y - center.y)
-		return da < db
+		return _dist2(a, center) < _dist2(b, center)
 	)
 
 	# Usuń (queue_free) chunki poza zasięgiem — te SĄ w drzewie i sfinalizowane, więc bezpiecznie.
@@ -415,8 +574,26 @@ func _update_chunks(center: Vector2i) -> void:
 			var old_chunk: VoxelChunk = old_entry["chunk"]
 			if is_instance_valid(old_chunk):
 				old_chunk.free()
-		_abandoned[coord] = _pending[coord]   # { chunk, task }
+		_abandoned[coord] = _pending[coord]   # { chunk, task, lod }
 		_pending.erase(coord)
+
+	# REBUILDY (2B), które wypadły z zasięgu: nowy węzeł NIGDY nie był w drzewie, ale jego task
+	# wciąż pisze do jego pól -> use-after-free przy free() teraz. Przenosimy do _abandoned
+	# (reap po is_task_completed), identycznie jak _pending. Stara wersja (w _loaded) zostanie
+	# zdjęta przez blok to_remove powyżej (już nieobecna w 'needed'). Bezpiecznik na kolizję klucza.
+	var rebuild_drop: Array[Vector2i] = []
+	for coord in _rebuild.keys():
+		if not needed.has(coord):
+			rebuild_drop.append(coord)
+	for coord in rebuild_drop:
+		if _abandoned.has(coord):
+			var old_entry: Dictionary = _abandoned[coord]
+			WorkerThreadPool.wait_for_task_completion(old_entry["task"])
+			var old_chunk: VoxelChunk = old_entry["chunk"]
+			if is_instance_valid(old_chunk):
+				old_chunk.free()
+		_abandoned[coord] = _rebuild[coord]   # { chunk, task, lod }
+		_rebuild.erase(coord)
 
 
 ## Natychmiastowa (synchroniczna) budowa kwadratu (2*radius+1) wokół środka.
@@ -430,42 +607,73 @@ func prime(center: Vector2i, radius: int = 1) -> void:
 		for dz in range(-radius, radius + 1):
 			var coord := Vector2i(center.x + dx, center.y + dz)
 			if _loaded.has(coord):
+				# Już w drzewie. Jeśli to chunk FAR (bezkolizyjny) — gracz mógłby przezeń spaść,
+				# a prime ma DAĆ GRUNT. Zleć rebuild na NEAR (z kolizją); stary FAR trzyma sylwetkę
+				# do gotowości NEAR (anty-dziura). Rzadkie: prime woła się przy spawnie/kill-plane,
+				# gdzie coordy i tak są w near_dist => zwykle już NEAR.
+				if (_loaded[coord] as VoxelChunk)._lod_step != LOD_STEP_NEAR:
+					_request_rebuild(coord, LOD_STEP_NEAR)
 				continue
+			# Chunk W LOCIE / PORZUCONY / w REBUILDZIE: przejmij task TYLKO jeśli buduje NEAR
+			# (pełny grunt + kolizja). Jeśli buduje FAR (bezkolizyjny), NIE używaj go jako gruntu —
+			# zbuduj NEAR synchronicznie, a starą wersję zostaw do normalnego sprzątania/reapu.
+			# To gwarantuje twardą kolizję pod spawnem/po kill-plane (gracz nie wpadnie w teren).
 			if _pending.has(coord):
-				# Chunk jest W LOCIE — dokończ go NATYCHMIAST (blokująco), bo prime musi dać
-				# gotowy teren w tej samej klatce. To jedyne miejsce, gdzie świadomie czekamy
-				# na pulę (prime jest rzadkie i krytyczne). Wyjmujemy z _pending, by _poll_pending
-				# nie sfinalizował go drugi raz.
-				var entry: Dictionary = _pending[coord]
-				_pending.erase(coord)
-				WorkerThreadPool.wait_for_task_completion(entry["task"])
-				var ch: VoxelChunk = entry["chunk"]
-				add_child(ch)
-				ch.finalize(self)
-				_loaded[coord] = ch
+				if int(_pending[coord]["lod"]) == LOD_STEP_NEAR:
+					# Dokończ NATYCHMIAST (blokująco) — prime musi dać gotowy teren w tej klatce.
+					# Wyjmujemy z _pending, by _poll_pending nie sfinalizował go drugi raz.
+					var entry: Dictionary = _pending[coord]
+					_pending.erase(coord)
+					WorkerThreadPool.wait_for_task_completion(entry["task"])
+					var ch: VoxelChunk = entry["chunk"]
+					add_child(ch)
+					ch.finalize(self)
+					_loaded[coord] = ch
+					continue
+				# Pending FAR: zostaw go (wypadnie do _abandoned/reap naturalnie), zbuduj NEAR sync.
+				_build_chunk_sync(coord)
 				continue
 			if _abandoned.has(coord):
-				# Chunk jest PORZUCONY, ale jego task wciąż liczy (lub już skończył) tę samą
-				# geometrię (review #MAJOR). Przejmujemy go zamiast budować drugi raz od zera:
-				# bez tego prime() płaciłby pełny synchroniczny koszt (~98k voxeli na głównym
-				# watku!) dla chunku, którego budowa i tak trwała w tle — wprost przeciw celowi
-				# Fazy 2A. Wyjmujemy z _abandoned (by _reap_abandoned go nie zwolnił), dokańczamy
-				# blokująco i finalizujemy. self żył całą scenę => Callable bezpieczny.
-				var aentry: Dictionary = _abandoned[coord]
-				_abandoned.erase(coord)
-				WorkerThreadPool.wait_for_task_completion(aentry["task"])
-				var ach: VoxelChunk = aentry["chunk"]
-				add_child(ach)
-				ach.finalize(self)
-				_loaded[coord] = ach
+				if int(_abandoned[coord]["lod"]) == LOD_STEP_NEAR:
+					# Przejmujemy NEAR-owy task zamiast budować drugi raz od zera (review #MAJOR):
+					# bez tego prime() płaciłby pełny synchroniczny koszt (~98k voxeli na głównym
+					# watku!) dla chunku, którego budowa i tak trwała w tle. Wyjmujemy z _abandoned
+					# (by _reap_abandoned go nie zwolnił), dokańczamy blokująco i finalizujemy.
+					var aentry: Dictionary = _abandoned[coord]
+					_abandoned.erase(coord)
+					WorkerThreadPool.wait_for_task_completion(aentry["task"])
+					var ach: VoxelChunk = aentry["chunk"]
+					add_child(ach)
+					ach.finalize(self)
+					_loaded[coord] = ach
+					continue
+				# Abandoned FAR: zostaw do reapu, zbuduj NEAR sync.
+				_build_chunk_sync(coord)
+				continue
+			if _rebuild.has(coord):
+				# Rebuild w locie dla coordu BEZ wpisu w _loaded (stara wersja zniknęła). Jeśli to
+				# rebuild->NEAR, dokończ go blokująco jak _pending; inaczej zbuduj NEAR sync i zostaw
+				# rebuild do własnego pollingu (_poll_rebuild odrzuci go guardem _loaded.has).
+				if int(_rebuild[coord]["lod"]) == LOD_STEP_NEAR:
+					var rentry: Dictionary = _rebuild[coord]
+					_rebuild.erase(coord)
+					WorkerThreadPool.wait_for_task_completion(rentry["task"])
+					var rch: VoxelChunk = rentry["chunk"]
+					add_child(rch)
+					rch.finalize(self)
+					_loaded[coord] = rch
+					continue
+				_build_chunk_sync(coord)
 				continue
 			_build_chunk_sync(coord)
 
 
 ## SYNCHRONICZNA budowa pojedynczego chunku na GŁÓWNYM watku (dla prime/kill-plane).
+## ZAWSZE NEAR (pełny detal + kolizja): prime gwarantuje twardy grunt pod spawnem/po kill-plane.
 func _build_chunk_sync(coord: Vector2i) -> void:
 	var chunk := VoxelChunk.new()
 	chunk.name = "Chunk_%d_%d" % [coord.x, coord.y]
+	chunk._lod_step = LOD_STEP_NEAR   # jawnie NEAR (generate i tak buduje pełny + kolizję)
 	# NAPRAWA SKALI: pozycja chunku w METRACH = coord * (CHUNK_SIZE * VOXEL_SIZE) = coord * 16 m.
 	# Bez tego chunki stanęłyby w odstępie 32 m z 16-metrowymi dziurami w terenie.
 	var span: float = float(CHUNK_SIZE) * VOXEL_SIZE   # 16 m
@@ -502,9 +710,9 @@ func _exit_tree() -> void:
 	_drain_all_tasks()
 
 
-## Domyka WSZYSTKIE taski w locie (_pending + _abandoned) blokująco i zwalnia ich węzły
-## (nigdy nie były w drzewie => free()). Po tym wywołaniu żaden wątek roboczy nie pisze już
-## do pól chunków ani nie czyta szumu world. Używane przy teardownie (_exit_tree) i — na
+## Domyka WSZYSTKIE taski w locie (_pending + _abandoned + _rebuild) blokująco i zwalnia ich
+## węzły (nigdy nie były w drzewie => free()). Po tym wywołaniu żaden wątek roboczy nie pisze
+## już do pól chunków ani nie czyta szumu world. Używane przy teardownie (_exit_tree) i — na
 ## przyszłość — PRZED jakąkolwiek mutacją FastNoiseLite (regeneracja świata / zmiana seeda),
 ## inaczej równoległe get_noise_* w trakcie rekonfiguracji szumu = data race (notatka integratora).
 func _drain_all_tasks() -> void:
@@ -520,5 +728,14 @@ func _drain_all_tasks() -> void:
 		var achunk: VoxelChunk = aentry["chunk"]
 		if is_instance_valid(achunk):
 			achunk.free()
+	# REBUILDY (2B): też trzymają węzeł poza drzewem + task w locie => domknąć tak samo,
+	# inaczej use-after-free przy teardownie (wątek pisze do zwolnionej pamięci nowego chunku).
+	for coord in _rebuild:
+		var rentry: Dictionary = _rebuild[coord]
+		WorkerThreadPool.wait_for_task_completion(rentry["task"])
+		var rchunk: VoxelChunk = rentry["chunk"]
+		if is_instance_valid(rchunk):
+			rchunk.free()
 	_pending.clear()
 	_abandoned.clear()
+	_rebuild.clear()

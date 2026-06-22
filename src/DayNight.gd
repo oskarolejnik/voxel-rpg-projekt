@@ -88,6 +88,29 @@ const _FOG_ANISO: Array[float] = [ 0.20, 0.75, 0.35, 0.75, 0.20 ]
 # (j) NASYCENIE (color grade) — soczyściej o złotej godzinie, spokojniej nocą.
 const _SATURATION: Array[float] = [ 1.05, 1.22, 1.12, 1.25, 1.05 ]
 
+# --- Atmospheric perspective (Faza 2B): osobne keyframe DEPTH FOG (mgła dystansowa) ---
+# UWAGA: _FOG / _FOG_DENSITY / _FOG_ANISO powyżej sterują WOLUMETRYKIEM (bliska atmosfera,
+# god rays). Tablice poniżej sterują DEPTH FOG (głębia + rozpuszczanie dalekiej krawędzi LOD
+# FAR w kolorze nieba). Dwie warstwy, dwa zestawy keyframe — celowo rozdzielone.
+
+# (k) KOLOR depth fog = kolor HORYZONTU danej pory (aerial perspective: daleka krawędź zlewa
+# się z niebem przy horyzoncie). ~zbieżne z _SKY_HORIZON, lekko CIEMNIEJSZE, by pod AGX+glow
+# nie rozjaśnić mgły do mlecznej plamy (start z ciemniejszego => na ekranie ~kolor nieba bez przepału).
+const _FOG_LIGHT: Array[Color] = [
+	Color(0.05, 0.06, 0.14),   # NOC    – ciemny granat (krawędź ginie w mroku, nie w mleku)
+	Color(0.82, 0.50, 0.38),   # ŚWIT   – ciepła łuna (lekko ciemniej niż _SKY_HORIZON)
+	Color(0.66, 0.78, 0.90),   # DZIEŃ  – błękit horyzontu, przygaszony vs niebo
+	Color(0.85, 0.42, 0.30),   # ZACHÓD – pomarańcz/czerwień horyzontu
+	Color(0.05, 0.06, 0.14),   # NOC
+]
+# (l) GĘSTOŚĆ depth fog per pora — w trybie FOG_MODE_DEPTH (Main) fog_density to MAKS. krycie na
+# fog_depth_end (krawędź FAR), NIE współczynnik wykładniczy. 1.0 = ostatni pierścień TONIE całkowicie
+# w kolorze nieba (krawędź niewidoczna). Dzień nieco mniej (0.92 — przez resztkę widać zarys najdalszych
+# grzbietów => głębia panoramy CW), noc/złota godzina pełniej (1.0 — krótszy klimatyczny zasięg).
+# Krawędź „fog wall” znika o KAŻDEJ porze; zmienia się tylko ile prześwituje zza krawędzi.
+# (Krzywa gęstnienia i początek mgły = fog_depth_begin/curve w Main; tu sterujemy tylko sufitem krycia.)
+const _FOG_DENSITY_DEPTH: Array[float] = [ 1.00, 0.96, 0.92, 0.96, 1.00 ]
+
 
 ## Wstrzykuje referencje, ustawia porę startową i robi pierwszy _apply,
 ## żeby scena była poprawna już w klatce 0 (bez „mignięcia” wartości z Main).
@@ -170,6 +193,16 @@ func _apply(t: float) -> void:
 	_env.volumetric_fog_albedo = _FOG[i].lerp(_FOG[j], f)
 	_env.volumetric_fog_density = lerpf(_FOG_DENSITY[i], _FOG_DENSITY[j], f)
 	_env.volumetric_fog_anisotropy = lerpf(_FOG_ANISO[i], _FOG_ANISO[j], f)
+
+	# (k+l) DEPTH FOG (Faza 2B, tryb FOG_MODE_DEPTH z Main) — kolor = horyzont danej pory (zlanie
+	# dalekiej krawędzi LOD z niebem) + maks. krycie na krawędzi (fog_density). „Fog wall” znika o
+	# KAŻDEJ porze: w dzień błękitny, o zachodzie pomarańczowy, nocą tonie w granacie — zawsze w
+	# kolorze nieba przy horyzoncie. fog_aerial_perspective (stałe 1.0 w Main) ciągnie barwę z nieba
+	# w dali; fog_light_color steruje barwą w średnim zasięgu i po stronie zacienionej => eliminuje
+	# „szare mleko” na ciemnej stronie kadru. Początek/krzywa mgły (fog_depth_begin/end/curve, stałe
+	# w Main) trzymają bliż czystą — tu animujemy tylko KOLOR i SUFIT krycia na krawędzi.
+	_env.fog_light_color = _FOG_LIGHT[i].lerp(_FOG_LIGHT[j], f)
+	_env.fog_density = lerpf(_FOG_DENSITY_DEPTH[i], _FOG_DENSITY_DEPTH[j], f)
 
 	# (g) color grade — nasycenie zależne od pory doby (Faza 1D).
 	_env.adjustment_saturation = lerpf(_SATURATION[i], _SATURATION[j], f)

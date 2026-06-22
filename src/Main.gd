@@ -44,8 +44,13 @@ var _enemies_alive: int = 0
 @export var respawn_delay: float = 1.6
 
 func _ready() -> void:
-	_setup_environment()   # słońce + niebo + światło otoczenia + cykl dnia i nocy
+	# KOLEJNOŚĆ (Faza 2B): świat PRZED środowiskiem — _setup_environment liczy zasięg mgły
+	# (fog_depth_end) z RZECZYWISTEGO far_dist instancji VoxelWorld (review #minor: wcześniej
+	# far_m był zahardkodowanym literałem 112 m i NIE śledził zmiany far_dist w inspektorze).
+	# _setup_world tworzy tylko węzeł + konfiguruje szum/materiały w _ready — zero zależności
+	# od Environment, więc reorder jest bezpieczny.
 	_setup_world()         # proceduralny teren voxelowy (zastępuje płaską podłogę)
+	_setup_environment()   # słońce + niebo + światło otoczenia + cykl dnia i nocy
 	_spawn_player()        # nasza postać — stawiana NA terenie przez height_at()
 	_spawn_enemies()       # 3 wrogów blisko gracza (po prime() terenu wokół spawnu)
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
@@ -200,7 +205,7 @@ func _probe_shot() -> void:
 
 	await get_tree().create_timer(6.0).timeout
 	var ppos := _player_ref.global_position
-	if mode == "char" or mode == "props":
+	if mode == "char" or mode == "props" or mode == "vista":
 		# Dedykowana kamera — omija gameplayowy SpringArm (który cofa się przy kolizji),
 		# daje deterministyczny kadr zbliżenia. Przód postaci = -Z (oczy/twarz tam).
 		var cam := Camera3D.new()
@@ -208,6 +213,9 @@ func _probe_shot() -> void:
 		if mode == "char":
 			cam.global_position = ppos + Vector3(0.9, 1.5, -3.2)   # od przodu, lekko z góry/boku
 			cam.look_at(ppos + Vector3(0.0, 1.0, 0.0), Vector3.UP)  # celuj w tułów/twarz
+		elif mode == "vista":
+			cam.global_position = ppos + Vector3(0.0, 36.0, 0.0)    # wysoko: odsłoń strefę LOD
+			cam.look_at(ppos + Vector3(90.0, 6.0, 90.0), Vector3.UP)  # w dal nad styk NEAR|FAR (szczeliny?)
 		else:
 			cam.global_position = ppos + Vector3(0.0, 2.2, -2.4)   # z góry-przodu na runo
 			cam.look_at(ppos + Vector3(0.0, 0.1, 0.6), Vector3.UP)  # patrz w dół na grunt z propami
@@ -299,21 +307,59 @@ func _setup_environment() -> void:
 	_environment.glow_hdr_threshold = 1.0   # tylko realnie jasne miejsca świecą (bez „mleka”)
 	_environment.glow_blend_mode = Environment.GLOW_BLEND_MODE_SOFTLIGHT
 
-	# Mgła wolumetryczna — atmosfera, głębia w dali i darmowy „fade” doładowywanych chunków.
-	_environment.volumetric_fog_enabled = true
-	_environment.volumetric_fog_density = 0.002   # delikatna atmosfera w dali
-	_environment.volumetric_fog_albedo = Color(0.8, 0.86, 0.95)
-	_environment.volumetric_fog_length = 64.0     # nie licz froxeli do horyzontu (oszczędność)
-	_environment.volumetric_fog_anisotropy = 0.4  # rozprasza światło słońca => tanie god rays
-	_environment.volumetric_fog_ambient_inject = 0.2
+	# --- Atmospheric perspective (Faza 2B): daleka krawędź LOD FAR ma ROZPUŚCIĆ się w mgle ---
+	# koloru nieba => niewidoczny „fog wall”, panorama jak Cube World. BEZ przygniatania bliży.
+	# DWIE rozdzielone warstwy: (1) depth fog = GŁÓWNE narzędzie głębi/krawędzi (tania, per-pixel),
+	# (2) volumetric = tylko bliska atmosfera + god rays.
+	#
+	# ZASIĘG liczony z RZECZYWISTEJ instancji świata (review #minor): far_m = far_dist * CHUNK_SIZE
+	# * VOXEL_SIZE. Dzięki temu zmiana far_dist w inspektorze przelicza początek/koniec mgły sama
+	# (krawędź zawsze ginie tuż za ostatnim pierścieniem; brak „fog wall” gdy ktoś podniesie zasięg).
+	var far_m: float = float(_world.far_dist) * float(_world.CHUNK_SIZE) * _world.VOXEL_SIZE   # 112 m @ far=7
+	var near_m: float = float(_world.near_dist) * float(_world.CHUNK_SIZE) * _world.VOXEL_SIZE  # 64 m @ near=4
 
-	# Mgła dystansowa (aerial perspective): dal przyjmuje barwę nieba => głębia + maskuje
-	# krawędź doczytywanych chunków. Najtańszy efekt głębi; śledzi cykl dobowy (kolor z nieba).
+	# (2) Mgła wolumetryczna — TYLKO bliska atmosfera + god rays (NIE chowanie krawędzi: robi to
+	# depth fog). length ogranicza ZASIĘG froxeli (dystans, na jaki liczona jest objętość), nie VRAM.
+	# UWAGA (review #minor — sprostowanie): KOSZT VRAM froxeli zależy od ROZDZIELCZOŚCI siatki froxeli,
+	# a NIE od length. W Godot 4.7 sterują nią PROJECT SETTINGS (nie property Environment!):
+	# rendering/environment/volumetric_fog/volume_size oraz .../volume_depth. Realne dźwignie budżetu
+	# 4GB to: zmniejszyć te dwa ustawienia projektu ALBO wyłączyć volumetric (sama depth fog +
+	# fog_depth_* rozpuszcza krawędź praktycznie za darmo). length zostaje wyłącznie jako zakres głębi.
+	_environment.volumetric_fog_enabled = true
+	_environment.volumetric_fog_density = 0.018
+	_environment.volumetric_fog_albedo = Color(0.80, 0.86, 0.95)   # ~dzienny horyzont; DayNight nadpisze
+	_environment.volumetric_fog_length = 48.0     # zakres GŁĘBI froxeli (nie VRAM); VRAM tnij volume_size/depth
+	_environment.volumetric_fog_anisotropy = 0.4  # rozprasza światło słońca => tanie god rays
+	_environment.volumetric_fog_ambient_inject = 0.15   # zbite z 0.2: mniej „mlecznej plamy” pod AGX
+	_environment.volumetric_fog_sky_affect = 0.0        # nie zamglaj nieba wolumetrykiem (góra kadru czysta)
+	_environment.volumetric_fog_gi_inject = 0.0         # SDFGI off => nie marnuj
+
+	# (1) Mgła dystansowa w trybie GŁĘBI (review #MAJOR — żeby NIE przygniatała bliży): FOG_MODE_DEPTH
+	# liczy krycie LINIOWO/krzywą od fog_depth_begin do fog_depth_end (a NIE wykładniczo od kamery jak
+	# FOG_MODE_EXPONENTIAL, który zaczyna mglić już od 0 m i blakł cały pierścień NEAR). Dzięki temu:
+	#   - bliż 0..begin (cały NEAR + zapas) = CZYSTA, ostra (look CW: ostry bliski plan),
+	#   - od begin do end krycie rośnie do pełnego => daleka krawędź FAR rozpuszcza się w kolorze nieba.
+	# begin = near_m * 0.7 (~45 m, ZA pierścieniem detalu, jeszcze przed jego końcem 64 m, miękki start),
+	# end = far_m (112 m): ostatni budowany pierścień osiąga PEŁNE krycie dokładnie tam, gdzie geometria
+	# się urywa => szwu/„fog wall” nie widać. depth_curve > 1 dosuwa większość gęstnienia ku końcowi
+	# (bliż dłużej czysta, dopiero daleko gwałtownie tonie w niebie).
 	_environment.fog_enabled = true
-	_environment.fog_density = 0.006
+	_environment.fog_mode = Environment.FOG_MODE_DEPTH
+	_environment.fog_depth_begin = near_m * 0.7   # ~45 m @ near=4: początek mgły ZA bliskim planem
+	_environment.fog_depth_end = far_m            # 112 m: pełne krycie na krawędzi FAR (krawędź ginie)
+	_environment.fog_depth_curve = 2.0            # krzywa: bliż dłużej czysta, gęstnienie ku końcowi
+	# fog_density w trybie DEPTH skaluje MAKSYMALNE krycie na fog_depth_end (1.0 = pełne zlanie z niebem
+	# na końcu). DayNight nadpisuje fog_density i fog_light_color per pora => krawędź ginie o KAŻDEJ porze.
+	_environment.fog_density = 1.0
+	# aerial_perspective=1.0: mgła w dali przyjmuje kolor NIEBA W DANYM KIERUNKU (nie płaski kolor)
+	# => dolny pas terenu zlewa się z jasnym horyzontem, zenit kadru zostaje czysty (NIE przygniata).
 	_environment.fog_aerial_perspective = 1.0
-	_environment.fog_sky_affect = 0.0   # samego nieba nie zamglamy
-	_environment.fog_sun_scatter = 0.1
+	_environment.fog_sky_affect = 0.0     # samego nieba NIE zamglamy (inaczej AGX+glow => mleczna płaskość)
+	_environment.fog_sun_scatter = 0.08   # lekki rozbłysk wokół słońca w mgle (nie przepalać)
+	# Mgła wysokościowa: gęstsza nisko (doliny/jeziora), rzadsza wysoko => szczyty wystają z mgły
+	# jak w panoramie CW, a bliski teren na wysokości oczu pozostaje czysty (gracz zwykle na grzbiecie).
+	_environment.fog_height = 12.0          # ~poziom morza (SEA_LEVEL 24 voxele × 0,5 = 12 m)
+	_environment.fog_height_density = 0.06  # dodatkowa gęstość przy/pod fog_height (mgliste doliny)
 
 	# Mapowanie tonalne AGX — żywsze, lepiej trzyma nasycone barwy, nie wypala bieli/wody.
 	_environment.tonemap_mode = Environment.TONE_MAPPER_AGX

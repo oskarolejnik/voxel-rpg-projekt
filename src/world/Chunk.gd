@@ -36,6 +36,19 @@ const BEACH_MAX_Y: int = SEA_LEVEL + 2   # +2 voxele = +1 m plaży (jak dawniej 
 const ROCK_MIN_Y: int = 56               # 56 voxeli × 0,5 = 28 m (bez zmian realnie)
 const SNOW_MIN_Y: int = 68               # 68 voxeli × 0,5 = 34 m (bez zmian realnie)
 
+# --- LOD (Faza 2B): 2-poziomowy LOD = większa głębia widoku TANIO ---
+# Krok próbkowania zgrubnego (FAR) mesha: co LOD_FAR_STEP voxeli (2 => komórki 2×2 = 1×1 m).
+# CHUNK_SIZE MUSI być podzielne przez LOD_FAR_STEP (32 % 2 == 0). Trzymanie LOD jako "step"
+# (1=NEAR pełny, 2=FAR zgrubny) ułatwia przyszły LOD3 (step 4) bez zmian architektury.
+const LOD_FAR_STEP: int = 2
+# Głębokość fartucha (skirt) w VOXELACH, doklejanego w dół wzdłuż 4 krawędzi zgrubnego chunku.
+# Bezpiecznie pokrywa typową różnicę wysokości na szwie LOD↔LOD i LOD↔NEAR (zwykle 0-2 voxele).
+# 12 voxeli = 6 m kurtyny (review #minor: 4 m było marginalne na stromiznach — różnica wysokości
+# na szwie potrafi przekroczyć 8 voxeli; podniesienie nie dokłada ŻADNYCH quadów, tylko wydłuża
+# istniejące w dół). Kurtyna schodzi w DÓŁ i jest pionowa => gracz na ziemi jej nie widzi
+# (zasłonięta własną krawędzią terenu), a daleki dystans + mgła chowają jej dolny brzeg.
+const SKIRT_DEPTH: int = 12
+
 # --- Roślinność i obiekty: parametry rozmieszczania ---
 # Determinizm: world.feature_hash. Wszystkie wpisy do _voxels TYLKO w obręb chunku.
 # TREE_CROWN_RADIUS podwojony (4 -> realnie ta sama korona). Margines od krawędzi liczymy
@@ -141,6 +154,12 @@ var _heightmap: PackedInt32Array = PackedInt32Array()
 # Współrzędne chunku (w jednostkach chunków, nie metrów).
 var _coord: Vector2i = Vector2i.ZERO
 
+# Poziom szczegółowości tego chunku jako KROK próbkowania voxeli (Faza 2B).
+# 1 = NEAR (pełny detal: voxele + kolizja + propy + woda — ścieżka jak w 2A).
+# 2 = FAR  (zgrubny: tylko heightmap co 2 voxele -> _r_solid_mesh, BEZ kolizji/propów/wody).
+# Ustawiany przez VoxelWorld PRZED add_task/generate (niemutowany w trakcie taska => thread-safe).
+var _lod_step: int = 1
+
 # Czy chunk ma jakąkolwiek stałą geometrię (decyduje o tym, czy dodajemy kolizję).
 var _has_solid: bool = false
 
@@ -187,10 +206,18 @@ func get_voxel(x: int, y: int, z: int) -> int:
 ## Thread-safety: czyta TYLKO niemutowane szumy world (surface_height/tint_at/biome_factor —
 ## konfigurowane raz w _ready i nigdy potem) i czystą arytmetykę feature_hash. Pisze WYŁĄCZNIE
 ## do własnych pól tego chunku (_voxels/_heightmap/_r_*). VoxelModel.emit_to jest static i bezstanowe.
-func build_data(chunk_coord: Vector2i, world: VoxelWorld) -> void:
+## 'lod_step' (Faza 2B): 1 = NEAR (pełny detal), 2 = FAR (zgrubny). Domyślnie 1, by stare
+## ścieżki (generate/_build_chunk_sync wołające build_data bez lod) zawsze dawały pełny grunt.
+## VoxelWorld wpisuje _lod_step PRZED add_task; parametr jest dla synchronicznych wywołań.
+func build_data(chunk_coord: Vector2i, world: VoxelWorld, lod_step: int = -1) -> void:
 	_coord = chunk_coord
-	_generate_data(world)        # _voxels + _heightmap + propy -> _r_props_mesh
-	_build_mesh(world)           # -> _r_solid_mesh / _r_water_mesh (kolizja liczona w finalize)
+	if lod_step > 0:
+		_lod_step = lod_step
+	if _lod_step <= 1:
+		_generate_data(world)        # PEŁNY: _voxels + _heightmap + propy -> _r_props_mesh
+		_build_mesh(world)           # -> _r_solid_mesh / _r_water_mesh (kolizja liczona w finalize)
+	else:
+		_build_coarse(world)         # ZGRUBNY: tylko heightmap (krok) -> _r_solid_mesh + skirts
 	_data_ready = true
 
 
@@ -229,12 +256,14 @@ func finalize(world: VoxelWorld) -> void:
 		props_mi.material_override = world.props_material
 		add_child(props_mi)
 
-	# --- Kolizja: trimesh tylko ze stałej geometrii ---
+	# --- Kolizja: trimesh tylko ze stałej geometrii — i TYLKO dla chunków NEAR (Faza 2B) ---
 	# create_trimesh_shape() liczymy TU, na GŁÓWNYM watku (NIE off-thread — patrz BLOCKER
 	# w _build_mesh: godot#69076). Koszt ~0,1-0,5 ms/chunk, throttlowany MAX_FINALIZE_PER_FRAME.
-	# Guard `_r_collision_shape == null` chroni przed dublem, gdyby finalize zostało wywołane
-	# po wcześniejszym (hipotetycznym) wyliczeniu kształtu.
-	if _r_solid_mesh != null:
+	# FAR (_lod_step>1) jest BEZKOLIZYJNY: gracz po nim nie chodzi (zaczyna się za near_dist),
+	# a pominięcie create_trimesh_shape zeruje koszt głównego watku dla dali => far_dist może
+	# rosnąć tanio. Zanim gracz dojdzie na FAR, VoxelWorld przebuduje chunk na NEAR (z kolizją).
+	# Guard `_r_collision_shape == null` chroni przed dublem przy idempotentnym finalize.
+	if _lod_step <= 1 and _r_solid_mesh != null:
 		if _r_collision_shape == null:
 			_r_collision_shape = _r_solid_mesh.create_trimesh_shape()
 		if _r_collision_shape != null:
@@ -757,6 +786,190 @@ func _build_mesh(world: VoxelWorld) -> void:
 	# Powierzchnia wody: osobny ArrayMesh, BEZ kolizji.
 	if water_count > 0:
 		_r_water_mesh = st_water.commit()
+
+
+# ============================================================================
+#  ZGRUBNY MESH (LOD FAR, step=LOD_FAR_STEP) + SKIRTS — Faza 2B
+#  OFF-THREAD (czysty ArrayMesh, zero operacji na drzewie). BEZ wody/propów/kolizji.
+#  Czyta WYŁĄCZNIE world.surface_height / world.biome_factor (niemutowane szumy) i własne
+#  pola — identyczny kontrakt thread-safety jak _build_mesh. NIE alokuje _voxels (~98k B
+#  oszczędności/chunk) ani nie stawia featurów => podniesienie far_dist jest realnie tanie.
+# ============================================================================
+
+## Buduje zgrubną powierzchnię: próbkuje surface_height co 'step' voxeli (16×16 komórek dla
+## step=2). Na komórkę emituje: górny quad (top) na wierzchu próbkowanej kolumny + boczne
+## ściany schodzące do wysokości próbkowanego SĄSIADA (face culling między kolumnami => brak
+## dziur WEWNĄTRZ chunku). Szwy MIĘDZY chunkami (LOD↔LOD, LOD↔NEAR) zakrywają skirty (4 krawędzie).
+func _build_coarse(world: VoxelWorld) -> void:
+	var step := _lod_step
+	var cells := CHUNK_SIZE / step                  # 32/2 = 16 kolumn na bok
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	# Cache próbkowanej heightmapy (w VOXELACH) — indeks: cx + cells*cz. Próbka w ROGU komórki
+	# (lx = cx*step), z GLOBALNYCH wx,wz => szwy zgrubnych chunków siadają na tych samych
+	# kolumnach świata co voxele NEAR (ta sama funkcja surface_height) => spójna sylwetka.
+	var hm := PackedInt32Array()
+	hm.resize(cells * cells)
+	for cx in cells:
+		for cz in cells:
+			var wx := _coord.x * CHUNK_SIZE + cx * step
+			var wz := _coord.y * CHUNK_SIZE + cz * step
+			hm[cx + cells * cz] = world.surface_height(wx, wz)
+
+	var emitted := 0
+	for cx in cells:
+		for cz in cells:
+			var sy := hm[cx + cells * cz]
+			var lx := cx * step                       # lokalny voxel-x lewego dolnego rogu komórki
+			var lz := cz * step
+			var t := _block_for(sy, sy)               # typ powierzchni (GRASS/SAND/ROCK/SNOW)
+			# Kolor liczony w ŚRODKU komórki (stabilny). _solid_color bierze LOKALNE x,y,z
+			# i sam dolicza wx/wz + gradient trawy po y => ta sama paleta co NEAR (płynne wtopienie).
+			var col := _solid_color(world, t, lx + step / 2, sy, lz + step / 2)
+
+			# 1) TOP — górna ściana komórki step×step na wierzchu kolumny.
+			_emit_coarse_top(st, lx, sy, lz, step, col)
+
+			# 2) BOKI WEWNĘTRZNE — schodzą do wysokości próbkowanego sąsiada (z cache). Bok tylko gdy
+			#    niżej. KIERUNKI WYCHODZĄCE POZA CHUNK SĄ POMINIĘTE (review #minor Z-FIGHT): na granicy
+			#    chunku ścianę „bok-do-sąsiada” i tak emituje SKIRT (głębszy, bezstanowy). Gdybyśmy
+			#    emitowali tu też _emit_coarse_side w stronę na-zewnątrz, leżałby w tej samej płaszczyźnie
+			#    co skirt na tej krawędzi (face 0/1/4/5) i na wysokości [nh..sy] pokrywałby się z nim
+			#    => z-fighting na zewnętrznym pierścieniu KAŻDEGO chunku FAR. Skirt sam pokrywa krawędź,
+			#    więc wewnątrz emitujemy bok TYLKO ku sąsiadowi LEŻĄCEMU W TYM CHUNKU.
+			if cx + 1 < cells:                                               # +X (wewnątrz)
+				var nh_px := hm[(cx + 1) + cells * cz]
+				if nh_px < sy: _emit_coarse_side(st, lx, lz, sy, nh_px, step, 0, col)
+			if cx - 1 >= 0:                                                  # -X (wewnątrz)
+				var nh_mx := hm[(cx - 1) + cells * cz]
+				if nh_mx < sy: _emit_coarse_side(st, lx, lz, sy, nh_mx, step, 1, col)
+			if cz + 1 < cells:                                              # +Z (wewnątrz)
+				var nh_pz := hm[cx + cells * (cz + 1)]
+				if nh_pz < sy: _emit_coarse_side(st, lx, lz, sy, nh_pz, step, 4, col)
+			if cz - 1 >= 0:                                                 # -Z (wewnątrz)
+				var nh_mz := hm[cx + cells * (cz - 1)]
+				if nh_mz < sy: _emit_coarse_side(st, lx, lz, sy, nh_mz, step, 5, col)
+
+			emitted += 1
+
+	# 3) SKIRTY na 4 krawędziach chunku (zakrywają szwy LOD↔LOD i LOD↔NEAR).
+	_emit_coarse_skirts(world, st, hm, cells, step)
+
+	_has_solid = emitted > 0
+	if _has_solid:
+		_r_solid_mesh = st.commit()
+	# _r_water_mesh / _r_props_mesh / _r_collision_shape pozostają null (FAR ich nie ma).
+	# Woda FAR pominięta świadomie: w dali i tak rozpływa się w mgle (cz. 3) => mniej draw-calli
+	# i zero kosztu DEPTH_TEXTURE wody w dali. Dorzucić dopiero gdyby brzegi jezior w dali raziły.
+
+
+## Górna ściana zgrubnej komórki (step×step voxeli) na wierzchu kolumny sy. Normalna +Y,
+## nawijanie CW od zewnątrz (od góry) — kolejność narożników jak FACE_VERTS[+Y]: p0,p2,p1 / p0,p3,p2.
+func _emit_coarse_top(st: SurfaceTool, lx: int, sy: int, lz: int, step: int, col: Color) -> void:
+	var x0 := float(lx) * VOXEL_SIZE
+	var x1 := float(lx + step) * VOXEL_SIZE
+	var z0 := float(lz) * VOXEL_SIZE
+	var z1 := float(lz + step) * VOXEL_SIZE
+	var y := float(sy + 1) * VOXEL_SIZE          # wierzch bloku powierzchni (= height_at)
+	var p0 := Vector3(x0, y, z1)
+	var p1 := Vector3(x1, y, z1)
+	var p2 := Vector3(x1, y, z0)
+	var p3 := Vector3(x0, y, z0)
+	st.set_normal(Vector3(0, 1, 0))
+	st.set_color(col); st.add_vertex(p0)
+	st.set_color(col); st.add_vertex(p2)
+	st.set_color(col); st.add_vertex(p1)
+	st.set_color(col); st.add_vertex(p0)
+	st.set_color(col); st.add_vertex(p3)
+	st.set_color(col); st.add_vertex(p2)
+
+
+## Boczna ściana zgrubnej komórki: prostokąt step (szerokość) × (sy-nh) (wysokość) na danej
+## krawędzi. face: 0=+X,1=-X,4=+Z,5=-Z (spójne z FACE_NORMALS). Nawijanie CW od zewnątrz.
+## Lekkie przyciemnienie boków (col.darkened) = tania pseudo-bryłowość spójna z AO terenu NEAR.
+func _emit_coarse_side(st: SurfaceTool, lx: int, lz: int, sy: int, nh: int, step: int, face: int, col: Color) -> void:
+	var x0 := float(lx) * VOXEL_SIZE
+	var x1 := float(lx + step) * VOXEL_SIZE
+	var z0 := float(lz) * VOXEL_SIZE
+	var z1 := float(lz + step) * VOXEL_SIZE
+	var y_top := float(sy + 1) * VOXEL_SIZE        # wierzch naszej kolumny
+	var y_bot := float(nh + 1) * VOXEL_SIZE        # wierzch sąsiada (gdzie ściana się kończy)
+	var n: Vector3 = FACE_NORMALS[face]
+	var side_col := col.darkened(0.06)
+	var a: Vector3
+	var b: Vector3
+	var c: Vector3
+	var d: Vector3
+	match face:
+		0:   # +X: ściana w x1, patrzymy w +X.
+			a = Vector3(x1, y_bot, z0); b = Vector3(x1, y_top, z0)
+			c = Vector3(x1, y_top, z1); d = Vector3(x1, y_bot, z1)
+		1:   # -X: ściana w x0, patrzymy w -X.
+			a = Vector3(x0, y_bot, z1); b = Vector3(x0, y_top, z1)
+			c = Vector3(x0, y_top, z0); d = Vector3(x0, y_bot, z0)
+		4:   # +Z: ściana w z1, patrzymy w +Z.
+			a = Vector3(x1, y_bot, z1); b = Vector3(x1, y_top, z1)
+			c = Vector3(x0, y_top, z1); d = Vector3(x0, y_bot, z1)
+		_:   # 5 / -Z: ściana w z0, patrzymy w -Z.
+			a = Vector3(x0, y_bot, z0); b = Vector3(x0, y_top, z0)
+			c = Vector3(x1, y_top, z0); d = Vector3(x1, y_bot, z0)
+	st.set_normal(n)
+	# Quad a,b,c,d (CCW geometrycznie wokół ściany) -> trójkąty CW od zewnątrz: a,c,b / a,d,c.
+	st.set_color(side_col); st.add_vertex(a)
+	st.set_color(side_col); st.add_vertex(c)
+	st.set_color(side_col); st.add_vertex(b)
+	st.set_color(side_col); st.add_vertex(a)
+	st.set_color(side_col); st.add_vertex(d)
+	st.set_color(side_col); st.add_vertex(c)
+
+
+## SKIRTY: pionowe kurtyny w dół wzdłuż 4 krawędzi zgrubnego chunku. Zakrywają pęknięcia
+## między tym chunkiem (FAR) a sąsiadem o INNEJ próbie (FAR↔NEAR) lub innej perturbacji (FAR↔FAR).
+## BEZSTANOWE: NIE pytamy o LOD sąsiada (to wymagałoby współdzielonego, mutowalnego stanu między
+## chunkami => data race z wątkowaniem 2A) — robimy skirt na KAŻDEJ krawędzi. Głębokość SKIRT_DEPTH
+## voxeli (12 = 6 m) z zapasem pokrywa różnicę wysokości na szwie. Tanio: 4×cells = 64 quady/chunk FAR.
+func _emit_coarse_skirts(world: VoxelWorld, st: SurfaceTool, hm: PackedInt32Array, cells: int, step: int) -> void:
+	for c in cells:
+		_emit_skirt_segment(world, st, hm, cells, step, 0, c, 1)            # krawędź -X
+		_emit_skirt_segment(world, st, hm, cells, step, cells - 1, c, 0)    # krawędź +X
+		_emit_skirt_segment(world, st, hm, cells, step, c, 0, 5)            # krawędź -Z
+		_emit_skirt_segment(world, st, hm, cells, step, c, cells - 1, 4)    # krawędź +Z
+
+
+## Jeden segment skirta dla komórki krawędziowej (cx,cz), patrzący w stronę 'face'.
+## Re-używa _emit_coarse_side: "sąsiad" = sy_edge - SKIRT_DEPTH (sztuczne dno kurtyny), więc ściana
+## powstaje ZAWSZE (nh < sy_edge) i schodzi pełne SKIRT_DEPTH niezależnie od tego, co jest za szwem.
+##
+## BLOCKER FIX (seam hole na +X/+Z): górę kurtyny liczymy z PRAWDZIWEJ wysokości powierzchni na
+## PŁASZCZYŹNIE SZWU (kolumna na granicy chunku), a NIE z próbki komórki cofniętej o 'step' voxeli
+## do środka. _build_coarse próbkuje wysokość w DOLNYM ROGU komórki (wx=...+cx*step). Dla krawędzi
+## +X (cx=cells-1) i +Z (cz=cells-1) ta próbka leży 'step' voxeli DO ŚRODKA, więc gdy teren rośnie
+## na zewnątrz (łagodny stok), prawdziwa wysokość na szwie H(boundary) > H(boundary-step). Sąsiad
+## renderuje powierzchnię do H(boundary), a kurtyna brana z H(boundary-step) kończyłaby się NIŻEJ
+## => pozioma szczelina U GÓRY kurtyny (zwiększanie SKIRT_DEPTH NIE pomaga — brakuje na górze, nie
+## na dole). Dlatego sy_edge = MAX(próbka, surface_height na granicy po całej szerokości 'step').
+## Krawędzie -X (cx=0) i -Z (cz=0) próbkują DOKŁADNIE na płaszczyźnie szwu => sy_edge==sy (no-op).
+func _emit_skirt_segment(world: VoxelWorld, st: SurfaceTool, hm: PackedInt32Array, cells: int, step: int, cx: int, cz: int, face: int) -> void:
+	var sy := hm[cx + cells * cz]
+	var lx := cx * step
+	var lz := cz * step
+	# Prawdziwa wysokość na płaszczyźnie szwu (kolumna graniczna), MAX po szerokości 'step' voxeli.
+	var sy_edge := sy
+	var base_wx := _coord.x * CHUNK_SIZE
+	var base_wz := _coord.y * CHUNK_SIZE
+	match face:
+		0:   # +X: granica world_x=(_coord.x+1)*CHUNK_SIZE, span po z
+			for dz in step:
+				sy_edge = maxi(sy_edge, world.surface_height(base_wx + CHUNK_SIZE, base_wz + lz + dz))
+		4:   # +Z: granica world_z=(_coord.y+1)*CHUNK_SIZE, span po x
+			for dx in step:
+				sy_edge = maxi(sy_edge, world.surface_height(base_wx + lx + dx, base_wz + CHUNK_SIZE))
+		# face 1 (-X) i 5 (-Z): próbka komórki JUŻ leży na szwie => sy_edge==sy (bez dodatkowych lookupów).
+	var t := _block_for(sy_edge, sy_edge)
+	var col := _solid_color(world, t, lx + step / 2, sy_edge, lz + step / 2).darkened(0.10)
+	var nh := sy_edge - SKIRT_DEPTH
+	_emit_coarse_side(st, lx, lz, sy_edge, nh, step, face, col)
 
 
 ## Czy ściana stałego voxela (x,y,z) w kierunku n powinna być narysowana.
