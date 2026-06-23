@@ -127,8 +127,13 @@ signal respawned()
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 18.0)
 
 var _pivot: Node3D        # obrót poziomy kamery (yaw)
-var _spring: SpringArm3D  # ramię kamery: pochylenie (pitch) + automatyczna kolizja
+var _spring: SpringArm3D  # ramię kamery: pochylenie (pitch) + shapecast kolizji (TYLKO pomiar dystansu)
 var _camera: Camera3D
+# KAMERA: sami sterujemy długością ramienia (boom) zamiast skokowego auto-pozycjonowania SpringArm —
+# eliminuje to dawne DRGANIA (SpringArm ustawiał camera.z, a bob/shake nadpisywał z=0 → bicie fizyka↔render)
+# i daje łagodny zoom na zboczu (asymetryczne wygładzanie w _update_camera).
+var _cam_dist: float = 5.6            # bieżąca (wygładzona) długość ramienia kamery
+var _cam_off: Vector3 = Vector3.ZERO  # wygładzony offset x/y kamery (bob+shake); boom-Z liczony osobno
 
 # Model i pivoty kończyn (zawiasy bark/biodro) — animacja chodu + obrót w kierunku ruchu.
 # KOŃCZYNY 2-SEGMENTOWE: górny pivot (bark/biodro) trzyma dolny pivot (łokieć/kolano)
@@ -384,6 +389,10 @@ var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 @export var sprint_fov_add: float = 10.0    # ile FOV dokładamy przy biegu
 @export var fov_lerp: float = 8.0           # szybkość zmiany FOV
 @export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
+# KAMERA (boom): osobne tempa wygładzania długości ramienia. „Do środka" szybko (teren wchodzi w kadr —
+# anty-clip), „na zewnątrz" wolno (po minięciu zbocza brak szarpniętego zoomu). Zob. _smooth_boom.
+@export var boom_in_speed: float = 22.0     # tempo skracania ramienia gdy teren przysłania (szybko)
+@export var boom_out_speed: float = 5.0     # tempo wysuwania ramienia gdy teren znika (łagodnie)
 var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
 var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reuse wzorca z Main)
 # FEEL 7: pyl spod stop podczas biegu (kadencja kroku) — re-use _land_dust co interwal.
@@ -1221,7 +1230,16 @@ func _build_camera() -> void:
 	_spring = SpringArm3D.new()
 	_spring.spring_length = 5.6
 	_spring.rotation.x = deg_to_rad(-12.0)   # start lekko z góry; gracz i tak swobodnie reguluje myszą
+	# Kolizja ramienia = shapecast KULĄ (gładszy na krawędziach voxeli niż raycast) + margines + jawna
+	# maska = TYLKO teren (warstwa 1; gracz=2, wrogowie=3 nie wpychają kamery). SpringArm tylko MIERZY
+	# dystans (get_hit_length); samo wygładzanie/pozycjonowanie robimy w _update_camera.
+	var cam_probe := SphereShape3D.new()
+	cam_probe.radius = 0.3
+	_spring.shape = cam_probe
+	_spring.margin = 0.3
+	_spring.collision_mask = 1
 	_pivot.add_child(_spring)
+	_cam_dist = _spring.spring_length        # start na pełnej długości ramienia
 
 	_camera = Camera3D.new()
 	_camera.fov = base_fov           # bazowe FOV (sprint kick podbija je w _process)
@@ -1412,17 +1430,32 @@ func _update_camera(delta: float) -> void:
 	else:
 		_cam_bob_phase = 0.0
 
+	# BOOM (oś -Z): WŁASNE wygładzanie długości ramienia zamiast skokowego auto-pozycjonowania SpringArm.
+	# get_hit_length() = dystans po kolizji (lub pełny w otwartym terenie). To naprawia DRGANIA: dawniej
+	# SpringArm ustawiał camera.z, a poniższy kod nadpisywał całe _camera.position z z=0 → bicie fizyka↔render.
+	_cam_dist = _smooth_boom(_spring.get_hit_length(), delta)
+
+	# BOB + SHAKE jako offset X/Y (NIGDY nie dotyka boom-Z). z = -_cam_dist ustawiamy bezpośrednio.
+	var off := bob_off
 	if s > 0.0:
 		# Wstrząs dominuje nad walk-bobem (lądowanie/trafienie) — krótkie, więc OK.
 		_shake_time += delta
 		var nx := _shake_noise.get_noise_2d(_shake_time * 50.0, 0.0)
 		var ny := _shake_noise.get_noise_2d(0.0, _shake_time * 50.0)
 		var nr := _shake_noise.get_noise_2d(_shake_time * 50.0, 99.0)
-		_camera.position = Vector3(nx, ny, 0.0) * s * shake_pos + bob_off
+		off += Vector3(nx, ny, 0.0) * s * shake_pos
 		_camera.rotation.z = nr * s * shake_roll
 	else:
-		_camera.position = _camera.position.lerp(bob_off, _sm(12.0, delta))
 		_camera.rotation.z = lerpf(_camera.rotation.z, 0.0, _sm(12.0, delta))
+	_cam_off = _cam_off.lerp(off, _sm(12.0, delta))             # wygładzony offset x/y (bob/shake)
+	_camera.position = Vector3(_cam_off.x, _cam_off.y, -_cam_dist)
+
+# Wygładzanie długości ramienia kamery: asymetria „do środka" (szybko, anty-clip) vs „na zewnątrz"
+# (wolno, bez szarpniętego zoomu). hit_len = wynik shapecastu SpringArm. Mutuje i zwraca _cam_dist.
+func _smooth_boom(hit_len: float, delta: float) -> float:
+	var k_boom := boom_in_speed if hit_len < _cam_dist else boom_out_speed
+	_cam_dist = lerpf(_cam_dist, hit_len, _sm(k_boom, delta))
+	return _cam_dist
 
 func add_trauma(amount: float) -> void:
 	_trauma = clampf(_trauma + amount, 0.0, 1.0)
