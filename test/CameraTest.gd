@@ -115,7 +115,8 @@ func _test_no_jitter_standing() -> void:
 		off_max = maxf(off_max, Vector2(p._camera.position.x, p._camera.position.y).length())
 
 	_check(z_max - z_min < 1.0e-3, "DRGANIA: z waha się o %.5f m między klatkami (powinno być ~0)" % (z_max - z_min))
-	_check(z_max <= 0.0001, "kamera nie jest za graczem (z=%.3f, oczekiwane <= 0)" % z_max)
+	# SpringArm umieszcza kamerę ZA pivotem = DODATNI z (lokalnie). z<0 = kamera przed graczem (błąd!).
+	_check(z_min >= -0.0001, "kamera nie jest ZA graczem (z=%.3f, oczekiwane >= 0 = +Z za pivotem)" % z_min)
 	_check(off_max < 1.0e-3, "stojąc występuje offset x/y %.5f (powinien być ~0, brak walk-bobu)" % off_max)
 	print("[CAMERA] (3) brak drgań stojąc: z stałe (Δ=%.6f m, z=%.2f), offset x/y=%.6f OK" \
 		% [z_max - z_min, z_max, off_max])

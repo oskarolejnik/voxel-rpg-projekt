@@ -571,8 +571,8 @@ func _probe_shot() -> void:
 	_day_night.set_time(0.0 if _pt == "night" else (0.76 if _pt == "gold" else 0.40))
 	var mode := OS.get_environment("VOXEL_PROBE")
 
-	# Tryb "char": usuń wrogów (spawnują przy graczu), by nie oberwać (czerwony flash) podczas pozowania.
-	if mode == "char":
+	# Tryb "char"/"cam": usuń wrogów (spawnują przy graczu), by nie oberwać (czerwony flash) podczas kadru.
+	if mode == "char" or mode == "cam":
 		for e in get_tree().get_nodes_in_group("enemies"):
 			e.queue_free()
 
@@ -670,10 +670,14 @@ func _probe_shot() -> void:
 	else:
 		var spring := _find_node_of_type(_player_ref, "SpringArm3D")
 		if spring:
-			spring.spring_length = (6.0 if mode == "water" else 7.0)
-			spring.rotation.x = deg_to_rad(-28.0 if mode == "water" else -20.0)
 			var pivot := spring.get_parent()
-			if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
+			if mode == "cam":
+				# Podgląd ŻYWEGO kadru gameplay (boom/pitch z _build_camera) — kamera prosto za plecami.
+				if pivot is Node3D: (pivot as Node3D).rotation.y = 0.0
+			else:
+				spring.spring_length = (6.0 if mode == "water" else 7.0)
+				spring.rotation.x = deg_to_rad(-28.0 if mode == "water" else -20.0)
+				if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
 	await get_tree().create_timer(0.6).timeout
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")

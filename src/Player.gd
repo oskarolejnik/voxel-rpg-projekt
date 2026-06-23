@@ -132,7 +132,7 @@ var _camera: Camera3D
 # KAMERA: sami sterujemy długością ramienia (boom) zamiast skokowego auto-pozycjonowania SpringArm —
 # eliminuje to dawne DRGANIA (SpringArm ustawiał camera.z, a bob/shake nadpisywał z=0 → bicie fizyka↔render)
 # i daje łagodny zoom na zboczu (asymetryczne wygładzanie w _update_camera).
-var _cam_dist: float = 5.6            # bieżąca (wygładzona) długość ramienia kamery
+var _cam_dist: float = 4.8            # bieżąca (wygładzona) długość ramienia kamery
 var _cam_off: Vector3 = Vector3.ZERO  # wygładzony offset x/y kamery (bob+shake); boom-Z liczony osobno
 
 # Model i pivoty kończyn (zawiasy bark/biodro) — animacja chodu + obrót w kierunku ruchu.
@@ -383,9 +383,8 @@ var _afterimage_left: int = 0                   # ile duchow jeszcze spawnowac w
 var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 
 # --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
-# FAZA 5 (TUNING KAMERY): bazowe FOV 75->78 — szerszy kadr pod world-aliveness (więcej świata/hordy
-# w polu widzenia), nadal poniżej progu "rybie oko". Sprint-kick 9->10 (mocniejsze poczucie pędu).
-@export var base_fov: float = 78.0          # bazowe FOV kamery
+# KADR „Cube World": węższe FOV = postać większa/wyraźniejsza (78 było zbyt szerokie → wszystko drobne).
+@export var base_fov: float = 66.0          # bazowe FOV kamery (CW-like, postać wyraźna)
 @export var sprint_fov_add: float = 10.0    # ile FOV dokładamy przy biegu
 @export var fov_lerp: float = 8.0           # szybkość zmiany FOV
 @export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
@@ -1228,8 +1227,8 @@ func _build_camera() -> void:
 	# wrogów naraz), bez utraty czytelności postaci. Lekki DOMYŚLNY pitch w dół (model CW: patrzymy
 	# na bohatera i teren wokół, nie w horyzont) — daje natychmiast bardziej "action-RPG" kadr.
 	_spring = SpringArm3D.new()
-	_spring.spring_length = 5.6
-	_spring.rotation.x = deg_to_rad(-12.0)   # start lekko z góry; gracz i tak swobodnie reguluje myszą
+	_spring.spring_length = 4.8
+	_spring.rotation.x = deg_to_rad(-18.0)   # kadr „Cube World": kamera nad postacią, patrzy w dół ~18°
 	# Kolizja ramienia = shapecast KULĄ (gładszy na krawędziach voxeli niż raycast) + margines + jawna
 	# maska = TYLKO teren (warstwa 1; gracz=2, wrogowie=3 nie wpychają kamery). SpringArm tylko MIERZY
 	# dystans (get_hit_length); samo wygładzanie/pozycjonowanie robimy w _update_camera.
@@ -1448,7 +1447,8 @@ func _update_camera(delta: float) -> void:
 	else:
 		_camera.rotation.z = lerpf(_camera.rotation.z, 0.0, _sm(12.0, delta))
 	_cam_off = _cam_off.lerp(off, _sm(12.0, delta))             # wygładzony offset x/y (bob/shake)
-	_camera.position = Vector3(_cam_off.x, _cam_off.y, -_cam_dist)
+	# SpringArm3D umieszcza dziecko na DODATNIM Z (za pivotem, patrząc w -Z): kamera = +_cam_dist.
+	_camera.position = Vector3(_cam_off.x, _cam_off.y, _cam_dist)
 
 # Wygładzanie długości ramienia kamery: asymetria „do środka" (szybko, anty-clip) vs „na zewnątrz"
 # (wolno, bez szarpniętego zoomu). hit_len = wynik shapecastu SpringArm. Mutuje i zwraca _cam_dist.
