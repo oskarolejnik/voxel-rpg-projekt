@@ -521,6 +521,37 @@ i gracza tak samo, a hitbox peta celuje w `enemy_body` (cala maszyna stanow z `E
   hoscie, wizual replikowany. Determinizm terenu (identyczna geometria u wszystkich) sprawia, ze CCD
   pocisku o teren daje ten sam wynik — kolizje z terenem mozna nawet predykowac bez desyncu.
 
+### 6.4b Faktyczny wzorzec replikacji encji swiata (ETAP 7b — manual roster + stabilny NodePath)
+
+> UWAGA DOK<->KOD: tabela 6.2 i 6.4 opisuja `MultiplayerSpawner`/`MultiplayerSynchronizer` jako
+> docelowy MODEL. Implementacja Etapu 7b swiadomie wybrala WARIANT, ktory zachowuje istniejacy,
+> juz przetestowany kanal HP-sync. Ponizej rzeczywisty kontrakt (zrodlo prawdy dla kolejnego
+> implementera/reviewera).
+
+- **Spawn encji swiata (wrog/loot/pocisk):** NIE przez `MultiplayerSpawner`, lecz przez RECZNY rejestr
+  net_id + per-encja `@rpc` w `NetManager` (`host_spawn_enemy`/`host_spawn_loot`/`host_spawn_projectile`
+  -> `_rpc_spawn_*` u klienta). Host alokuje `net_id` (1000+), nadaje encji STABILNA nazwe
+  `Enemy_<id>`/`Loot_<id>`/`Proj_<id>` i parentuje ja pod znana sciezka (`parent_subpath`, domyslnie
+  `Main`; dla wrogow dungeonu `Main/DungeonRun`). Klient odtwarza replike pod TA SAMA sciezka.
+- **Po co recznie:** `get_path()` repliki u klienta == `get_path()` oryginalu u hosta. Dzieki temu
+  istniejacy HP-sync `DamageService._broadcast_hp` -> `_rpc_sync_hp(target.get_path(), hp)` routuje po
+  NodePath BEZ ZMIAN (zero osobnego kanalu HP na encje). `MultiplayerSpawner` nadaje wlasne nazwy
+  instancjom i nie gwarantuje takiej stabilnosci sciezki dla pre-istniejacego routingu HP.
+- **Transform:** per-encja `MultiplayerSynchronizer` (`NetTransformSync`) replikujacy `.:global_position`
+  (+ `.:_face_dir` dla obrotu modelu), `REPLICATION_MODE_ALWAYS`, autorytet = HOST. Dopinany DEFERRED
+  (klatke po spawn-RPC), by klient zdazyl utworzyc replike przed pierwsza delta (anti „Node not found”).
+- **HP/staty:** dalej `DamageService._rpc_sync_hp` po NodePath (host -> klient), NIE przez Synchronizer.
+- **Fizyka repliki:** u klienta replika ma `set_physics_process(false)` (`Enemy.mark_as_net_replica`) —
+  transform wylacznie z Synchronizera; wlasna grawitacja/`move_and_slide` byłyby wyscigiem z sieciowa
+  pozycja (jitter). `_process` (wizual) zostaje. SP/host: pelna fizyka (AI host-only liczy ruch).
+- **Late-join:** host trzyma `_entity_spawn_data` (przepis kazdej zywej encji) i odtwarza je nowemu
+  peerowi (`_broadcast_full_roster`) tymi samymi `_rpc_spawn_*` (idempotentnie po `net_id`).
+- **Dungeon co-op:** host przy wejsciu rozsyla `_rpc_load_dungeon(seed,tier,biome)`; klient buduje TEN
+  SAM uklad lokalnie (deterministyczny z seeda) — wrogowie dungeonu replikuja sie pod `Main/DungeonRun`
+  (path-match HP-sync). Klient NIE inicjuje wejscia sam (wspolna instancja host-authoritative).
+- **SP-safety:** caly powyzszy stos jest no-op gdy `NetManager.has_network()==false` — SP IDENTYCZNY
+  (lokalny spawn/AI/loot/pickup jak w Etapach 2-5).
+
 ### 6.5 Warstwa abstrakcji autorytetu (SP-first -> retrofit bez przepisywania)
 
 Cala mutacja stanu (HP, loot, smierc, postep) przechodzi przez `DamageService`/`LootService`

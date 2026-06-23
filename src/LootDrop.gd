@@ -24,6 +24,10 @@ const DESPAWN_AFTER: float = 120.0            # s — loot znika po czasie (anti
 var item: ItemInstance = null                 # drop itemu
 var gold: int = 0                             # drop zlota (gdy item == null)
 
+## ETAP 7b: net_id replikacji (0 = SP / niezarejestrowany). Host nadaje przy host_spawn_loot;
+## klient prosi hosta o pickup po tym id (request_loot_pickup). W SP zostaje 0 (pickup lokalny).
+var net_id: int = 0
+
 var _age: float = 0.0
 var _spin: float = 0.0
 var _base_y: float = 0.0
@@ -74,7 +78,15 @@ func _process(delta: float) -> void:
 		_halo.rotation.y = -_spin * 0.5
 	# Despawn po czasie (gdy nikt nie podniesie).
 	if _age >= DESPAWN_AFTER and not _picked:
-		queue_free()
+		# ETAP 7b (review #minor): w co-opie timeout MUSI isc przez autorytatywny despawn hosta, inaczej
+		# (a) rejestr hosta _world_entities/_entity_spawn_data przecieka (czyszczony tylko przy pickup),
+		# (b) host i klient zwalniaja replike niezaleznie (rozjazd o klatke). HOST -> host_despawn_entity
+		# (RPC despawn u wszystkich + unregister). SP/KLIENT -> goly queue_free (SP IDENTYCZNY; replika
+		# klienta i tak dostanie _rpc_despawn_entity od hosta lub zwolni sie po wlasnym timerze).
+		if net_id > 0 and NetManager != null and NetManager.has_network() and NetManager.is_host():
+			NetManager.host_despawn_entity(net_id)
+		else:
+			queue_free()
 
 
 # ============================================================================
@@ -148,14 +160,22 @@ func _on_body_entered(body: Node) -> void:
 		return
 	if not (body != null and body.is_in_group("player")):
 		return
-	# Pickup rozstrzyga autorytet (anti-desync). W SP zawsze true.
-	if not NetManager.has_authority(self):
+	# ETAP 7b: pickup rozstrzyga AUTORYTET (anti-desync/anti-dup).
+	#  - SP (brak peera): jak dotad — lokalnie i natychmiast (IDENTYCZNIE z Etapem 2).
+	#  - HOST: podnosi lokalnie (host = autorytet) + despawn repliki u klientow przez net_id.
+	#  - KLIENT: NIE podnosi lokalnie — prosi hosta (host waliduje dystans/istnienie, przyznaje,
+	#    despawnuje u wszystkich). Bez tego klient nigdy nie podnioslby lootu (stara bramka).
+	if NetManager == null or not NetManager.has_network():
+		_try_pickup(body)                              # SP
 		return
-	_try_pickup(body)
+	if NetManager.is_host():
+		_host_grant_pickup(body)                       # HOST: lokalny grant + replikacja despawnu
+	else:
+		var pid := NetManager.local_peer_id()
+		NetManager.request_loot_pickup(net_id, pid)    # KLIENT: prosba do hosta
 
 
-## Probuje podniesc loot do ekwipunku gracza. Item -> InventoryComponent.add_to_backpack; zloto ->
-## GameState.add_gold (jesli istnieje). Emituje picked_up (toast) i znika.
+## SP: pelny lokalny pickup (item -> plecak, zloto -> GameState) + toast + despawn. Bez sieci.
 func _try_pickup(player: Node) -> void:
 	if item != null:
 		var inv := _find_inventory(player)
@@ -168,6 +188,76 @@ func _try_pickup(player: Node) -> void:
 	_picked = true
 	picked_up.emit(self)
 	queue_free()
+
+
+## HOST (co-op): gracz (host lub replika klienta) wszedl w loot. Host przyznaje zawartosc lokalnie
+## (gdy to host podnosi: item -> jego plecak, zloto -> jego GameState) i rozsyla despawn do klientow.
+## Gdy w loot wszedl gracz KLIENTA (replika u hosta), faktyczne przyznanie do plecaka klienta robi
+## kanal RPC w NetManager._rpc_request_pickup (host nie ma prawdziwego plecaka klienta) — tu host
+## jedynie despawnuje encje u wszystkich (klient sam prosi przez request_loot_pickup, gdy to jego
+## lokalny gracz wejdzie w loot u niego). Dla gracza-hosta: pelny lokalny grant.
+func _host_grant_pickup(player: Node) -> void:
+	if _picked:
+		return
+	# Czy to LOKALNY gracz hosta? (host ma prawdziwy plecak tylko swojego gracza.)
+	var local_p = GameState.local_player if (GameState != null and "local_player" in GameState) else null
+	if player == local_p:
+		_try_pickup(player)                            # host podnosi dla siebie (lokalny plecak)
+	else:
+		# Replika gracza klienta wpadla w loot u hosta — przyznaj klientowi przez kanal RPC po jego peer.
+		var peer := _peer_of_player(player)
+		if peer > 0 and NetManager != null:
+			grant_to(player)
+			if item != null:
+				NetManager._rpc_inventory_add.rpc_id(peer, item.to_dict())
+			elif gold > 0:
+				NetManager._rpc_grant_gold.rpc_id(peer, gold)
+		mark_picked()
+	# Despawn repliki u klientow + sprzataj rejestr (idempotentne).
+	if net_id > 0 and NetManager != null:
+		NetManager.host_despawn_entity(net_id)
+
+
+## Znajduje peer-wlasciciela encji gracza (po NetManager rosterze). 0 gdy nieznany.
+func _peer_of_player(player: Node) -> int:
+	if NetManager == null:
+		return 0
+	for pid in NetManager.peer_ids():
+		if NetManager.player_for_peer(int(pid)) == player:
+			return int(pid)
+	return 0
+
+
+## ETAP 7b: przyznaje zawartosc lootu graczowi PO STRONIE HOSTA (autorytet). Item -> plecak gracza
+## (gdy host ma jego prawdziwy InventoryComponent, tj. gracz-host); zloto -> GameState. Dla repliki
+## klienta plecak jest po stronie klienta — host woła to dla spojnosci, a realne dodanie robi RPC.
+func grant_to(player: Node) -> void:
+	if item != null:
+		var inv := _find_inventory(player)
+		if inv != null:
+			inv.add_to_backpack(item)
+	elif gold > 0:
+		if GameState != null and GameState.has_method("add_gold"):
+			GameState.add_gold(gold)
+
+
+## Czy loot zostal juz podniesiony (host/klient czyta przed grantem — anti-dup).
+func is_picked() -> bool:
+	return _picked
+
+
+## Oznacza loot jako podniesiony + emituje picked_up (rejestr/toast). Idempotentne.
+func mark_picked() -> void:
+	if _picked:
+		return
+	_picked = true
+	picked_up.emit(self)
+
+
+## ETAP 7b: toast lokalny u gracza, ktory podniosl loot w co-opie (host rozstrzyga, ale toast pokazuje
+## sie tylko wlascicielowi). Main podpina picked_up do toastu; tu emitujemy je dla spojnosci kanalu.
+func show_local_toast() -> void:
+	picked_up.emit(self)
 
 
 func _find_inventory(player: Node) -> InventoryComponent:

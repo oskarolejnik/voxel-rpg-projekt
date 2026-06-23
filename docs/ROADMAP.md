@@ -170,6 +170,16 @@ komponent. Cala walka host-authoritative — w Etapie 7 dokladamy tylko transpor
 - **Etap 7 — CO-OP:** `NetManager` live (Spawner/Synchronizer/RPC), predykcja+rekonsyliacja ruchu,
   walka/loot host-authoritative przez transport, host save. DoD: 2–4 graczy w jednym swiecie, brak
   desyncu HP/lootu, klient z wlasna postacia.
+  - **Etap 7b (domkniecie — replikacja wspolnego swiata):** host-authoritative spawn/transform/HP
+    wrogow, loot i pociskow replikowane host->klient przez RECZNY rejestr net_id + stabilny NodePath
+    (`Enemy_<id>`/`Loot_<id>`) — patrz TDD 6.4b (wzorzec wybrany zamiast `MultiplayerSpawner`, by
+    zachowac istniejacy kanal HP-sync po sciezce). Pickup lootu host-authoritative (klient ->
+    `request_loot_pickup` -> host waliduje dystans/istnienie -> grant + despawn u wszystkich).
+    Wrogowie u klienta to repliki (fizyka OFF, transform z `MultiplayerSynchronizer`). **DoD spelniony
+    dla OTWARTEGO SWIATA ORAZ DUNGEONOW**: host przy wejsciu rozsyla `_rpc_load_dungeon(seed,tier,biome)`,
+    klient buduje ten sam uklad lokalnie i dostaje repliki wrogow dungeonu pod `Main/DungeonRun`
+    (path-match HP-sync). Pelna walidacja replikacji w zywej scenie wymaga RECZNEGO testu 2-graczy
+    (residual_risks); headless pokrywa kontrakt + SP-bramki + transport ENet (Etap7bTest A/B/C).
 - **Etap 8 — Polish:** balans (liczby z `GDD.md` 5/6), VFX/SFX (wlasne/CC0), UI/menu/ustawienia.
   DoD: grywalny vertical slice (pare itemow/klasa, pare mobow, 3 biomy).
 

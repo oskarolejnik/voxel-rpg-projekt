@@ -317,6 +317,11 @@ func has_key() -> bool:
 ## LOKALNY RNG(seed, room_id) -> ta sama zawartosc dla tego samego seeda (kontrakt party Etap 7).
 ## ilvl lootu rosnie z glebia pokoju i tierem (model CW: glebiej = mocniej).
 func _spawn_enemies() -> void:
+	# ETAP 7b: w co-opie KLIENT nie spawnuje wlasnych wrogow dungeonu — host je replikuje (RPC).
+	# Geometria dungeonu jest deterministyczna z seeda (klient buduje ja lokalnie), ale ENCJE wrogow
+	# (transform/HP) musza byc host-authoritative jak w swiecie. SP/HOST -> pelny lokalny spawn.
+	if NetManager != null and NetManager.has_network() and not NetManager.is_host():
+		return
 	var rooms: Array = _layout["rooms"]
 	var biome_res: BiomeResource = EnemyDB.biome(_biome) if EnemyDB != null else null
 	var table: Array = biome_res.enemy_spawn_table if biome_res != null else []
@@ -397,6 +402,14 @@ func _spawn_one_enemy(enemy_id: StringName, pos: Vector3, ilvl: int, is_boss: bo
 	if is_boss:
 		e.died.connect(_on_boss_died)
 	_enemies_alive += 1
+	# ETAP 7b: HOST replikuje wroga dungeonu do klientow POD sciezka "Main/DungeonRun" (== sciezka
+	# u hosta: DungeonRun jest dzieckiem Main o nazwie "DungeonRun"). Klient buduje TEN SAM run lokalnie
+	# (DungeonManager._on_net_dungeon_load po _rpc_load_dungeon), wiec replika laduje pod pasujaca sciezka
+	# -> DamageService._rpc_sync_hp (routuje po NodePath) trafia. Pozycja GLOBALNA (origin + local) —
+	# klient ma run na tym samym DUNGEON_ORIGIN (deterministyczny uklad). SP -> no-op.
+	if NetManager != null:
+		NetManager.host_spawn_enemy(e, enemy_id, e.global_position, e.loot_ilvl, _biome,
+			e.loot_tier_bonus, "Main/DungeonRun")
 	return e
 
 

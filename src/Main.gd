@@ -877,6 +877,12 @@ func _on_enemy_loot_dropped(world_pos: Vector3, drops: Array) -> void:
 			drop = LootDropScript.spawn_gold(self, pos, int(d.get("amount", 0)))
 		if drop != null:
 			drop.picked_up.connect(_on_loot_picked_up)
+			# ETAP 7b: HOST replikuje encje LootDrop do klientow (stabilna sciezka Loot_<id> + net_id
+			# dla pickup-RPC). SP -> natychmiastowy no-op (loot lokalny, pickup lokalny jak w Etapie 2).
+			# Loot powstaje TYLKO na hoscie (LootService.drop_for jest has_state_authority), wiec to
+			# jedyne zrodlo — klient dostaje replike przez RPC, nie generuje wlasnej.
+			if NetManager != null:
+				NetManager.host_spawn_loot(drop, pos)
 		i += 1
 
 # ETAP 2: gracz podniósł loot -> toast w kolorze rzadkości (item) lub złoty (złoto).
@@ -887,3 +893,13 @@ func _on_loot_picked_up(drop: LootDrop) -> void:
 		_inv_ui.show_item_toast(drop.item)
 	elif drop.gold > 0:
 		_inv_ui.show_gold_toast(drop.gold)
+
+# ETAP 7b (review #minor): KLIENT — podpina REPLIKE lootu (utworzona przez NetManager._rpc_spawn_loot_*)
+# pod ten sam toast co loot lokalny. Bez tego klient dostaje item do plecaka (poprawnie), ale NIE widzi
+# toastu (picked_up emitowane przez show_local_toast nie mialoby sluchacza u klienta). Wolane WYLACZNIE
+# przez kanal spawnu repliki u klienta (host laczy picked_up sam w _on_enemy_loot_dropped). SP nietkniety.
+func bind_remote_loot(drop: LootDrop) -> void:
+	if drop == null or not is_instance_valid(drop):
+		return
+	if not drop.picked_up.is_connected(_on_loot_picked_up):
+		drop.picked_up.connect(_on_loot_picked_up)

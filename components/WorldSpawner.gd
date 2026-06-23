@@ -59,6 +59,11 @@ func setup(world: VoxelWorld, player: Node3D, on_died: Callable = Callable(),
 
 
 func _process(delta: float) -> void:
+	# ETAP 7b: w trybie sieciowym KLIENT NIE spawnuje wlasnych wrogow — dostaje repliki RPC od hosta
+	# (host_spawn_enemy -> _rpc_spawn_enemy). SP (has_network()==false) ORAZ HOST ida pelna petla
+	# lokalna jak dotad (deterministyczny spawn z seeda; SP IDENTYCZNY). Bramka jak w architekturze.
+	if NetManager != null and NetManager.has_network() and not NetManager.is_host():
+		return
 	if _world == null or _player == null or not is_instance_valid(_player):
 		return
 	_tick_left -= delta
@@ -71,6 +76,10 @@ func _process(delta: float) -> void:
 ## Aktywuje regiony w promieniu wokół gracza (deterministyczny spawn). Region raz aktywowany
 ## nie spawnuje ponownie (dopóki nie zapomniany). Limit aktywnych pilnuje, by nie zalać sceny.
 func _update_regions() -> void:
+	# ETAP 7b: KLIENT w co-opie nie spawnuje wrogow lokalnie (repliki przychodza RPC). Bramka tu
+	# DODATKOWO chroni przed wywolaniem wprost przez Main._spawn_enemies (pierwszy natychmiastowy tick).
+	if NetManager != null and NetManager.has_network() and not NetManager.is_host():
+		return
 	if _active >= MAX_ACTIVE:
 		return
 	var pr := _region_of(_player.global_position)
@@ -233,6 +242,11 @@ func _spawn_enemy(enemy_id: StringName, pos: Vector3, biome_id: StringName, dtie
 	if _on_died.is_valid():
 		e.died.connect(_on_died)
 	_active += 1
+	# ETAP 7b: HOST replikuje tego wroga do klientow (stabilna sciezka Enemy_<id> + synchronizer
+	# transformu + sync HP istniejacym kanalem). SP -> natychmiastowy no-op; klient tu nie wchodzi
+	# (jego _process/_update_regions sa bramkowane wyzej). Jedyne zrodlo wrogow w co-opie = host.
+	if NetManager != null:
+		NetManager.host_spawn_enemy(e, enemy_id, e.global_position, e.loot_ilvl, biome_id, e.loot_tier_bonus)
 
 
 func _on_enemy_died(_e: Enemy) -> void:

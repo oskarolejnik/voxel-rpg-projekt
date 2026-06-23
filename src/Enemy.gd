@@ -155,6 +155,16 @@ var hp: float = 30.0
 var _target: Node3D = null                    # gracz (push z Main lub fallback z grupy)
 var _home: Vector3 = Vector3.ZERO             # punkt startu (środek patrolu / leash)
 
+# ETAP 7b: net_id replikacji (0 = SP / niezarejestrowany). Host nadaje przy host_spawn_enemy;
+# klient odtwarza replike z tym samym id (despawn/late-join routuja po nim). W SP zostaje 0.
+# Jawne pole klasowe (nie tylko lokalna NetIdentity) — przejrzysty kontrakt, mirror LootDrop.net_id.
+var net_id: int = 0
+
+# ETAP 7b: KLIENT-replika (host_authoritative) — gdy ustawione, ten wrog jest CZYSTA REPLIKA u klienta:
+# pozycje narzuca MultiplayerSynchronizer, wiec WLASNA fizyka (grawitacja/move_and_slide) jest wylaczona,
+# by nie walczyc z synchronizerem (anti-jitter, review #minor). SP/host: zawsze false -> pelna fizyka.
+var _is_net_replica: bool = false
+
 # ============================================================================
 #  ETAP 6 — ALLEGIANCE (wrog / pet) + skalowanie peta wg gracza
 # ============================================================================
@@ -216,9 +226,9 @@ func _build_components() -> void:
 	#    liczy WYLACZNIE host (TDD 6.2). Jawne ustawienie (a nie poleganie na domyslnym 1) sprawia, ze
 	#    NetManager.has_authority(enemy) u klienta jednoznacznie zwraca false (owner_peer != peer klienta)
 	#    -> klient nie ma autorytetu nad wrogiem (anti-cheat HP). W SP owner_peer=1 == lokalny peer (no-op).
-	var net_id := NetIdentity.new()
-	net_id.owner_peer = NetManager.HOST_PEER_ID if NetManager != null else 1
-	add_child(net_id)
+	var ident := NetIdentity.new()
+	ident.owner_peer = NetManager.HOST_PEER_ID if NetManager != null else 1
+	add_child(ident)
 
 	# 1) StatsComponent z base StatBlock zbudowanym z eksportów (jedno źródło staty wroga).
 	_stats = StatsComponent.new()
@@ -371,6 +381,20 @@ func _cube(parent: Node3D, size: Vector3, pos: Vector3, color: Color, emit: bool
 # ============================================================================
 func set_target(t: Node3D) -> void:
 	_target = t
+
+
+# ETAP 7b: oznacza wroga jako CZYSTA REPLIKA u klienta (host_authoritative). Pozycje narzuca
+# MultiplayerSynchronizer (NetTransformSync), wiec wlasna fizyka tego ciala jest zbedna i wręcz
+# szkodliwa (grawitacja kumuluje velocity.y, move_and_slide moze wepchnac replike w teren ZANIM
+# synchronizer ja przyciagnie -> mikro-jitter, review #minor). Wylaczamy ja na replice: transform
+# pochodzi WYLACZNIE z sieci, klient tylko interpoluje. WOLA TYLKO NetManager._rpc_spawn_enemy
+# (czyli wylacznie u klienta w co-opie). SP/host NIGDY tu nie wchodzi -> pelna fizyka jak dotad.
+func mark_as_net_replica() -> void:
+	_is_net_replica = true
+	# Zatrzymujemy _physics_process (zero grawitacji/move_and_slide), ale _process (wizual: obrot
+	# modelu z replikowanego _face_dir, kolysanie konczyn, blysk) DZIALA — replika wyglada zywo.
+	set_physics_process(false)
+	velocity = Vector3.ZERO
 
 
 # ============================================================================
@@ -897,3 +921,11 @@ func _spawn_projectile() -> void:
 	if parent != null:
 		parent.add_child(proj)
 		proj.global_position = origin
+	# ETAP 7b: HOST replikuje pocisk do klientow (klient ekstrapoluje wizual lokalnie — TDD 6.4).
+	# Spawn pociskow jest i tak host-only (AI host-only -> _spawn_projectile odpala sie wylacznie u
+	# autorytetu), wiec host jest jedynym zrodlem. SP -> no-op. Host despawnuje replike na impakcie.
+	if NetManager != null and NetManager.has_network() and NetManager.is_host():
+		var nid := NetManager.host_spawn_projectile(origin, dir, projectile_speed, mask,
+			projectile_gravity, projectile_pierce)
+		if nid > 0:
+			proj.impacted.connect(func(_p: Vector3, _t: Node) -> void: NetManager.host_despawn_entity(nid))

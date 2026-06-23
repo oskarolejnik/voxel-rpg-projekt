@@ -55,6 +55,14 @@ func setup(world: VoxelWorld, player: Node3D, spawner: WorldSpawner, main: Node,
 	_main = main
 	_on_loot = on_loot
 	_on_enemy_died = on_enemy_died
+	# ETAP 7b: KLIENT podaza za hostem do/z dungeonu (host rozsyla seed/tier/biome RPC). Klient sam
+	# NIE inicjuje wejscia (host-authoritative wspolna instancja) — buduje run dopiero na sygnal.
+	# Subskrypcja bezpieczna tez w SP (sygnaly nigdy nie emitowane -> no-op). Idempotentne.
+	if NetManager != null:
+		if not NetManager.dungeon_load_requested.is_connected(_on_net_dungeon_load):
+			NetManager.dungeon_load_requested.connect(_on_net_dungeon_load)
+		if not NetManager.dungeon_exit_requested.is_connected(_on_net_dungeon_exit):
+			NetManager.dungeon_exit_requested.connect(_on_net_dungeon_exit)
 
 
 func _process(delta: float) -> void:
@@ -107,14 +115,39 @@ func _place_entrance(cx: int, cz: int) -> void:
 	_entrance_chunks[Vector2i(cx, cz)] = ent
 
 
-## Gracz zazadal wejscia (klawisz E przy wejsciu). HOST-ONLY w co-opie (Etap 7): host buduje,
-## RPC seed/tier do klientow. W SP wchodzimy od razu.
+## Gracz zazadal wejscia (klawisz E przy wejsciu). ETAP 7b: w co-opie wejscie jest HOST-AUTHORITATIVE
+## (wspolna instancja). HOST buduje run lokalnie I rozsyla (seed,tier,biome) klientom (_rpc_load_dungeon
+## -> _on_net_dungeon_load -> klient buduje TEN SAM uklad). KLIENT NIE inicjuje wejscia sam (jego E
+## przy wejsciu jest ignorowane — podaza za hostem), inaczej party rozjechaloby sie na osobne instancje.
+## W SP (has_network()==false) is_host()==true -> wchodzimy od razu jak dotad (SP IDENTYCZNY).
 func _on_enter_requested(seed: int, tier: int, biome: StringName) -> void:
 	if _run != null:
 		return                              # juz w dungeonie
 	if _reentry_cooldown > 0.0:
 		return                              # tuz po wyjsciu — nie wpadaj z powrotem na tym samym portalu
+	# Co-op: tylko host inicjuje wejscie; klient czeka na _rpc_load_dungeon (host-authoritative instancja).
+	if NetManager != null and NetManager.has_network() and not NetManager.is_host():
+		return
 	_enter_dungeon(seed, tier, biome)
+	# HOST w co-opie: rozeslij wejscie klientom (buduja ten sam uklad lokalnie + dostana repliki wrogow).
+	if NetManager != null and NetManager.has_network() and NetManager.is_host():
+		NetManager.broadcast_dungeon_load(seed, tier, biome)
+
+
+## KLIENT (ETAP 7b): host wszedl do dungeonu -> zbuduj TEN SAM run lokalnie (deterministyczny uklad
+## z seeda). Repliki wrogow dungeonu (host_spawn_enemy parent="Main/DungeonRun") trafia pod pasujaca
+## sciezke -> HP-sync dziala. Klient NIE spawnuje wlasnych wrogow (DungeonRun._spawn_enemies bramkuje).
+func _on_net_dungeon_load(seed: int, tier: int, biome: StringName) -> void:
+	if _run != null:
+		return                              # juz w dungeonie (idempotencja)
+	_enter_dungeon(seed, tier, biome)
+
+
+## KLIENT (ETAP 7b): host wyszedl z dungeonu -> znisz lokalna instancje i wroc do swiata.
+func _on_net_dungeon_exit() -> void:
+	if _run == null:
+		return
+	_exit_dungeon()
 
 
 ## WEJSCIE: zapamietaj pozycje w swiecie, zatrzymaj spawner + ukryj swiat, zbuduj DungeonRun,
@@ -208,6 +241,10 @@ func _exit_dungeon() -> void:
 	GameState.exit_run()
 	if _main != null and _main.has_method("save_after_dungeon"):
 		_main.save_after_dungeon()
+
+	# 6) ETAP 7b: HOST rozsyla wyjscie klientom (znisza lokalna DungeonRun, wroca do swiata). No-op w SP.
+	if NetManager != null and NetManager.has_network() and NetManager.is_host():
+		NetManager.broadcast_dungeon_exit()
 
 
 ## Teleport gracza na pozycje (zeruje ped + interpolacje, jak respawn). Bezpieczne na rozne typy.
