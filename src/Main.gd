@@ -241,6 +241,27 @@ func _setup_feel_fx() -> void:
 	_feel_fx.name = "FeelFX"
 	add_child(_feel_fx)
 	_feel_fx.connect_damage_service()
+	# FAZA 4 (2)+(5): SCREEN-FLASH routing. FeelFX dostaje HUD (gdyby kiedys flashowal sam), ale
+	# wlasciwa BRAMKA jest tu: flash to feedback ATAKU GRACZA (source==_player_ref, cel to wrog), nie
+	# wroga bijacego gracza. Krytyk = zloty (zawsze), mocny niekrytyczny = bialy (prog), lekki = bez
+	# flasha (by nie migac przy kazdym ciosie). Co-op predykcja (dmg==0, crit zawsze false) -> pomijamy.
+	if _feel_fx.has_method("set_hud") and _hud != null:
+		_feel_fx.set_hud(_hud)
+	if DamageService != null and not DamageService.hit_resolved.is_connected(_on_hit_for_flash):
+		DamageService.hit_resolved.connect(_on_hit_for_flash)
+
+# FAZA 4 (2): slot screen-flasha. Flashuje TYLKO gdy bije gracz (source==_player_ref). Krytyk -> zloty;
+# mocny cios (dmg >= prog) -> bialy; lekki -> bez flasha. Predykcja klienta (dmg==0) -> bez flasha.
+const FLASH_BIG_HIT_THRESHOLD: float = 14.0   # ~1.5x bazowego ciosu — prog "mocnego" trafienia
+func _on_hit_for_flash(source: Node, _target: Node, final_damage: float, was_crit: bool) -> void:
+	if _hud == null or not _hud.has_method("flash"):
+		return
+	if source == null or source != _player_ref:
+		return
+	if was_crit:
+		_hud.flash(true)
+	elif final_damage >= FLASH_BIG_HIT_THRESHOLD:
+		_hud.flash(false)
 
 # FEEL (8): tworzy emiter ambientu biomu (spadajace czastki nad/wokol gracza). Parametry materialu
 # (kolor/grawitacja/predkosc/rozmiar) ustawia _apply_biome_fx wg biomu — tu tylko szkielet/pula.
@@ -321,6 +342,19 @@ func _apply_biome_fx(biome: StringName) -> void:
 			pm.initial_velocity_min = 0.3
 			pm.initial_velocity_max = 0.9
 	_biome_fx.restart()
+
+	# FAZA 4 (6): per-biom kolor pylu spod stop gracza (sprint/zwrot). Emberwaste = cieplejszy/rdzawy,
+	# Frosthelm = chlodny/biały (snieg), Verdant = ziemisty. Tani: jeden set albedo na zmianie biomu.
+	if _player_ref != null and is_instance_valid(_player_ref) and _player_ref.has_method("set_dust_tint"):
+		var dust: Color
+		match biome:
+			&"emberwaste":
+				dust = Color(0.82, 0.55, 0.36, 0.7)   # rdzawy spiek
+			&"frosthelm":
+				dust = Color(0.92, 0.95, 1.0, 0.7)    # chlodny snieg/szron
+			_:
+				dust = Color(0.62, 0.56, 0.42, 0.7)   # ziemisty (verdant/fallback)
+		_player_ref.set_dust_tint(dust)
 
 
 # FEEL 3: ustawia DOCELOWY grade postu wg biomu (lerpowany w _update_biome_post co klatkę). Trzymane

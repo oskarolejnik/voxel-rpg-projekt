@@ -26,6 +26,14 @@ extends Resource
 @export var scene: PackedScene                       # pocisk/AoE/strefa do zespawnowania
 @export var passive_modifiers: Array[StatModifier] = []   # gdy skill wpiety
 
+# --- FAZA 4 (3) ABILITY AURY: wizual kastowania/uzycia skilla (czysto kosmetyczny) ---
+# aura_kind sterowane danymi: &"" = brak aury (stare skille bez zmian), &"ring" = rosnacy pierscien
+# (np. Wir Ostrzy), &"slam" = uderzenie w ziemie (iskra+puls+fala, np. Roztrzaskanie), &"cast" = puls
+# u stop. Encja (Player) czyta te pola i wola FeelFX.spawn_ability_aura w fazie ACTIVE skilla.
+@export var aura_kind: StringName = &""
+@export var aura_color: Color = Color(1.0, 1.0, 1.0, 1.0)
+@export var aura_radius: float = 2.0
+
 
 ## Czy skill ma zdefiniowany timeline (jakakolwiek faza > 0). Gdy false -> stara sciezka:
 ## skill wykonuje sie natychmiast (perform_skill od razu), bez maszyny faz w AbilityComponent.

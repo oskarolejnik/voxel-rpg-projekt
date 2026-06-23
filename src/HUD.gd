@@ -41,6 +41,16 @@ var _levelup_label: Label
 var _death_overlay: ColorRect
 var _death_label: Label
 
+# FAZA 4 (2): SCREEN-FLASH na impakcie/krytyku — pelnoekranowy ColorRect, krotki rozblysk.
+# Krytyk = zlotawy/mocniejszy, zwykly mocny cios = lekki bialy. NIE oslepiac (peak 0.14..0.30).
+# Wlasny licznik w _process (bez tweenow per-flash — serie nie nakladaja sie blednie).
+var _flash_overlay: ColorRect
+var _flash_t: float = 0.0
+var _flash_dur: float = 0.0
+var _flash_peak: float = 0.0
+const FLASH_COL_CRIT: Color = Color(1.0, 0.86, 0.45)   # zlotawy krytyk
+const FLASH_COL_HIT: Color = Color(1.0, 1.0, 1.0)      # bialy mocny cios
+
 func _ready() -> void:
 	_build_bars()
 	_build_death_screen()
@@ -148,6 +158,15 @@ func _build_bars() -> void:
 	_combo_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_combo_root.add_child(_combo_caption)
 
+	# --- FAZA 4 (2): pelnoekranowy SCREEN-FLASH (nad swiatem, POD ekranem smierci). ---
+	# Dodany TU (przed _build_death_screen) => death-overlay rysuje sie PO nim i go przykrywa.
+	_flash_overlay = ColorRect.new()
+	_flash_overlay.color = Color(FLASH_COL_HIT.r, FLASH_COL_HIT.g, FLASH_COL_HIT.b, 0.0)
+	_flash_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_flash_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_flash_overlay.visible = false
+	add_child(_flash_overlay)
+
 # Tworzy prostokąt o danym kolorze i rozmiarze. HUD nie łapie kliknięć.
 func _make_rect(color: Color, size: Vector2) -> ColorRect:
 	var r := ColorRect.new()
@@ -172,6 +191,33 @@ func _build_death_screen() -> void:
 	_death_label.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_death_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_death_overlay.add_child(_death_label)
+
+# ============================================================================
+#  FAZA 4 (2) — SCREEN-FLASH (impakt/krytyk). Wolane przez Main z hit_resolved gdy bije GRACZ.
+# ============================================================================
+## Wyzwala krotki rozblysk. is_crit -> zlotawy, mocniejszy (peak 0.30, 0.18 s); inaczej lekki bialy
+## (peak 0.14, 0.10 s). Mocniejszy flash NADPISUJE slabszy (max), slabszy nie przerywa silniejszego.
+func flash(is_crit: bool) -> void:
+	if _flash_overlay == null:
+		return
+	var peak := 0.30 if is_crit else 0.14
+	var dur := 0.18 if is_crit else 0.10
+	var col := FLASH_COL_CRIT if is_crit else FLASH_COL_HIT
+	# Silniejszy flash wygrywa: nie pozwalamy slabszemu przyciemnic trwajacego mocnego.
+	if peak >= _flash_peak or _flash_t <= 0.0:
+		_flash_peak = peak
+		_flash_dur = dur
+		_flash_t = dur
+		_flash_overlay.color = Color(col.r, col.g, col.b, peak)
+	_flash_overlay.visible = true
+
+func _process(delta: float) -> void:
+	if _flash_t > 0.0:
+		_flash_t = maxf(0.0, _flash_t - delta)
+		var a := _flash_peak * (_flash_t / _flash_dur) if _flash_dur > 0.0 else 0.0
+		_flash_overlay.color.a = clampf(a, 0.0, 1.0)
+		if _flash_t == 0.0:
+			_flash_overlay.visible = false
 
 # ============================================================================
 #  SLOTY SYGNAŁÓW GRACZA (podłączane w Main)

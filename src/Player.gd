@@ -387,6 +387,14 @@ var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reu
 # FEEL 7: pyl spod stop podczas biegu (kadencja kroku) — re-use _land_dust co interwal.
 const SPRINT_DUST_INTERVAL: float = 0.26    # s miedzy obloczkami przy biegu (tempo kroku)
 var _sprint_dust_t: float = 0.0
+# FAZA 4 (6): debounce pylu poslizgu przy ostrym zwrocie (min odstep, by nie spamowac).
+const TURN_DUST_DEBOUNCE: float = 0.12
+var _turn_dust_t: float = 0.0
+var _prev_move_dir: Vector3 = Vector3.ZERO  # kierunek ruchu z poprzedniej klatki (do detekcji zwrotu)
+# FAZA 4 (1): kolor smugi broni (slash-trail). Default bialo-stalowy; moze pochodzic z broni/elementu.
+@export var _weapon_trail_color: Color = Color(0.85, 0.92, 1.0)
+# FAZA 4: leniwie cache'owana referencja do FeelFX (Main dodaje go do drzewa). Brak -> ciche no-op.
+var _feel_fx_ref: Node = null
 
 func _ready() -> void:
 	_compute_proportions()  # WYLICZ VS + wysokości pivotów z parametrów (PRZED budową modelu)
@@ -610,6 +618,10 @@ func _build_progression() -> void:
 		_skill_finisher.damage_mult = 0.8
 		var ftags: Array[StringName] = [&"phys", &"aoe", &"melee"]
 		_skill_finisher.tags = ftags
+		# FAZA 4 (3): Wir Ostrzy -> aura-pierscien (kolor stalowy, promien = zasieg AoE wokol gracza).
+		_skill_finisher.aura_kind = &"ring"
+		_skill_finisher.aura_color = Color(0.8, 0.9, 1.0)
+		_skill_finisher.aura_radius = 2.6
 
 # ============================================================================
 #  ETAP 3 — PUBLICZNE API PROGRESJI (Main/HUD/UI drzewka/test wolaja to)
@@ -1277,6 +1289,17 @@ func _spawn_sprint_dust() -> void:
 		back = -back.normalized() * 0.3
 	_land_dust.global_position = global_position + back
 	_land_dust.amount = 6
+	_land_dust.restart()
+	_land_dust.emitting = true
+
+# FAZA 4 (6): mocniejszy obloczek pylu PRZY OSTRYM ZWROCIE (poslizg). Wiecej czastek niz zwykly krok,
+# pozycja po ZEWNETRZNEJ stronie zwrotu (przeciwnie do nowego kierunku — slad poslizgu). Reuse _land_dust.
+func _spawn_turn_dust(new_dir: Vector3) -> void:
+	if _land_dust == null:
+		return
+	var offset := -new_dir * 0.35       # po zewnetrznej stronie zwrotu (za nowym kierunkiem)
+	_land_dust.global_position = global_position + offset
+	_land_dust.amount = 10
 	_land_dust.restart()
 	_land_dust.emitting = true
 
@@ -2128,14 +2151,25 @@ func _physics_process(delta: float) -> void:
 		# FEEL 7: SPRINT JUICE — przy biegu po ziemi pyl spod stop (kadencja kroku) + (FOV/bob juz sa).
 		# Tani: re-use one-shot _land_dust co krok (przy fazie chodu mijajacej dolny punkt). Waga ruchu.
 		if simulate and is_on_floor() and not is_dead and _dodge_t <= 0.0:
-			var hsp := Vector2(velocity.x, velocity.z).length()
+			var hvel := Vector3(velocity.x, 0.0, velocity.z)
+			var hsp := hvel.length()
 			if hsp > speed + 0.6:                  # tylko BIEG (nie zwykly chod)
 				_sprint_dust_t -= delta
 				if _sprint_dust_t <= 0.0:
 					_sprint_dust_t = SPRINT_DUST_INTERVAL
 					_spawn_sprint_dust()
+				# FAZA 4 (6): PYL POSLIZGU przy OSTRYM ZWROCIE — gdy kierunek ruchu gwaltownie sie zmienil
+				# (dot < 0.3 wzgledem poprzedniej klatki), buchnij mocniejszym obloczkiem (debounce).
+				_turn_dust_t = maxf(0.0, _turn_dust_t - delta)
+				var cur_dir := hvel / hsp
+				if _prev_move_dir.length_squared() > 0.01 and _turn_dust_t <= 0.0:
+					if cur_dir.dot(_prev_move_dir) < 0.3:
+						_turn_dust_t = TURN_DUST_DEBOUNCE
+						_spawn_turn_dust(cur_dir)
+				_prev_move_dir = cur_dir
 			else:
 				_sprint_dust_t = 0.0
+				_prev_move_dir = Vector3.ZERO
 
 	# ETAP 7: PREDYKCJA/REKONSYLIACJA + INTERPOLACJA. No-op w SP (net_post_physics -> return gdy brak
 	# sieci). Klient-właściciel: buforuje input + wysyła do hosta; host: rozsyła snapshoty; cudza postać
@@ -2273,9 +2307,13 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 		if _hitbox != null:
 			var fyaw := _pivot.rotation.y
 			var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+			_atk_forward = forward          # FAZA 4: smuga/aura zorientowane wzdluz ciosu
 			_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
 			_hitbox.open_window(0.14, forward)
 		add_trauma(0.18)
+		# FAZA 4 (1)+(3): Wir Ostrzy — szeroka smuga 360° (big) + aura-pierscien wg SkillResource.
+		_spawn_slash_trail(true)
+		_spawn_ability_aura(_skill_finisher)
 
 # ============================================================================
 #  FAZA 1 — ATTACK TIMELINE (ANTICIPATION -> ACTIVE -> RECOVERY) + COMBO CHAIN
@@ -2329,6 +2367,9 @@ func _enter_attack_active() -> void:
 		_hitbox.open_window(_atk_active, _atk_forward)   # hity przez DamageService
 	else:
 		_melee_sweep(_atk_forward)                       # fallback recznej petli
+	# FAZA 4 (1): SLASH-TRAIL — smuga broni DOPIERO w ACTIVE (nie w ANTICIPATION). 3. cios serii =
+	# szerszy luk (big). Spina sie z overshoot/follow-through z Fazy 2 (gasnie z koncem zamachu).
+	_spawn_slash_trail(_is_chain_finisher())
 
 func _enter_attack_recovery() -> void:
 	_atk_phase = AtkPhase.RECOVERY
@@ -2512,8 +2553,9 @@ func _on_hitbox_hit_landed(_target: Node) -> void:
 	# TRAFIENIU, nigdy na zamachu. _last_hit_crit przychodzi z DamageService tuz przed tym callbackiem.
 	if not _hitstop_active:
 		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
-	# Trauma kamery proporcjonalna do wagi (krytyk/ciezki/3.cios = mocniejszy wstrzas).
-	add_trauma(0.20 if (_last_hit_crit or heavy) else 0.12)
+	# Trauma kamery proporcjonalna do wagi. FAZA 4 (5): KRYTYK = najmocniejszy wstrzas (0.26) — czesc
+	# wyrazistego "POW" (obok screen-flasha/crit-burst); ciezki/3.cios = 0.20; zwykly = 0.12.
+	add_trauma(0.26 if _last_hit_crit else (0.20 if heavy else 0.12))
 	# ETAP 3: zadany cios wrecz buduje zasob klasy (Furia +6 / Combo +1 — GDD 4.2/4.3, ROADMAP 6).
 	if _class_res != null:
 		_class_res.on_hit_dealt(true)
@@ -2553,7 +2595,7 @@ func _melee_sweep(forward: Vector3) -> void:
 		# FEEL (2)+FAZA 1: tiered hitstop tez w fallbacku (krytyk z _last_hit_crit, 3.cios = ciezki).
 		var heavy := _is_heavy_attack or _is_chain_finisher()
 		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
-		add_trauma(0.20 if (_last_hit_crit or heavy) else 0.12)
+		add_trauma(0.26 if _last_hit_crit else (0.20 if heavy else 0.12))
 	else:
 		_combo_count = 0
 		_combo_timer = 0.0
@@ -2724,12 +2766,46 @@ func _on_perfect_dodge() -> void:
 # FEEL (5): rozblysk perfect-dodge przez centralny FeelFX (puls swiatla + iskra wokol gracza).
 # FeelFX jest w drzewie (Main go dodaje); brak (test/headless) -> ciche no-op (bez crasha).
 func _spawn_perfect_flash() -> void:
-	var tree := get_tree()
-	if tree == null or tree.root == null:
-		return
-	var fx := tree.root.find_child("FeelFX", true, false)
+	var fx := _find_feel_fx()
 	if fx != null and fx.has_method("spawn_hit_vfx"):
 		fx.spawn_hit_vfx(global_position + Vector3(0.0, 1.0, 0.0), Color(0.6, 0.85, 1.0), true)
+
+# FAZA 4: leniwy lookup centralnego FeelFX w drzewie (Main go dodaje). Cache + walidacja instancji.
+# Brak (headless/test bez Main) -> null => wszyscy wolajacy robia ciche no-op.
+func _find_feel_fx() -> Node:
+	if _feel_fx_ref != null and is_instance_valid(_feel_fx_ref):
+		return _feel_fx_ref
+	var tree := get_tree()
+	if tree == null or tree.root == null:
+		return null
+	_feel_fx_ref = tree.root.find_child("FeelFX", true, false)
+	return _feel_fx_ref
+
+# FAZA 4 (1): smuga broni w fazie ACTIVE ataku. Wolane z _enter_attack_active i finishera (NIGDY w
+# ANTICIPATION). origin u barku (~0.9 m), kierunek = _atk_forward, kolor broni, big dla finishera.
+func _spawn_slash_trail(big: bool) -> void:
+	var fx := _find_feel_fx()
+	if fx != null and fx.has_method("spawn_slash_trail"):
+		var origin := global_position + Vector3(0.0, 0.9, 0.0)
+		fx.spawn_slash_trail(origin, _atk_forward, _weapon_trail_color, big)
+
+# FAZA 4 (3): aura skilla (wg SkillResource.aura_kind) w fazie ACTIVE. No-op gdy skill nie ma aury.
+func _spawn_ability_aura(skill: SkillResource) -> void:
+	if skill == null or skill.aura_kind == &"":
+		return
+	var fx := _find_feel_fx()
+	if fx != null and fx.has_method("spawn_ability_aura"):
+		fx.spawn_ability_aura(skill.aura_kind, skill.aura_color, skill.aura_radius,
+			global_position, _atk_forward)
+
+# FAZA 4 (6): per-biom kolor pylu spod stop. Main/World woła przy zmianie biomu (reuse palety biomu).
+# Tani: jeden albedo_color set na materiale emitera (nie per-czastka).
+func set_dust_tint(color: Color) -> void:
+	if _land_dust == null:
+		return
+	var mesh := _land_dust.draw_pass_1 as QuadMesh
+	if mesh != null and mesh.material is StandardMaterial3D:
+		(mesh.material as StandardMaterial3D).albedo_color = color
 
 # ============================================================================
 #  HP, OBRAŻENIA, ŚMIERĆ, RESPAWN

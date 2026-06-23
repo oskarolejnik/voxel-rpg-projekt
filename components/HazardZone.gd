@@ -30,6 +30,10 @@ var _tick_left: float = 0.0
 var _decal: MeshInstance3D = null
 var _mat: StandardMaterial3D = null
 var _shape: CollisionShape3D = null
+# FAZA 4 (4): kontur obwodki (TorusMesh) — czytelna KRAWEDZ zagrozenia z daleka (swieci mocniej
+# niz wypelnienie). Pulsuje rownolegle do dysku w preview.
+var _ring: MeshInstance3D = null
+var _ring_mat: StandardMaterial3D = null
 
 
 func setup(p_source: Node, hit_builder: Callable, p_mask: int = -1) -> void:
@@ -77,10 +81,33 @@ func _build_decal() -> void:
 	_decal.position.y = 0.03
 	add_child(_decal)
 
+	# FAZA 4 (4): KONTUR OBWODKI — cienki pierscien na krawedzi strefy. Swieci mocniej (energy 1.5
+	# vs 0.6 wypelnienia) => krawedz czytelna z daleka w hordzie. Jeden dodatkowy unlit mesh (tani).
+	_ring = MeshInstance3D.new()
+	var torus := TorusMesh.new()
+	torus.inner_radius = radius * 0.92
+	torus.outer_radius = radius
+	torus.rings = 32
+	_ring.mesh = torus
+	_ring_mat = StandardMaterial3D.new()
+	_ring_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_ring_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ring_mat.albedo_color = Color(preview_color.r, preview_color.g, preview_color.b, 0.85)
+	_ring_mat.emission_enabled = true
+	_ring_mat.emission = Color(active_color.r, active_color.g, active_color.b)
+	_ring_mat.emission_energy_multiplier = 1.5
+	_ring_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	_ring.material_override = _ring_mat
+	_ring.position.y = 0.04
+	add_child(_ring)
+
 
 func _refresh_color() -> void:
 	if _mat != null:
 		_mat.albedo_color = preview_color if preview else active_color
+	if _ring_mat != null:
+		var c := preview_color if preview else active_color
+		_ring_mat.albedo_color = Color(c.r, c.g, c.b, 0.85)
 
 
 ## Uzbraja telegraf: preview -> aktywna strefa (wlacza monitorowanie + obrazenia).
@@ -113,6 +140,10 @@ func _physics_process(delta: float) -> void:
 		if _mat != null:
 			var p := 0.25 + 0.15 * sin(_age * 8.0)
 			_mat.albedo_color = Color(preview_color.r, preview_color.g, preview_color.b, p)
+		# FAZA 4 (4): kontur pulsuje JASNIEJ niz wypelnienie (krawedz "oddycha" -> czytelna zapowiedz).
+		if _ring_mat != null:
+			var rp := 0.6 + 0.35 * sin(_age * 8.0)
+			_ring_mat.albedo_color = Color(preview_color.r, preview_color.g, preview_color.b, rp)
 		return
 
 	# Tylko autorytet zadaje obrazenia (TDD 6.4: strefa tyka na hoscie, wizual replikowany).
