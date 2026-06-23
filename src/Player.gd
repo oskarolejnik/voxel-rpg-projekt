@@ -47,19 +47,54 @@ var _attack_cd: float = 0.0                      # ile zostało do następnego c
 var _attack_anim_t: float = 0.0                  # postęp animacji (>0 = trwa)
 var is_attacking: bool = false                   # FLAGA: blokuje chód-anim na rękach
 
+# ============================================================================
+#  FAZA 1 (FEEL) — ATTACK TIMELINE (ANTICIPATION -> ACTIVE -> RECOVERY)
+# ============================================================================
+# Kazdy cios ma 3 fazy. Hitbox NIE otwiera sie w klatce 0 — dopiero po ANTICIPATION (wind-up):
+#   ANTICIPATION (~0.06 s): hitbox ZAMKNIETY, model cofa/dipuje rece (czytelny zamach -> "impact"),
+#   ACTIVE       (~0.10 s): hitbox OTWARTY (DamageService liczy trafienia),
+#   RECOVERY     (~0.18 s): hitbox zamkniety, CANCELABLE — w unik ZAWSZE, w nastepny cios w oknie.
+# Czasy biora sie z SkillResource (anticipation/active/recovery/cancel_window) z eksportowymi
+# fallbackami ponizej. Timeline tyka w _physics_process (_tick_attack_timeline). To jedyne zrodlo
+# otwarcia/zamkniecia okna ataku — _perform_skill TYLKO STARTUJE timeline (nie otwiera hitboxa wprost).
+enum AtkPhase { NONE, ANTICIPATION, ACTIVE, RECOVERY }
+@export var attack_anticipation: float = 0.06    # s wind-upu (hitbox zamkniety) — fallback gdy skill=0
+@export var attack_active: float = 0.10          # s aktywnych klatek (hitbox otwarty) — fallback
+@export var attack_recovery: float = 0.18        # s recovery (cancelable) — fallback
+@export var attack_cancel_window: float = 0.12   # s w recovery na cancel-into-next (okno combo)
+var _atk_phase: int = AtkPhase.NONE              # biezaca faza timeline'u ataku
+var _atk_phase_t: float = 0.0                    # czas pozostaly w biezacej fazie (s)
+var _atk_forward: Vector3 = Vector3.ZERO         # kierunek przodu ciosu (do otwarcia hitboxa w ACTIVE)
+var _atk_anticipation: float = 0.06              # zapamietane czasy biezacego ciosu (z SkillResource)
+var _atk_active: float = 0.10
+var _atk_recovery: float = 0.18
+var _atk_cancel_window: float = 0.12
+var _atk_index: int = 0                          # ktory cios w lancuchu (1/2/3) — do juice 3. ciosu
+
 # --- COMBO / PRZEBICIE PANCERZA (sygnatura systemu) ---
 @export var combo_window: float = 1.2            # s na kontynuację combo po trafieniu
 @export var armor_pierce_per_combo: float = 0.15
 @export var armor_pierce_max: float = 0.8
+# FAZA 1: lancuch 3-ciosowy. _chain_step 0->1->2->3 (3=finisher serii: mocniejszy hitstop/shake/
+# knockback). Reset gdy okno cancel/combo wygasnie LUB po wykonaniu 3. ciosu. NIEZALEZNE od
+# _combo_count (przebicie pancerza), ale 3. cios dorzuca premie. _chain_queued = cancel-into-next
+# zakolejkowany w oknie recovery (input buffer + cancel window).
+const ATTACK_CHAIN_MAX: int = 3
 var _combo_count: int = 0
 var _combo_timer: float = 0.0                    # odlicza okno combo; 0 = reset
+var _chain_step: int = 0                         # 0=brak serii, 1..3 = ktory cios w lancuchu
+var _chain_queued: bool = false                  # cancel-into-next zakolejkowany w recovery
 
 # --- UNIK (dash) ---
 @export var dodge_speed: float = 16.0            # m/s zrywu
 @export var dodge_time: float = 0.22             # s trwania zrywu
 @export var dodge_iframes: float = 0.30          # s nietykalności (lekko dłużej niż dash)
 @export var dodge_cooldown: float = 0.55         # s między unikami
+# FAZA 1: po zrywie krotkie RECOVERY (~0.12 s) — postac "laduje" z uniku. Cancelable ATAKIEM (agresja
+# po uniku = nagroda), ale nie ruchem (lekkie wyhamowanie daje wage). i-frames/perfect-dodge bez zmian.
+@export var dodge_recovery: float = 0.12         # s recovery po dashu (cancelable atakiem)
 var _dodge_t: float = 0.0                        # >0 = trwa dash
+var _dodge_recovery_t: float = 0.0               # >0 = trwa recovery po dashu (cancelable atakiem)
 var _dodge_cd: float = 0.0
 var _dodge_dir: Vector3 = Vector3.ZERO
 var is_dodging: bool = false
@@ -199,8 +234,20 @@ var _LEG_X: int = 2           # |x| środka nogi = P_LEG_GAP + P_LEG_W/2
 var _ARM_X: int = 5           # |x| środka ręki = P_SHOULDER_W/2 + P_ARM_GAP + P_ARM_W/2
 
 # --- GAME FEEL (Faza 0C) ---
-@export var ground_accel: float = 55.0     # przyspieszenie na ziemi (m/s^2)
+@export var ground_accel: float = 55.0     # przyspieszenie na ziemi (m/s^2) — szybki ROZPED ("szybki")
 @export var air_accel: float = 14.0        # słabsza kontrola w powietrzu
+# FAZA 1: MOVEMENT WEIGHT ("ciezki ale szybki"). Rozdzielamy rozped od wyhamowania i dodajemy
+# turn_accel (kierunek ruchu DOCHODZI w ~0.08 s, nie natychmiast — ciezar zwrotu) + lean wizualny.
+#  * ground_accel (55): mocny rozped — wystartowanie jest natychmiastowe i responsywne,
+#  * ground_decel (28): SLABSZE wyhamowanie — lekki poslizg po puszczeniu klawisza (waga/momentum),
+#  * turn_accel: jak szybko WEKTOR ruchu obraca sie ku nowemu kierunkowi (nizszy = ciezszy zwrot).
+# NIE rusza auto-stepu/floor-snap/skoku/interpolacji kamery — tylko krzywa rozpedu/hamowania _move_vel.
+@export var ground_decel: float = 28.0     # wyhamowanie na ziemi (m/s^2) — DLUZSZE niz rozped (poslizg)
+@export var turn_accel: float = 18.0       # jak szybko wektor ruchu dochodzi do nowego kierunku (rad/s skala)
+@export var lean_max: float = 0.16         # maks. pochyl tulowia od rozpedu/skretu (rad, wizual)
+var _lean_vel: float = 0.0                 # wygladzony lean wzdluzny (przod/tyl) — wizual ciezaru
+var _lean_turn: float = 0.0               # wygladzony lean boczny (na zewnatrz skretu) — wizual
+var _prev_hvel: Vector3 = Vector3.ZERO     # poprzednia pozioma predkosc (do liczenia przyspieszenia/leanu)
 @export var coyote_time: float = 0.12      # okno skoku tuż po zejściu z krawędzi
 @export var jump_buffer_time: float = 0.12 # bufor wciśnięcia skoku przed lądowaniem
 @export var fall_gravity_mult: float = 1.5 # mocniejsze opadanie (mniej „księżycowo")
@@ -259,9 +306,13 @@ signal leveled_up(new_level: int, points_gained: int)        # HUD/FX: awans
 signal class_resource_changed(name: StringName, current: float, maximum: float)  # HUD: pasek zasobu
 signal class_combo_changed(count: int, maximum: int)         # HUD: pipsy combo (Ranger)
 
-# --- ETAP 1: bufor inputu ataku/uniku (ROADMAP 4 krok 3) ---
-@export var attack_buffer_time: float = 0.18    # s: klik LMB tuż przed końcem CD zostaje zapamiętany
-@export var dodge_buffer_time: float = 0.18     # s: klik uniku w trakcie ataku/CD zostaje zapamiętany
+# --- ETAP 1 / FAZA 1: bufor inputu ataku/uniku (ROADMAP 4 krok 3 + Lost Ark responsywnosc) ---
+# Spojny bufor (~0.15 s) dla ATAKU i UNIKU: wcisniecie tuz przed koncem recovery/CD/dasha kolejkuje
+# akcje. Zunifikowane z jump-buffer (0.12). Atak buforowany odpala sie, gdy okno ataku znow wolne
+# (CD zszedl LUB recovery weszlo w cancel-window); unik buforowany odpala po CD/dashu. Patrz
+# _tick_input_buffers w _physics_process.
+@export var attack_buffer_time: float = 0.15    # s: klik LMB tuż przed końcem recovery/CD zostaje zapamiętany
+@export var dodge_buffer_time: float = 0.15     # s: klik uniku w trakcie ataku/CD zostaje zapamiętany
 var _attack_buffered: float = 0.0               # >0 = zakolejkowany atak
 var _dodge_buffered: float = 0.0                # >0 = zakolejkowany unik
 
@@ -273,6 +324,20 @@ var _dodge_buffered: float = 0.0                # >0 = zakolejkowany unik
 var _dodge_active_t: float = 0.0                # ile czasu już trwa bieżący unik (do okna perfect)
 var _perfect_bonus_next: bool = false           # następny cios dostaje premię za perfect-dodge
 signal perfect_dodge()                          # HUD/FX: udany perfect-dodge
+
+# ============================================================================
+#  FAZA 1 (FEEL) — LOCK-ON + SOFT TARGET ASSIST (WoW/Lost Ark feel)
+# ============================================================================
+# Tab/MMB = lock najblizszego wroga (grupa "enemies"). Przy ataku melee: lekki AUTO-OBROT modelu
+# ku celowi + "PULL" kierunku ciosu do celu w zasiegu (koniec machania w powietrze). Wskaznik locka
+# (prosty pierscien-Sprite3D) wisi nad celem. Soft-target (bez locka): jesli wrog jest w stozku
+# przodu i zasiegu, cios i tak lekko docelowuje (assist). NIC sieciowego — czysto lokalna pomoc celu.
+@export var lockon_range: float = 16.0          # m maks. dystans namierzenia/utrzymania locka
+@export var lockon_assist_angle: float = 0.5    # dot() progu soft-targetu bez locka (~±60° przod)
+@export var melee_pull_range: float = 3.2       # m: w tym zasiegu cios "ciagnie" kierunek do celu
+var _lock_target: Node3D = null                 # aktualnie zalockowany wrog (null = brak locka)
+var _lock_indicator: Sprite3D = null            # prosty wskaznik nad celem (lazy-tworzony)
+signal lockon_changed(target: Node)             # HUD/FX: zmiana celu locka (null = zdjety)
 
 # --- FEEL (5): AFTERIMAGE uniku (duchy modelu) + interwal spawnu ---
 const AFTERIMAGE_INTERVAL: float = 0.05         # s miedzy duchami (3 duchy w ~0.1 s zrywu)
@@ -326,6 +391,13 @@ func _ready() -> void:
 		var gs := get_node_or_null("/root/GameSettings")
 		if gs != null and "mouse_sensitivity" in gs:
 			set_mouse_sensitivity_mult(gs.mouse_sensitivity)
+
+# FAZA 1: wskaznik locka wisi pod rootem sceny (nie pod graczem), wiec przy zwolnieniu gracza
+# (smierc/despawn co-op) trzeba go ubic recznie — inaczej zostaje orphan nad pustym miejscem.
+func _exit_tree() -> void:
+	if _lock_indicator != null and is_instance_valid(_lock_indicator):
+		_lock_indicator.queue_free()
+	_lock_indicator = null
 
 # ETAP 1: buduje stos komponentów gracza i wpina go w istniejące pola/sygnały. Po tym:
 # HP żyje w HealthComponent (hp mirroruje), atak LMB idzie AbilityComponent -> HitboxComponent
@@ -412,6 +484,12 @@ func _build_components() -> void:
 	_skill_attack = SkillResource.new()
 	_skill_attack.id = &"basic_attack"
 	_skill_attack.cooldown = attack_cooldown
+	# FAZA 1: timeline ataku (anticipation -> active -> recovery + okno cancel). Player czyta te
+	# wartosci w _perform_skill i tyka maszyne faz w _tick_attack_timeline (hitbox NIE w klatce 0).
+	_skill_attack.anticipation = attack_anticipation
+	_skill_attack.active = attack_active
+	_skill_attack.recovery = attack_recovery
+	_skill_attack.cancel_window = attack_cancel_window
 	_skill_dash = SkillResource.new()
 	_skill_dash.id = &"dash"
 	_skill_dash.cooldown = dodge_cooldown
@@ -1090,6 +1168,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			_try_attack()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			_try_dodge()
+		elif event.button_index == MOUSE_BUTTON_MIDDLE:
+			_toggle_lock_on()      # FAZA 1: MMB = lock/unlock najblizszego wroga
+
+	# FAZA 1: LOCK-ON (Tab). Toggle najblizszego wroga (grupa "enemies"); ponowny Tab przy aktywnym
+	# locku zdejmuje go. Tylko nasz input (SP/klient-wlasciciel); brak wplywu na HP/siec.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
+			and not event.echo and event.physical_keycode == KEY_TAB:
+		_toggle_lock_on()
 
 	# ETAP 3: R = finisher zasobu klasy (Wojownik: Wir Ostrzy, 30 Furii). AbilityComponent pilnuje
 	# kosztu/CD; brak Furii -> try_use po prostu nie odpali (bufor wygasa). Nie psuje LMB/RMB.
@@ -1225,12 +1311,49 @@ func _process(delta: float) -> void:
 	# Gaśnięcie przysiadu lądowania (squash) — niezależne od FPS.
 	_land_squash = maxf(0.0, _land_squash - delta * 4.0)
 
-	# --- OBRÓT MODELU w stronę ruchu (lub w stronę kamery podczas ataku) ---
+	# FAZA 1: utrzymanie locka (zdejmij martwy/daleki cel) + pozycja wskaznika nad celem.
+	_update_lock_on(delta)
+
+	# --- OBRÓT MODELU: w trakcie ataku ku celowi/kamerze; przy locku STRAFE (twarz do celu);
+	#     inaczej w stronę ruchu. ---
+	var locked := _lock_target != null and is_instance_valid(_lock_target)
 	if is_attacking:
-		_model.rotation.y = lerp_angle(_model.rotation.y, _pivot.rotation.y, _sm(18.0, delta))
+		# Cel obrotu: jesli lock -> ku celowi (cios trafia), inaczej yaw kamery (jak dotad).
+		var atk_yaw := _pivot.rotation.y
+		if locked:
+			var tl: Vector3 = _lock_target.global_position - global_position
+			tl.y = 0.0
+			if tl.length() > 0.05:
+				atk_yaw = atan2(-tl.x, -tl.z)
+		_model.rotation.y = lerp_angle(_model.rotation.y, atk_yaw, _sm(18.0, delta))
+	elif locked:
+		# STRAFE wzgledem locka: model patrzy NA CEL niezaleznie od kierunku ruchu (kroki w bok).
+		var tl2: Vector3 = _lock_target.global_position - global_position
+		tl2.y = 0.0
+		if tl2.length() > 0.05:
+			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-tl2.x, -tl2.z), _sm(14.0, delta))
 	elif hspeed > 0.5:
 		var target_yaw := atan2(-velocity.x, -velocity.z)
 		_model.rotation.y = lerp_angle(_model.rotation.y, target_yaw, _sm(12.0, delta))
+
+	# FAZA 1: LEAN WIZUALNY proporcjonalny do PRZYSPIESZENIA poziomego (waga ruchu). Liczymy zmiane
+	# predkosci miedzy klatkami i rzutujemy ja na os PRZOD/BOK MODELU: przyspieszanie -> tulow do
+	# przodu, hamowanie -> do tylu, ostry skret -> przechyl na zewnatrz. Czysto wizualne (czytane w
+	# _animate_torso), zero wplywu na fizyke/auto-step. dt>0 zabezpiecza przed dzieleniem przez 0.
+	if delta > 0.0:
+		var acc := (Vector3(velocity.x, 0.0, velocity.z) - _prev_hvel) / delta
+		# Bazis modelu: -Z = przod modelu, +X = prawo modelu.
+		var m_fwd := -_model.global_transform.basis.z; m_fwd.y = 0.0
+		var m_right := _model.global_transform.basis.x; m_right.y = 0.0
+		var lean_fwd_t := 0.0
+		var lean_turn_t := 0.0
+		if m_fwd.length() > 0.01:
+			lean_fwd_t = clampf(m_fwd.normalized().dot(acc) / 60.0, -1.0, 1.0) * lean_max
+		if m_right.length() > 0.01:
+			lean_turn_t = clampf(m_right.normalized().dot(acc) / 60.0, -1.0, 1.0) * lean_max
+		_lean_vel = lerpf(_lean_vel, lean_fwd_t, _sm(9.0, delta))
+		_lean_turn = lerpf(_lean_turn, lean_turn_t, _sm(9.0, delta))
+	_prev_hvel = Vector3(velocity.x, 0.0, velocity.z)
 
 	# --- BLEND WEIGHTS (wygładzane, anti-pop): przejścia idle<->chód<->bieg<->lot bez „strzału" ---
 	# Te trzy wagi są FAKTYCZNIE czytane przez _anim_locomotion/_animate_torso/_animate_head
@@ -1384,12 +1507,36 @@ func _anim_air(delta: float, _hspeed: float) -> void:
 			_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.42, _sm(8.0, delta))
 
 # --- ATAK: zamach prawą ręką (nadpisuje ramiona po lokomocji/idle) ----------
+# FAZA 1: poza zalezna od FAZY timeline (proste hooki; pelne pozy = Faza 2):
+#   ANTICIPATION: rece COFAJA sie (wind-up) — bark do tylu (DODATNI), lokiec zgiety => czytelny zamach,
+#   ACTIVE: szybki zamach DO PRZODU (bark UJEMNY), lokiec prostuje sie na uderzeniu (cios "tnie"),
+#   RECOVERY: powrot do neutralu (rece wracaja).
+# Gdy timeline NIEAKTYWNY (np. finisher Wir Ostrzy / fallback) -> stara parabola z _attack_anim_t.
 func _anim_attack_arms(delta: float) -> void:
-	var t := 1.0 - (_attack_anim_t / attack_anim_time)   # 0..1 postęp animacji
-	var swing := sin(t * PI)                              # 0->1->0 parabola
-	# Bark: szeroki zamach do przodu; łokieć: prostuje się na uderzeniu (cios „tnie").
-	_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -2.2 * swing, _sm(28.0, delta))
-	_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.9 * (1.0 - swing), _sm(28.0, delta))
+	var target_arm := -0.0
+	var target_elbow := 0.4
+	if _atk_phase == AtkPhase.ANTICIPATION:
+		# Wind-up: ramie cofa sie w tyl (DODATNI), lokiec mocno zgiety — "naladowanie" ciosu.
+		var k := 1.0 - (_atk_phase_t / maxf(0.01, _atk_anticipation))   # 0->1 postep wind-upu
+		target_arm = lerpf(0.0, 0.7, k)
+		target_elbow = lerpf(0.4, 1.1, k)
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, target_arm, _sm(26.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, target_elbow, _sm(26.0, delta))
+	elif _atk_phase == AtkPhase.ACTIVE:
+		# Cios: gwaltowny zamach do przodu (UJEMNY), lokiec prostuje sie (uderzenie tnie).
+		var k2 := 1.0 - (_atk_phase_t / maxf(0.01, _atk_active))        # 0->1 w oknie aktywnym
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, lerpf(-1.6, -2.4, k2), _sm(34.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, lerpf(0.6, 0.05, k2), _sm(34.0, delta))
+	elif _atk_phase == AtkPhase.RECOVERY:
+		# Powrot: ramie wraca do neutralu (recovery — cancelable, ale wizualnie "domkniecie" ciosu).
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -0.2, _sm(16.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.45, _sm(16.0, delta))
+	else:
+		# Brak timeline (finisher/fallback): stara parabola z _attack_anim_t (zachowanie sprzed Fazy 1).
+		var t := 1.0 - (_attack_anim_t / attack_anim_time)   # 0..1 postęp animacji
+		var swing := sin(t * PI)                              # 0->1->0 parabola
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -2.2 * swing, _sm(28.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.9 * (1.0 - swing), _sm(28.0, delta))
 	# Lewa ręka: kontra w tył dla balansu (lekkie zgięcie łokcia).
 	_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.35, _sm(14.0, delta))
 	_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.4, _sm(14.0, delta))
@@ -1419,9 +1566,11 @@ func _animate_torso(delta: float, _hspeed: float, _on_floor: bool, _sprinting: b
 	#    (w fazie z bobem), w idle delikatny weight-shift.
 	var roll := sin(_walk_phase) * lerpf(0.045, 0.07, _run_blend) * _gait * ground
 	roll += sin(_idle_phase * 0.6) * 0.03 * (1.0 - _gait) * ground   # idle weight-shift
-	_torso.rotation.x = lerpf(_torso.rotation.x, lean, _sm(10.0, delta))
+	# FAZA 1: dorzuc LEAN OD PRZYSPIESZENIA (waga ruchu) — wzdluzny do pitcha, boczny do rolla.
+	# _lean_vel/_lean_turn policzone w _process (od realnego przyspieszenia, w bazie modelu).
+	_torso.rotation.x = lerpf(_torso.rotation.x, lean + _lean_vel, _sm(10.0, delta))
 	_torso.rotation.y = lerp_angle(_torso.rotation.y, twist, _sm(14.0, delta))
-	_torso.rotation.z = lerpf(_torso.rotation.z, roll, _sm(9.0, delta))
+	_torso.rotation.z = lerpf(_torso.rotation.z, roll - _lean_turn, _sm(9.0, delta))
 
 # --- GŁOWA: stabilizacja (kontra do leanu/twistu tułowia) + drobny nod ------
 func _animate_head(delta: float, _hspeed: float) -> void:
@@ -1451,18 +1600,30 @@ func _physics_process(delta: float) -> void:
 	var _frozen := _local_freeze_t > 0.0
 	if not _frozen:
 		_attack_anim_t  = maxf(0.0, _attack_anim_t - delta)
-		if _attack_anim_t <= 0.0:
+		# FAZA 1: gdy timeline ataku NIEAKTYWNY, is_attacking gasnie wg _attack_anim_t (jak dotad).
+		# Gdy timeline AKTYWNY, to ON trzyma is_attacking (gasnie w _end_attack_timeline).
+		if _attack_anim_t <= 0.0 and _atk_phase == AtkPhase.NONE:
 			is_attacking = false
+	# FAZA 1: TIMELINE ataku (anticipation -> active -> recovery). Tyka po dekremencie anim, przed
+	# grawitacja. Otwiera/zamyka okno hitboxa we wlasciwych fazach (NIE w klatce 0).
+	_tick_attack_timeline(delta)
 	if _combo_timer > 0.0:
 		_combo_timer = maxf(0.0, _combo_timer - delta)
 		if _combo_timer == 0.0:
 			_combo_count = 0          # okno combo wygasło
+			# FAZA 1: wygasle okno combo resetuje TEZ lancuch 3-ciosowy (gdy nie trwa timeline).
+			if _atk_phase == AtkPhase.NONE:
+				_chain_step = 0
 			combo_changed.emit(_combo_count)   # HUD: schowaj "Combo xN"
 	if _dodge_t > 0.0:
 		_dodge_t = maxf(0.0, _dodge_t - delta)
 		_dodge_active_t += delta          # ETAP 1: czas trwania uniku (do okna perfect-dodge)
 		if _dodge_t == 0.0:
 			is_dodging = false
+			_dodge_recovery_t = dodge_recovery   # FAZA 1: wejdz w krotkie recovery (cancelable atakiem)
+	# FAZA 1: recovery po dashu — cancelable atakiem (_try_attack zeruje je). Sam gasnie po czasie.
+	if _dodge_recovery_t > 0.0:
+		_dodge_recovery_t = maxf(0.0, _dodge_recovery_t - delta)
 	# Obsługa KEY_Q jako alternatywy uniku (debounce) — tylko gdy kursor złapany.
 	# ETAP 7 (review #minor): czytamy KEY_Q TYLKO gdy to NASZ input (SP lub klient-właściciel). Gdy HOST
 	# symuluje CUDZĄ postać (should_read_local_input==false), klawiatura HOSTA nie może wywołać uniku
@@ -1484,7 +1645,9 @@ func _physics_process(delta: float) -> void:
 			_try_dodge()
 	if _attack_buffered > 0.0:
 		_attack_buffered = maxf(0.0, _attack_buffered - delta)
-		if _attack_buffered > 0.0 and _can_attack():
+		# FAZA 1: buforowany atak odpala gdy okno wolne (CD) LUB gdy jestesmy w oknie cancel recovery
+		# (cancel-into-next) — _try_attack sam wybierze sciezke (zwykly cios / kolejny krok lancucha).
+		if _attack_buffered > 0.0 and (_can_attack() or _in_attack_cancel_window()):
 			_attack_buffered = 0.0
 			_try_attack()
 
@@ -1551,10 +1714,42 @@ func _physics_process(delta: float) -> void:
 	var sprint_held := Input.is_physical_key_pressed(KEY_SHIFT) if read_local else (_net_sync != null and _net_sync.remote_input_run())
 	var can_sprint := sprint_held and stamina > 0.0 and not ui_locked
 	var current_speed := sprint_speed if can_sprint else speed
-	# Akceleracja/wyhamowanie (0C): płynny rozpęd zamiast natychmiastowej prędkości.
-	var accel := ground_accel if is_on_floor() else air_accel
-	_move_vel.x = move_toward(_move_vel.x, direction.x * current_speed, accel * delta)
-	_move_vel.z = move_toward(_move_vel.z, direction.z * current_speed, accel * delta)
+	# FAZA 1: MOVEMENT WEIGHT ("ciezki ale szybki"). Rozdzielamy ROZPED (ground_accel) od WYHAMOWANIA
+	# (ground_decel, slabsze -> poslizg) i dodajemy TURN_ACCEL (wektor ruchu obraca sie ku nowemu
+	# kierunkowi stopniowo ~0.08 s, nie natychmiast — ciezar zwrotu). W powietrzu zostaje air_accel
+	# (slabsza kontrola jak dotad). NIE rusza auto-stepu/floor-snap/skoku — tylko krzywa _move_vel.
+	var target := Vector3(direction.x, 0.0, direction.z) * current_speed
+	var cur := Vector3(_move_vel.x, 0.0, _move_vel.z)
+	if not is_on_floor():
+		# Powietrze: stara, prosta krzywa (slaba kontrola) — nie psujemy odczucia skoku/lotu.
+		cur = cur.move_toward(target, air_accel * delta)
+	elif not moving:
+		# Brak inputu: WYHAMOWANIE z poslizgiem (ground_decel < ground_accel -> dluzszy wybieg).
+		cur = cur.move_toward(Vector3.ZERO, ground_decel * delta)
+	else:
+		# Jest input: rozdziel skladowa WZDLUZ biezacego ruchu (rozped/hamowanie) od PROSTOPADLEJ
+		# (zwrot kierunku, sterowany turn_accel — ciezar zmiany kierunku). To daje "szybki start,
+		# ale ciezki zwrot": pelny gaz do przodu jest natychmiastowy, ostry skret kosztuje moment.
+		var speed_now := cur.length()
+		if speed_now < 0.01:
+			cur = cur.move_toward(target, ground_accel * delta)   # rusza z miejsca: pelny rozped
+		else:
+			var fwd := cur / speed_now
+			var along := fwd.dot(target)                          # rzut celu na biezacy kierunek (m/s)
+			var target_perp := target - fwd * along               # skladowa celu PROSTOPADLA (zwrot)
+			# Wzdluz: rozped gdy przyspieszamy (along >= biezaca predkosc), decel gdy zwalniamy/zawracamy.
+			var along_rate := ground_accel if along >= speed_now else ground_decel
+			var along_target := fwd * clampf(along, -current_speed, current_speed)
+			cur = cur.move_toward(along_target, along_rate * delta)   # skladowa "wzdluz" (rozped/hamuj)
+			cur += target_perp.limit_length(turn_accel * delta)      # skladowa "w bok" (zwrot z waga)
+			cur = cur.limit_length(current_speed)                    # nigdy ponad docelowa predkosc
+	# FAZA 1: DODGE RECOVERY — krotkie wyhamowanie po dashu (waga "ladowania" z uniku). Cancelable
+	# atakiem (_dodge_recovery_t zerowane w _try_attack). Ruch tlumiony proporcjonalnie do reszty okna.
+	if _dodge_recovery_t > 0.0 and _dodge_t <= 0.0 and is_on_floor():
+		var damp := clampf(_dodge_recovery_t / maxf(0.01, dodge_recovery), 0.0, 1.0)
+		cur *= (1.0 - 0.6 * damp)
+	_move_vel.x = cur.x
+	_move_vel.z = cur.z
 	velocity.x = _move_vel.x + _knockback.x
 	velocity.z = _move_vel.z + _knockback.z
 	# ETAP 1 (krok 4): podczas LOKALNEGO freeze-frame (co-op) wstrzymujemy WŁASNĄ lokomocję, żeby
@@ -1677,11 +1872,18 @@ func _try_step_up(dir: Vector3, spd: float, delta: float) -> void:
 #  WALKA — ATAK
 # ============================================================================
 
-# Czy można TERAZ zaatakować (CD zszedł, nie martwy, nie w uniku).
+# Czy można TERAZ zaatakować. FAZA 1: blokujemy w trakcie ANTICIPATION/ACTIVE (cios w toku) — nowy
+# cios serii idzie WYLACZNIE przez cancel-into-next w RECOVERY (_try_attack obsluguje to osobno).
+# Dozwolone z dodge-RECOVERY (cancel atakiem) i z attack-RECOVERY poza oknem cancel (CD juz zszedl).
 func _can_attack() -> bool:
-	return not is_dead and _attack_cd <= 0.0 and not is_dodging
+	if is_dead or is_dodging:
+		return false
+	if _atk_phase == AtkPhase.ANTICIPATION or _atk_phase == AtkPhase.ACTIVE:
+		return false
+	return _attack_cd <= 0.0
 
-# Czy można TERAZ wykonać unik (CD, nie martwy, nie w uniku, jest stamina).
+# Czy można TERAZ wykonać unik (CD, nie martwy, nie w uniku, jest stamina). FAZA 1: unik ANULUJE
+# zarowno atak (kazda faza timeline) jak i wlasne recovery — ucieczka ma priorytet (cancel-into-dodge).
 func _can_dodge() -> bool:
 	return not is_dead and _dodge_cd <= 0.0 and not is_dodging and stamina >= dodge_stamina_cost
 
@@ -1698,14 +1900,25 @@ func _try_finisher() -> void:
 func _try_attack() -> void:
 	if is_dead:
 		return
+	# FAZA 1: CANCEL-INTO-NEXT. Jesli trwa RECOVERY i jestesmy w OKNIE CANCEL (wczesna czesc recovery) ->
+	# NIE odpalaj nowego ciosu od razu, tylko ZAKOLEJKUJ kolejny krok lancucha (plynny combo flow).
+	# Okno cancel = pierwsze `_atk_cancel_window` s recovery: elapsed = _atk_recovery - _atk_phase_t.
+	if _in_attack_cancel_window():
+		_chain_queued = true
+		return
 	if not _can_attack():
-		# ETAP 1: nie teraz -> buforuj (odpali się, gdy CD zejdzie / unik się skończy).
+		# ETAP 1: nie teraz -> buforuj (odpali się, gdy CD zejdzie / unik / recovery się skończy).
 		if not is_dodging:                 # w trakcie uniku nie kolejkujemy ataku (unik = ucieczka)
 			_attack_buffered = attack_buffer_time
 		return
+	# FAZA 1: cancel-into-attack z dodge-recovery (agresja po uniku = nagroda).
+	_dodge_recovery_t = 0.0
 	_attack_cd = attack_cooldown
 	_attack_anim_t = attack_anim_time   # start animacji zamachu
 	is_attacking = true
+
+	# FAZA 1: krok lancucha (1..3). Reset gdy poprzednie okno wygaslo (_chain_step==0).
+	_chain_step = mini(_chain_step + 1, ATTACK_CHAIN_MAX)
 
 	# ETAP 8: SFX zamachu (whoosh). Lekka wariacja pitchu z combo -> seria ciosow nie brzmi identycznie.
 	# No-op bez AudioManager/pliku (placeholder). Trafienie/krytyk gra osobno (DamageService.hit_resolved).
@@ -1716,33 +1929,33 @@ func _try_attack() -> void:
 	_combo_count += 1
 	combo_changed.emit(_combo_count)      # HUD: pokaż "Combo xN" (reset przy pudle po oknie)
 
-	# Cios idzie TAM, GDZIE PATRZY KAMERA (yaw pivota), nie w kierunku modelu.
-	# Model obraca się do kamery dopiero przez kolejne klatki (lerp w _process), więc filtr łuku
-	# liczymy z yaw kamery — natychmiast celny. Dla spójności wizualnej od razu ustawiamy yaw modelu.
+	# FAZA 1: SOFT TARGET ASSIST — przed ciosem lekki AUTO-OBROT modelu/yaw ku celowi (lock lub
+	# soft-target w stozku przodu), by koniec "machania w powietrze". Aktualizuje yaw pivota? NIE —
+	# kamera zostaje gracza; obracamy tylko model i kierunek FILTRA luku ataku.
+	# Cios idzie TAM, GDZIE PATRZY KAMERA, chyba ze assist wskaze cel — wtedy lekko docelujemy.
 	var fyaw := _pivot.rotation.y
 	var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
-	_model.rotation.y = fyaw
+	var aim := _attack_aim_dir(forward)   # FAZA 1: forward z soft-targetem (pull do celu w zasiegu)
+	_model.rotation.y = atan2(-aim.x, -aim.z)
 
 	# ETAP 1 (DoD): atak idzie ścieżką AbilityComponent -> HitboxComponent -> DamageService ->
-	# Hurtbox/HealthComponent wroga. _perform_skill() ustawia hitbox i otwiera okno z kierunkiem
-	# `forward` (filtr łuku). Fallback (brak komponentów) = dawna ręczna pętla dot() w _melee_sweep.
-	if _ability != null and _hitbox != null:
+	# Hurtbox/HealthComponent wroga. _perform_skill() STARTUJE timeline; _tick_attack_timeline otwiera
+	# hitbox w fazie ACTIVE z kierunkiem `aim`. Fallback (brak komponentów) = dawna ręczna pętla.
+	_atk_forward = aim
+	if _ability != null:
 		_ability.try_use(_skill_attack)
 	else:
-		_melee_sweep(forward)
+		# Brak AbilityComponent: i tak prowadzimy timeline lokalnie (hitbox/sweep w ACTIVE).
+		_begin_attack_timeline(_skill_attack)
 
 # perform_skill z AbilityComponent: faktyczne wykonanie skilla deleguje encja (TDD 1.2).
-# Atak -> otwórz okno hitboxa (Area3D) w stronę kamery; dash -> uruchom zryw uniku.
+# Atak -> STARTUJ TIMELINE (anticipation->active->recovery); dash -> uruchom zryw uniku.
+# FAZA 1: atak NIE otwiera juz hitboxa w klatce 0 — _perform_skill tylko ROZPOCZYNA faze ANTICIPATION,
+# a _tick_attack_timeline (w _physics_process) otwiera hitbox dopiero po wind-upie i zamyka po active.
 func _perform_skill(skill: SkillResource, _target: Node) -> void:
 	if skill == _skill_attack:
 		_is_heavy_attack = false             # FEEL (2): zwykly cios = lekki tier hitstopu
-		var fyaw := _pivot.rotation.y
-		var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
-		if _hitbox != null:
-			_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
-			_hitbox.open_window(0.12, forward)   # okno aktywnych klatek; hity przez DamageService
-		else:
-			_melee_sweep(forward)
+		_begin_attack_timeline(_skill_attack)
 	elif skill == _skill_dash:
 		_begin_dash()
 	elif skill == _skill_finisher:
@@ -1758,16 +1971,243 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 			_hitbox.open_window(0.14, forward)
 		add_trauma(0.18)
 
+# ============================================================================
+#  FAZA 1 — ATTACK TIMELINE (ANTICIPATION -> ACTIVE -> RECOVERY) + COMBO CHAIN
+# ============================================================================
+# Rozpoczyna timeline ciosu od fazy ANTICIPATION (hitbox JESZCZE zamkniety). Wartosci faz biora sie
+# ze SkillResource (z eksportowymi fallbackami). _tick_attack_timeline (w _physics_process) przejdzie
+# ANTICIPATION -> ACTIVE (otwiera hitbox/sweep) -> RECOVERY (cancelable). Wolane z _perform_skill.
+func _begin_attack_timeline(skill: SkillResource) -> void:
+	_atk_anticipation = skill.anticipation if skill.anticipation > 0.0 else attack_anticipation
+	_atk_active = skill.active if skill.active > 0.0 else attack_active
+	_atk_recovery = skill.recovery if skill.recovery > 0.0 else attack_recovery
+	_atk_cancel_window = skill.cancel_window if skill.cancel_window > 0.0 else attack_cancel_window
+	_atk_index = _chain_step                       # ktory cios serii (1..3) — do juice 3. ciosu
+	_atk_phase = AtkPhase.ANTICIPATION
+	_atk_phase_t = _atk_anticipation
+	is_attacking = true
+	# Hitbox JESZCZE zamkniety w klatce 0 (klucz "impactu"). Otworzy go _enter_attack_active.
+
+# Tyka maszyne faz ataku (wolane z _physics_process gdy _atk_phase != NONE). Frame-rate independent.
+# ANTICIPATION: hitbox zamkniety, model dipuje rece (anim). Po jej zejsciu -> ACTIVE (otwarcie okna).
+# ACTIVE: okno hitboxa otwarte (DamageService liczy). Po zejsciu -> RECOVERY (zamkniecie okna).
+# RECOVERY: cancelable (unik zawsze, nastepny cios w cancel_window). Po zejsciu -> koniec/lancuch.
+func _tick_attack_timeline(delta: float) -> void:
+	if _atk_phase == AtkPhase.NONE:
+		return
+	# Podczas LOKALNEGO freeze-frame (co-op hitstop) zamrazamy timeline — poza zamachu zastyga.
+	if _local_freeze_t > 0.0:
+		return
+	_atk_phase_t -= delta
+	if _atk_phase_t > 0.0:
+		return
+	# Faza dobiegla konca -> przejscie do nastepnej (z przeniesieniem nadmiaru czasu, anti-drift).
+	var overflow := -_atk_phase_t                    # ile czasu "przeszlo" ponad koniec fazy (>=0)
+	match _atk_phase:
+		AtkPhase.ANTICIPATION:
+			_enter_attack_active()
+			_atk_phase_t = maxf(0.0, _atk_phase_t - overflow)   # ACTIVE skrocone o nadmiar (anti-drift)
+		AtkPhase.ACTIVE:
+			_enter_attack_recovery()
+			_atk_phase_t = maxf(0.0, _atk_phase_t - overflow)   # RECOVERY skrocone o nadmiar
+		AtkPhase.RECOVERY:
+			_end_attack_timeline()
+
+# Wejscie w ACTIVE: OTWORZ okno hitboxa (lub sweep w fallbacku) w kierunku _atk_forward. To JEDYNE
+# miejsce, gdzie hitbox sie otwiera — nigdy w klatce 0 (anticipation gwarantuje wind-up przed ciosem).
+func _enter_attack_active() -> void:
+	_atk_phase = AtkPhase.ACTIVE
+	_atk_phase_t = _atk_active
+	if _hitbox != null:
+		_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
+		_hitbox.open_window(_atk_active, _atk_forward)   # hity przez DamageService
+	else:
+		_melee_sweep(_atk_forward)                       # fallback recznej petli
+
+func _enter_attack_recovery() -> void:
+	_atk_phase = AtkPhase.RECOVERY
+	_atk_phase_t = _atk_recovery
+	# Zamkniecie okna na wszelki wypadek (hitbox sam zamyka po duration, ale gdy active skrocone).
+	if _hitbox != null:
+		_hitbox.close_window()
+
+# Koniec recovery: jesli zakolejkowano cancel-into-next i jest jeszcze krok lancucha -> odpal kolejny
+# cios PLYNNIE (combo flow). Inaczej zakoncz serie (reset lancucha) — albo zostaw okno na buforowany.
+func _end_attack_timeline() -> void:
+	_atk_phase = AtkPhase.NONE
+	_atk_phase_t = 0.0
+	if _chain_queued and _chain_step < ATTACK_CHAIN_MAX:
+		_chain_queued = false
+		_attack_cd = 0.0                  # cancel zwalnia CD dla nastepnego ciosu serii
+		if _ability != null:
+			_ability.reset_cooldown(_skill_attack.id)   # AbilityComponent: nie czekaj na pelny CD
+		_try_attack()                     # nastepny krok lancucha (3. cios = mocniejszy juice)
+		return
+	# Brak kontynuacji: seria sie konczy. _chain_step wyzeruje sie z _combo_timer (okno combo) niżej,
+	# albo natychmiast gdy doszlismy do 3. ciosu (lancuch zamkniety).
+	_chain_queued = false
+	if _chain_step >= ATTACK_CHAIN_MAX:
+		_chain_step = 0                   # 3. cios zakonczyl lancuch -> nastepny LMB zaczyna od 1
+	is_attacking = false
+
+# FAZA 1: czy 3. (ostatni) cios lancucha — mocniejszy juice (wiekszy hitstop/shake/knockback).
+func _is_chain_finisher() -> bool:
+	return _atk_index >= ATTACK_CHAIN_MAX
+
+# FAZA 1: czy jestesmy w OKNIE CANCEL (wczesna czesc RECOVERY) i jest jeszcze krok lancucha.
+# Okno = pierwsze `_atk_cancel_window` s recovery (elapsed = _atk_recovery - _atk_phase_t).
+func _in_attack_cancel_window() -> bool:
+	if _atk_phase != AtkPhase.RECOVERY or _chain_step >= ATTACK_CHAIN_MAX:
+		return false
+	var elapsed := _atk_recovery - _atk_phase_t
+	return elapsed <= _atk_cancel_window
+
+# ============================================================================
+#  FAZA 1 — LOCK-ON + SOFT TARGET ASSIST
+# ============================================================================
+# Toggle locka: brak locka -> namierz najblizszego wroga w zasiegu; jest lock -> zdejmij.
+func _toggle_lock_on() -> void:
+	if _lock_target != null and is_instance_valid(_lock_target):
+		_set_lock_target(null)
+	else:
+		_set_lock_target(_nearest_enemy(lockon_range))
+
+func _set_lock_target(t: Node3D) -> void:
+	_lock_target = t
+	lockon_changed.emit(t)
+	if t == null and _lock_indicator != null:
+		_lock_indicator.visible = false
+
+# Najblizszy zywy wrog w promieniu (XZ) — grupa "enemies". Pomija martwych (is_dead). Null gdy brak.
+func _nearest_enemy(max_dist: float) -> Node3D:
+	var best: Node3D = null
+	var best_d := max_dist * max_dist
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if not is_instance_valid(e) or not (e is Node3D):
+			continue
+		if e.has_method("is_dead") and e.is_dead():
+			continue
+		var to: Vector3 = (e as Node3D).global_position - global_position
+		to.y = 0.0
+		var d := to.length_squared()
+		if d < best_d:
+			best_d = d
+			best = e as Node3D
+	return best
+
+# Kierunek ciosu z SOFT TARGET ASSIST. Zaczynamy od `forward` (yaw kamery). Jesli mamy lock w zasiegu
+# LUB soft-target w stozku przodu — lekko "ciagniemy" kierunek do celu (pull), by cios nie szedl w
+# powietrze. Pull tylko w zasiegu melee_pull_range (dalej: zwykly forward, gracz musi podejsc).
+func _attack_aim_dir(forward: Vector3) -> Vector3:
+	var tgt := _soft_target(forward)
+	if tgt == null:
+		return forward
+	var to: Vector3 = tgt.global_position - global_position
+	to.y = 0.0
+	var dist := to.length()
+	if dist < 0.05 or dist > melee_pull_range:
+		return forward
+	# Pull: interpoluj forward -> kierunek do celu. Lock = mocniejszy pull (0.85), soft = lekki (0.6).
+	var pull := 0.85 if tgt == _lock_target else 0.6
+	var to_n := to / dist
+	var aim := forward.lerp(to_n, pull)
+	if aim.length() < 0.001:
+		return forward
+	return aim.normalized()
+
+# Cel softu: priorytet LOCK (jesli w zasiegu locka), inaczej najblizszy wrog w stozku przodu (assist).
+func _soft_target(forward: Vector3) -> Node3D:
+	if _lock_target != null and is_instance_valid(_lock_target):
+		if (not _lock_target.has_method("is_dead")) or (not _lock_target.is_dead()):
+			var to_lock: Vector3 = _lock_target.global_position - global_position
+			to_lock.y = 0.0
+			if to_lock.length() <= lockon_range:
+				return _lock_target
+	# Bez locka: najblizszy wrog w stozku przodu (dot >= lockon_assist_angle) i zasiegu melee_pull.
+	var best: Node3D = null
+	var best_d := melee_pull_range * melee_pull_range
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if not is_instance_valid(e) or not (e is Node3D):
+			continue
+		if e.has_method("is_dead") and e.is_dead():
+			continue
+		var to: Vector3 = (e as Node3D).global_position - global_position
+		to.y = 0.0
+		var d := to.length_squared()
+		if d < 0.0025 or d > best_d:
+			continue
+		if forward.dot(to.normalized()) < lockon_assist_angle:
+			continue
+		best_d = d
+		best = e as Node3D
+	return best
+
+# Utrzymanie locka co klatke: zdejmij gdy cel zginal/zniknal/wyszedl z zasiegu; pozycjonuj wskaznik.
+# Wolane z _process (wizual). Strafe wzgledem locka realizuje _process (obrot modelu ku celowi).
+func _update_lock_on(_delta: float) -> void:
+	if _lock_target != null:
+		var drop := not is_instance_valid(_lock_target)
+		if not drop and _lock_target.has_method("is_dead") and _lock_target.is_dead():
+			drop = true
+		if not drop:
+			var to: Vector3 = _lock_target.global_position - global_position
+			to.y = 0.0
+			if to.length() > lockon_range * 1.15:    # histereza: nie migaj na granicy
+				drop = true
+		if drop:
+			_set_lock_target(null)
+	# Wskaznik nad celem (prosty pierscien/strzalka). Lazy-tworzony, re-uzywany.
+	_update_lock_indicator()
+
+func _update_lock_indicator() -> void:
+	if _lock_target == null or not is_instance_valid(_lock_target):
+		if _lock_indicator != null:
+			_lock_indicator.visible = false
+		return
+	if _lock_indicator == null:
+		_lock_indicator = _make_lock_indicator()
+		var root := get_tree().root if get_tree() != null else null
+		if root != null:
+			root.add_child(_lock_indicator)
+		else:
+			add_child(_lock_indicator)
+	_lock_indicator.visible = true
+	_lock_indicator.global_position = _lock_target.global_position + Vector3(0.0, 2.0, 0.0)
+
+# Prosty wskaznik locka: maly billboardowy znacznik (proceduralna tekstura — bez assetow z dysku).
+func _make_lock_indicator() -> Sprite3D:
+	var s := Sprite3D.new()
+	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	s.no_depth_test = true
+	s.pixel_size = 0.01
+	s.modulate = Color(1.0, 0.85, 0.2)
+	var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	# Romb-celownik (diament) — czytelny i tani (16x16 proceduralnie).
+	for y in 16:
+		for x in 16:
+			if absi(x - 8) + absi(y - 8) == 6:
+				img.set_pixel(x, y, Color(1, 1, 1, 1))
+	s.texture = ImageTexture.create_from_image(img)
+	s.visible = false
+	return s
+
+## FAZA 1 — PUBLICZNE API locka (HUD/test/Main). Zwraca aktualny cel locka (null = brak).
+func lock_target() -> Node3D:
+	return _lock_target if (_lock_target != null and is_instance_valid(_lock_target)) else null
+
 # Hitbox trafił cel: juice (combo-okno + hitstop + trauma) raz na klatkę trafienia. HP już zadane
 # przez DamageService z poziomu hitboxa — tu tylko odczucie walki.
 func _on_hitbox_hit_landed(_target: Node) -> void:
 	_combo_timer = combo_window
-	# FEEL (2): hitstop TIEROWANY — krytyk (0.14) > ciezki/AoE (0.10) > zwykly (0.04). Mocniej na
+	# FAZA 1: 3. cios lancucha traktujemy jak "ciezki" do tieru hitstopu (mocniejszy bezczas/shake).
+	var heavy := _is_heavy_attack or _is_chain_finisher()
+	# FEEL (2): hitstop TIEROWANY — krytyk (0.14) > ciezki/3.cios/AoE (0.10) > zwykly (0.04). Mocniej na
 	# TRAFIENIU, nigdy na zamachu. _last_hit_crit przychodzi z DamageService tuz przed tym callbackiem.
 	if not _hitstop_active:
-		_hitstop(FeelFX.hitstop_for(_last_hit_crit, _is_heavy_attack))
-	# Trauma kamery proporcjonalna do wagi (krytyk/ciezki = mocniejszy wstrzas).
-	add_trauma(0.20 if (_last_hit_crit or _is_heavy_attack) else 0.12)
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
+	# Trauma kamery proporcjonalna do wagi (krytyk/ciezki/3.cios = mocniejszy wstrzas).
+	add_trauma(0.20 if (_last_hit_crit or heavy) else 0.12)
 	# ETAP 3: zadany cios wrecz buduje zasob klasy (Furia +6 / Combo +1 — GDD 4.2/4.3, ROADMAP 6).
 	if _class_res != null:
 		_class_res.on_hit_dealt(true)
@@ -1804,9 +2244,10 @@ func _melee_sweep(forward: Vector3) -> void:
 		hit_any = true
 	if hit_any:
 		_combo_timer = combo_window
-		# FEEL (2): tiered hitstop tez w fallbacku recznej petli (krytyk znamy z _last_hit_crit).
-		_hitstop(FeelFX.hitstop_for(_last_hit_crit, _is_heavy_attack))
-		add_trauma(0.20 if (_last_hit_crit or _is_heavy_attack) else 0.12)
+		# FEEL (2)+FAZA 1: tiered hitstop tez w fallbacku (krytyk z _last_hit_crit, 3.cios = ciezki).
+		var heavy := _is_heavy_attack or _is_chain_finisher()
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
+		add_trauma(0.20 if (_last_hit_crit or heavy) else 0.12)
 	else:
 		_combo_count = 0
 		_combo_timer = 0.0
@@ -1833,7 +2274,8 @@ func _build_hit() -> HitData:
 	hit.crit_chance = _stat(&"crit_chance", 0.0)      # 0 gdy brak StatsComponent (zachowanie sprzed Etapu 1)
 	hit.crit_mult = _stat(&"crit_mult", 1.5)
 	hit.lifesteal = _stat(&"lifesteal", 0.0)
-	hit.knockback = 6.0
+	# FAZA 1: 3. cios lancucha = mocniejszy KNOCKBACK (waga finishera serii). Inne ciosy = 6.0 jak dotad.
+	hit.knockback = 11.0 if _is_chain_finisher() else 6.0
 	# typed: HitData.tags to Array[StringName] (4.x strict — literal daje goly Array).
 	var t: Array[StringName] = []
 	t.append(&"melee")
@@ -1903,10 +2345,19 @@ func _begin_dash() -> void:
 	_afterimage_left = 3
 	_afterimage_t = 0.0
 	_spawn_afterimage()            # pierwszy duch natychmiast (start zrywu)
-	# ETAP 1: CANCEL ataku w unik (unik przerywa atak — priorytet ucieczki). Czyści też bufor ataku.
+	# ETAP 1 / FAZA 1: CANCEL ataku w unik (kazda faza timeline) — priorytet ucieczki. Czysci tez
+	# bufor ataku, lancuch combo i zamyka ewentualne otwarte okno hitboxa (cancel-into-dodge ZAWSZE).
 	is_attacking = false
 	_attack_anim_t = 0.0
 	_attack_buffered = 0.0
+	_dodge_recovery_t = 0.0        # nowy dash resetuje recovery poprzedniego
+	if _atk_phase != AtkPhase.NONE:
+		_atk_phase = AtkPhase.NONE
+		_atk_phase_t = 0.0
+		_chain_queued = false
+		_chain_step = 0
+		if _hitbox != null:
+			_hitbox.close_window()
 	if _ability != null:
 		_ability.cancel()          # anuluj ewentualny zakolejkowany/trwający atak w AbilityComponent
 

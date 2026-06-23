@@ -146,6 +146,9 @@ func _execute(skill: SkillResource, target: Node) -> void:
 	_cooldowns[skill.id] = skill.cooldown * (1.0 - cdr)
 
 	# Faktyczne wykonanie (hitbox/anim/spawn pocisku) deleguje encja.
+	# FAZA 1: dla ataku z timeline'em perform_skill (Player._perform_skill) jedynie STARTUJE maszyne
+	# faz w encji (anticipation->active->recovery); hitbox otwiera sie w encji dopiero w ACTIVE.
+	# AbilityComponent zostaje czystą bramką kosztu/CD/buforu — nie zna faz (jedno zrodlo timeline'u).
 	if perform_skill.is_valid():
 		perform_skill.call(skill, target)
 
@@ -181,6 +184,13 @@ func _cooldown_left(id: StringName) -> float:
 
 func cooldown_left(id: StringName) -> float:
 	return _cooldown_left(id)
+
+
+## FAZA 1 (FEEL): zeruje cooldown danego skilla. Uzywane przez CANCEL-INTO-NEXT w combo: gdy cios
+## jest anulowany w nastepny (w oknie cancel recovery), kolejny krok serii nie czeka na pelny CD.
+## Czysto lokalne (input flow); nie zmienia HP/sieci.
+func reset_cooldown(id: StringName) -> void:
+	_cooldowns[id] = 0.0
 
 
 ## Provider dla StatsComponent: passive_modifiers wpietych skilli (TDD 3.2 pkt 4). Etap 1 szkielet —
