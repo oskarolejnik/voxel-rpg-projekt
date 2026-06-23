@@ -392,6 +392,9 @@ var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 # anty-clip), „na zewnątrz" wolno (po minięciu zbocza brak szarpniętego zoomu). Zob. _smooth_boom.
 @export var boom_in_speed: float = 22.0     # tempo skracania ramienia gdy teren przysłania (szybko)
 @export var boom_out_speed: float = 5.0     # tempo wysuwania ramienia gdy teren znika (łagodnie)
+# Punkt patrzenia kamery nad stopami gracza. Wyżej = kamera celuje ponad postać -> postać NIŻEJ
+# w kadrze, a celownik (środek ekranu) ląduje NAD nią, w świecie (opcja 2 — TPS shooter).
+@export var cam_height: float = 2.6
 var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
 var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reuse wzorca z Main)
 # FEEL 7: pyl spod stop podczas biegu (kadencja kroku) — re-use _land_dust co interwal.
@@ -1217,7 +1220,7 @@ func _build_camera() -> void:
 	# żeby kamera i ruch się nie "biły".
 	_pivot = Node3D.new()
 	_pivot.name = "CameraPivot"
-	_pivot.position = Vector3(0.0, 1.6, 0.0)  # na wysokości "głowy"
+	_pivot.position = Vector3(0.0, cam_height, 0.0)  # na wysokości "głowy"
 	add_child(_pivot)
 
 	# SpringArm: odsuwa kamerę do tyłu i automatycznie ją przysuwa,
@@ -1252,7 +1255,7 @@ func _build_camera() -> void:
 
 	# Game feel (0C): kamera ODPIĘTA od gracza (top_level) — podąża z wygładzeniem w _process.
 	_pivot.top_level = true
-	_pivot.global_position = global_position + Vector3(0.0, 1.6, 0.0)
+	_pivot.global_position = global_position + Vector3(0.0, cam_height, 0.0)
 	# Interpolacja fizyki jest WŁ. globalnie, ale pivot pozycjonujemy ręcznie w _process
 	# (już w tempie klatek) — wyłączamy go z interpolacji silnika, by nie był wygładzany
 	# podwójnie (co dawałoby lag/smużenie kamery). Dzieci (spring/kamera) dziedziczą OFF.
@@ -1406,7 +1409,7 @@ func _update_camera(delta: float) -> void:
 		return
 	# Podążaj za INTERPOLOWANĄ pozycją gracza (gładką między krokami fizyki), nie za
 	# surową global_position (skokową w tempie fizyki) — inaczej kamera „skacze".
-	var target := get_global_transform_interpolated().origin + Vector3(0.0, 1.6, 0.0)
+	var target := get_global_transform_interpolated().origin + Vector3(0.0, cam_height, 0.0)
 	_pivot.global_position = _pivot.global_position.lerp(target, 1.0 - exp(-cam_follow * delta))
 	_trauma = maxf(0.0, _trauma - trauma_decay * delta)
 	var s := _trauma * _trauma
@@ -2999,7 +3002,7 @@ func respawn() -> void:
 	# Teleport: wyzeruj interpolację, żeby postać nie „smużyła" z punktu śmierci do respawnu.
 	reset_physics_interpolation()
 	if _pivot != null:
-		_pivot.global_position = global_position + Vector3(0.0, 1.6, 0.0)
+		_pivot.global_position = global_position + Vector3(0.0, cam_height, 0.0)
 	hp_changed.emit(hp, max_hp)
 	stamina_changed.emit(stamina, max_stamina)
 	combo_changed.emit(_combo_count)   # HUD: wyzeruj wskaźnik combo po respawnie
