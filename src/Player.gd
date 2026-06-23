@@ -134,6 +134,7 @@ var _camera: Camera3D
 # i daje łagodny zoom na zboczu (asymetryczne wygładzanie w _update_camera).
 var _cam_dist: float = 4.8            # bieżąca (wygładzona) długość ramienia kamery
 var _cam_off: Vector3 = Vector3.ZERO  # wygładzony offset x/y kamery (bob+shake); boom-Z liczony osobno
+var _combat_lock_t: float = 0.0       # >0 = TRYB WALKI (orientacja na celownik); odświeżany atakiem
 
 # Model i pivoty kończyn (zawiasy bark/biodro) — animacja chodu + obrót w kierunku ruchu.
 # KOŃCZYNY 2-SEGMENTOWE: górny pivot (bark/biodro) trzyma dolny pivot (łokieć/kolano)
@@ -395,6 +396,9 @@ var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 # Punkt patrzenia kamery nad stopami gracza. Wyżej = kamera celuje ponad postać -> postać NIŻEJ
 # w kadrze, a celownik (środek ekranu) ląduje NAD nią, w świecie (opcja 2 — TPS shooter).
 @export var cam_height: float = 2.6
+# STEROWANIE (GDD sek.7, face-movement + combat-aim): ile sekund po ostatnim ataku postać trzyma TRYB
+# WALKI (orientacja na celownik). Poza walką orientuje się w kierunku ruchu. 0 = natychmiast eksploracja.
+@export var combat_lock_time: float = 1.5
 var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
 var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reuse wzorca z Main)
 # FEEL 7: pyl spod stop podczas biegu (kadencja kroku) — re-use _land_dust co interwal.
@@ -1514,32 +1518,33 @@ func _process(delta: float) -> void:
 	# FAZA 1: utrzymanie locka (zdejmij martwy/daleki cel) + pozycja wskaznika nad celem.
 	_update_lock_on(delta)
 
-	# --- OBRÓT MODELU: w trakcie ataku ku celowi/kamerze; przy locku STRAFE (twarz do celu);
-	#     inaczej w stronę ruchu. ---
-	var locked := _lock_target != null and is_instance_valid(_lock_target)
-	if is_attacking:
-		# Cel obrotu: jesli lock -> ku celowi (cios trafia), inaczej yaw kamery (jak dotad).
-		var atk_yaw := _pivot.rotation.y
-		if locked:
-			var tl: Vector3 = _lock_target.global_position - global_position
-			tl.y = 0.0
-			if tl.length() > 0.05:
-				atk_yaw = atan2(-tl.x, -tl.z)
-		_model.rotation.y = lerp_angle(_model.rotation.y, atk_yaw, _sm(18.0, delta))
-	elif locked:
-		# STRAFE wzgledem locka: model patrzy NA CEL niezaleznie od kierunku ruchu (kroki w bok).
-		var tl2: Vector3 = _lock_target.global_position - global_position
-		tl2.y = 0.0
-		if tl2.length() > 0.05:
-			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-tl2.x, -tl2.z), _sm(14.0, delta))
+	# --- OBRÓT MODELU (GDD sek.7: face-movement + combat-aim) ---
+	# TRYB WALKI (atak / przez combat_lock_time po ataku / lock-on): orientacja na CELOWNIK (poziomo =
+	#   yaw kamery, bo crosshair = środek ekranu) lub na cel locka -> obrażenia idą tam, gdzie celujesz.
+	# TRYB EKSPLORACJI: postać biegnie ZAWSZE przodem w kierunku RUCHU ("S" => płynny obrót ~180° i bieg
+	#   przodem, NIE cofanie tyłem). Bezruch -> trzyma ostatni facing. Ruch (velocity) jest niezależny.
+	# ZDALNI gracze (co-op) nie mają lokalnej kamery/celownika -> zawsze twarz wg kierunku ruchu.
+	var is_local := _net_sync == null or _net_sync.should_read_local_input()
+	if not is_local:
+		if hspeed > 0.5:
+			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-velocity.x, -velocity.z), _sm(12.0, delta))
 	else:
-		# TPS: LOKALNY gracz zawsze patrzy w stronę kamery/celownika (obrót kamery obraca postać,
-		# A/D = strafe, S = cofanie, ataki lecą w celownik). ZDALNI gracze (co-op) nie mają lokalnej
-		# kamery -> twarz wg kierunku ruchu (jak dotąd), żeby replikacja wyglądała poprawnie.
-		var is_local := _net_sync == null or _net_sync.should_read_local_input()
-		if is_local:
-			_model.rotation.y = lerp_angle(_model.rotation.y, _pivot.rotation.y, _sm(14.0, delta))
-		elif hspeed > 0.5:
+		var locked := _lock_target != null and is_instance_valid(_lock_target)
+		if is_attacking:
+			_combat_lock_t = combat_lock_time            # atak odświeża okno trybu walki
+		elif _combat_lock_t > 0.0:
+			_combat_lock_t = maxf(0.0, _combat_lock_t - delta)
+		if is_attacking or _combat_lock_t > 0.0 or locked:
+			# combat-aim: twarz w stronę celownika (yaw kamery) lub na cel locka.
+			var aim_yaw := _pivot.rotation.y
+			if locked:
+				var tl: Vector3 = _lock_target.global_position - global_position
+				tl.y = 0.0
+				if tl.length() > 0.05:
+					aim_yaw = atan2(-tl.x, -tl.z)
+			_model.rotation.y = lerp_angle(_model.rotation.y, aim_yaw, _sm(18.0 if is_attacking else 16.0, delta))
+		elif hspeed > 0.4:
+			# eksploracja: twarz w kierunku RUCHU (obejmuje "S" = obrót 180° i bieg przodem).
 			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-velocity.x, -velocity.z), _sm(12.0, delta))
 
 	# FAZA 1: LEAN WIZUALNY proporcjonalny do PRZYSPIESZENIA poziomego (waga ruchu). Liczymy zmiane

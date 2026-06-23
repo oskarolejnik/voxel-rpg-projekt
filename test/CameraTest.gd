@@ -23,7 +23,7 @@ func _ready() -> void:
 	await _test_structure()
 	_test_boom_asymmetry()
 	await _test_no_jitter_standing()
-	await _test_tps_facing()
+	await _test_facing_model()
 
 	if _failures == 0:
 		print("[CAMERA] ALL OK")
@@ -125,24 +125,31 @@ func _test_no_jitter_standing() -> void:
 
 
 # ============================================================================
-#  (4) TPS FACING — postać obraca się do yaw kamery (nie do kierunku ruchu)
+#  (4) FACING (GDD sek.7): WALKA -> twarz w celownik (yaw kamery); EKSPLORACJA -> twarz w ruch
 # ============================================================================
-func _test_tps_facing() -> void:
+func _test_facing_model() -> void:
 	var p = await _make_player()
-	p.velocity = Vector3.ZERO              # stoi: w starym modelu NIE obracałby się; w TPS — obraca do kamery
-	p._set_lock_target(null)               # bez locka (inaczej patrzyłby na cel)
-	p._pivot.rotation.y = 1.0              # „obróć kamerę" o 1 rad
-	for i in 150:
-		p._process(1.0 / 60.0)
-	var diff := absf(wrapf(p._model.rotation.y - 1.0, -PI, PI))
-	_check(diff < 0.05, "TPS: model nie patrzy w yaw kamery stojąc (Δ=%.3f rad)" % diff)
+	p._set_lock_target(null)
+	p._pivot.rotation.y = 1.0              # „obróć kamerę" o 1 rad (kierunek celownika)
 
-	# Obrót kamery w drugą stronę — model nadąża (twarz zawsze ku kamerze/celownikowi).
-	p._pivot.rotation.y = -0.8
-	for i in 150:
+	# TRYB WALKI: combat_lock aktywny -> model orientuje się na celownik (yaw kamery), nawet stojąc.
+	p.velocity = Vector3.ZERO
+	for i in 90:
+		p._combat_lock_t = 10.0            # utrzymuj tryb walki (omija decay i brak is_attacking)
 		p._process(1.0 / 60.0)
-	var diff2 := absf(wrapf(p._model.rotation.y - (-0.8), -PI, PI))
-	_check(diff2 < 0.05, "TPS: model nie nadążył za obrotem kamery (Δ=%.3f rad)" % diff2)
-	print("[CAMERA] (4) TPS facing: model śledzi yaw kamery stojąc (Δ=%.3f / %.3f rad) OK" % [diff, diff2])
+	var d_combat := absf(wrapf(p._model.rotation.y - 1.0, -PI, PI))
+	_check(d_combat < 0.05, "WALKA: model nie patrzy w celownik/yaw kamery (Δ=%.3f rad)" % d_combat)
+
+	# TRYB EKSPLORACJI: brak walki + ruch w świat +X -> twarz w KIERUNKU RUCHU (nie w kamerę).
+	var want := atan2(-4.0, -0.0)          # konwencja projektu: atan2(-vel.x, -vel.z)
+	for i in 150:
+		p._combat_lock_t = 0.0
+		p.velocity = Vector3(4.0, 0.0, 0.0)
+		p._process(1.0 / 60.0)
+	var d_expl := absf(wrapf(p._model.rotation.y - want, -PI, PI))
+	_check(d_expl < 0.05, "EKSPLORACJA: model nie patrzy w kierunek RUCHU (Δ=%.3f rad)" % d_expl)
+	# Sanity: w eksploracji NIE patrzy w yaw kamery (1.0) — czyli oba tryby naprawdę się różnią.
+	_check(absf(wrapf(p._model.rotation.y - 1.0, -PI, PI)) > 0.3, "EKSPLORACJA błędnie kopiuje yaw kamery")
+	print("[CAMERA] (4) facing: walka->celownik (Δ=%.3f), eksploracja->ruch (Δ=%.3f) OK" % [d_combat, d_expl])
 	p.queue_free()
 	await get_tree().process_frame
