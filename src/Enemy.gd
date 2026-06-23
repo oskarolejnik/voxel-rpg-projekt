@@ -908,7 +908,53 @@ func _die() -> void:
 	if not drops.is_empty():
 		loot_dropped.emit(global_position, drops)
 	died.emit(self)          # Main/świat policzy ubitych
+	_spawn_death_burst()      # FAZA 2: rozpad na voxele + pop (kosmetyczny, world-space) PRZED free
 	queue_free()
+
+# FAZA 2: ROZPAD NA VOXELE + POP — zamiast natychmiastowego znikniecia, jeden one-shot burst kawalkow
+# (kostki w kolorze skory) z impulsem rozlotu i grawitacja. Spawnowany na RODZICU (nie pod zwalnianym
+# wrogiem), z timerem samo-zwolnienia na drzewie sceny. Kosmetyczny: zero wplywu na HP/loot/licznik.
+# Wzorzec puli/one-shot/unshaded spojny z FeelFX._make_spark; kolor z _base_colors[0] (skora wroga).
+func _spawn_death_burst() -> void:
+	if _model == null:
+		return
+	var parent := get_parent()
+	if parent == null or not is_instance_valid(parent):
+		return
+	var p := GPUParticles3D.new()
+	p.amount = 22
+	p.lifetime = 0.6
+	p.one_shot = true
+	p.explosiveness = 1.0          # caly burst naraz = "pekniecie" na voxele
+	p.local_coords = false
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(0.3, 0.6, 0.3) * body_scale   # objetosc ciala wroga
+	pm.gravity = Vector3(0.0, -9.0, 0.0)               # kawalki spadaja
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 60.0
+	pm.initial_velocity_min = 2.0
+	pm.initial_velocity_max = 5.0                       # POP: rozlot na zewnatrz
+	pm.angular_velocity_min = -360.0
+	pm.angular_velocity_max = 360.0                     # kawalki koziolkuja
+	pm.scale_min = 0.6
+	pm.scale_max = 1.4
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.09, 0.09, 0.09) * body_scale  # rozmiar ~ voxela wroga
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _base_colors[0] if _base_colors.size() > 0 else Color(0.30, 0.55, 0.22)
+	mat.roughness = 1.0
+	mesh.material = mat
+	p.draw_pass_1 = mesh
+	p.process_material = pm
+	parent.add_child(p)
+	p.global_position = global_position + Vector3(0.0, 0.7 * body_scale, 0.0)
+	p.emitting = true
+	# Samo-zwolnienie po lifetime (timer na drzewie sceny, nie na zwalnianym wrogu).
+	var tree := parent.get_tree()
+	if tree != null:
+		var t := tree.create_timer(0.9)
+		t.timeout.connect(p.queue_free)
 
 # ============================================================================
 #  ETAP 1 — HitData wroga + Slinger (pocisk)

@@ -150,6 +150,34 @@ var _walk_phase: float = 0.0
 var _idle_phase: float = 0.0  # niezależny zegar dla oddychania/weight-shift w idle
 var _anim_bob: float = 0.0    # bieżący pionowy bob tułowia (m), wygładzany
 var _land_squash: float = 0.0 # 0..1 chwilowy „przysiad" przy lądowaniu, gaśnie
+# FAZA 2 — warstwy ADDITIVE (czysto wizualne, frame-rate independent, nakladane PO bazie locomocji).
+var _breath_phase: float = 0.0      # zegar oddechu (biegnie zawsze, jak _idle_phase)
+var _stretch: float = 0.0           # squash/stretch pionowy: <0 zgniecenie, >0 rozciagniecie (wygladzany)
+var _stretch_target: float = 0.0    # cel stretcha liczony per stan/faza
+# secondary motion — spring 1-stopniowy (kat+predkosc) na akcencie, lag za bazowa rotacja rodzica
+var _hair_ang: float = 0.0;  var _hair_vel: float = 0.0      # grzywka/wlosy (pitch, lokalny do _head)
+var _wpn_ang: float = 0.0;   var _wpn_vel: float = 0.0       # bron/dlon (lag za _arm_r)
+var _cape_ang: float = 0.0;  var _cape_vel: float = 0.0      # peleryna (pitch za tulowiem)
+var _prev_torso_x: float = 0.0      # do liczenia predkosci katowej tulowia (driver springow)
+var _prev_head_x: float = 0.0       # do liczenia predkosci katowej glowy (driver grzywki)
+var _prev_arm_r_x: float = 0.0      # do liczenia predkosci ramienia (driver springu broni)
+# FRAME-RATE INDEPENDENCE: nakladki rotacji additive (oddech/atak-twist/hit-react) sa NIE-KUMULACYJNE.
+# Trzymamy nakladke z poprzedniej klatki, zdejmujemy ja PRZED smootherami bazowymi (_animate_torso/
+# _animate_head czytaja wlasne rotation w lerp), liczymy swieza i nakladamy raz. Bez tego oscylujaca
+# nakladka wsiakala w lerp bazy => amplituda rosla z FPS (sway/nod ~3x ciezsze @120fps niz @30fps).
+var _add_torso: Vector3 = Vector3.ZERO   # nakladka additive na _torso.rotation (zdejmowana co klatke)
+var _add_head: Vector3 = Vector3.ZERO    # nakladka additive na _head.rotation (zdejmowana co klatke)
+# hit-react additive (gracz) — wzbogacenie o zachwianie tulowia/glowy ~0.12 s
+var _hitreact_t: float = 0.0        # pozostaly czas (s)
+var _hitreact_dir: Vector3 = Vector3.ZERO   # kierunek OD zrodla (XZ, swiatowy)
+const HITREACT_TIME: float = 0.12
+# death (poza przewrocenia)
+var _death_t: float = 0.0           # postep pozy smierci (0->1 narasta)
+var _dying: bool = false
+# nowe wezly-segmenty dla secondary motion (pivoty doczepiane w _build_voxel_character)
+var _hair: Node3D            # pivot grzywki (dziecko _head)
+var _weapon: Node3D          # pivot broni/dloni (dziecko _arm_r_lo)
+var _cape: Node3D            # pivot peleryny (dziecko _torso)
 # Dodatkowy stan dla NATURALNEJ animacji (wygładzane „blend weights" 0..1 i fazy).
 var _gait: float = 0.0        # 0=idle/stoi, 1=pełny chód — wygładzona „siła" lokomocji (anti-pop)
 var _run_blend: float = 0.0   # 0=chód, 1=bieg — wygładzone przejście chód<->bieg (amplitudy/tempo)
@@ -262,6 +290,10 @@ var _move_vel: Vector3 = Vector3.ZERO      # wygładzona prędkość pozioma (ak
 var _coyote: float = 0.0
 var _jump_buffer: float = 0.0
 var _space_was: bool = false
+# FAZA 2 (squash anticipation skoku): krotkie okno przysiadu seedowane W MOMENCIE konsumpcji skoku
+# (bufor skoku jest ustawiany i zerowany w tej samej klatce na ziemi, wiec nie da sie nim sterowac
+# przysiadem). Tyka w dol w _anim_additive; gdy >0 WARSTWA 4 dodaje krotki przysiad przed wybiciem.
+var _jump_antic_t: float = 0.0
 var _trauma: float = 0.0
 var _shake_time: float = 0.0
 var _shake_noise: FastNoiseLite
@@ -786,12 +818,31 @@ func _build_voxel_character() -> void:
 	_sculpt_torso(torso)
 	_add_model_mesh(_torso, torso, mat, Vector3i(0, _HIP_Y, 0))
 
+	# FAZA 2 (secondary motion): PELERYNA na osobnym pivocie u nasady barkow (kolysze sie za
+	# tulowiem). Pivot u gory pleców (+Z), geometria peleryny bake'owana z offsetem tego pivota,
+	# wiec fala zwisa W DOL od barkow. _sculpt_cape buduje TYLKO warstwe peleryny (wycieta z torsa).
+	var cape_pivot_y := _SHOULDER_Y - 1            # nasada peleryny tuz pod barkiem
+	var cape_pivot_z := P_TORSO_D / 2 + 1          # tyl korpusu (warstwa peleryny)
+	_cape = _make_pivot(_torso, Vector3(0.0, float(cape_pivot_y - _HIP_Y) * VS, float(cape_pivot_z) * VS))
+	var cape := VoxelModel.VoxelDef.new()
+	_sculpt_cape(cape)
+	_add_model_mesh(_cape, cape, mat, Vector3i(0, cape_pivot_y, cape_pivot_z))
+
 	# --- GŁOWA (osobny węzeł na szczycie tułowia: stabilizacja/oscylacja) — pivot u nasady
 	#     szyi (y=_SHOULDER_Y), dziecko _torso, więc dziedziczy bob/lean, a dokłada własny ruch.
 	_head = _make_pivot(_torso, Vector3(0.0, float(_SHOULDER_Y - _HIP_Y) * VS, 0.0))
 	var head := VoxelModel.VoxelDef.new()
 	_sculpt_head(head)
 	_add_model_mesh(_head, head, mat, Vector3i(0, _SHOULDER_Y, 0))
+
+	# FAZA 2 (secondary motion): GRZYWKA na osobnym pivocie u czoła (dziecko _head, dziedziczy ruch
+	# glowy a dokłada wlasny lag). Pivot u gory czaszki z przodu; grzywka zwisa od niego (wycieta z glowy).
+	var fringe_pivot_y := _HEAD_TOP - 2
+	var fringe_pivot_z := -(P_HEAD_D / 2) - 1      # przed licem (warstwa grzywki)
+	_hair = _make_pivot(_head, Vector3(0.0, float(fringe_pivot_y - _SHOULDER_Y) * VS, float(fringe_pivot_z) * VS))
+	var fringe := VoxelModel.VoxelDef.new()
+	_sculpt_fringe(fringe)
+	_add_model_mesh(_hair, fringe, mat, Vector3i(0, fringe_pivot_y, fringe_pivot_z))
 
 	# --- NOGI (2 segmenty): biodro (y=_HIP_Y) -> kolano (y=_KNEE_Y zagnieżdżony) ---
 	# Zawias biodra w X = ±_LEG_X (wyliczone z P_LEG_*). Udo bake'owane pod biodrem
@@ -826,6 +877,19 @@ func _build_voxel_character() -> void:
 	_add_model_mesh(_arm_r, uarm_r, mat, Vector3i( _ARM_X, _SHOULDER_Y, 0))
 	_add_model_mesh(_arm_l_lo, farm_l, mat, Vector3i(-_ARM_X, _ELBOW_Y, 0))
 	_add_model_mesh(_arm_r_lo, farm_r, mat, Vector3i( _ARM_X, _ELBOW_Y, 0))
+
+	# FAZA 2 (secondary motion): BROŃ/DŁOŃ na osobnym pivocie u nadgarstka prawej reki (dziecko
+	# _arm_r_lo). Maly akcent (rekojesc/krotki implement) ktory KOLYSZE sie za zamachem ramienia
+	# (lag springiem). Pivot na dnie segmentu przedramienia = nadgarstek; geometria zwisa w dol.
+	var wrist_y := _ELBOW_Y - P_FARM_H + 2          # nadgarstek (nad dlonia)
+	# PIVOT broni: local X = 0 (jak _hair/_cape). _arm_r_lo dziedziczy juz +_ARM_X*VS od _arm_r, wiec
+	# pivot lezy DOKLADNIE w osi geometrii broni. (Wczesniej local X=_ARM_X*VS odsuwalo pivot ~5 voxeli
+	# na zewnatrz, przez co spring WARSTWY 3 obracal bron po luku — "slizg" zamiast kolysania w miejscu.)
+	# Bake offset Vector3i(_ARM_X, wrist_y, 0) nadal liczy geometrie w globalnym X, wiec mesh nie drgnie.
+	_weapon = _make_pivot(_arm_r_lo, Vector3(0.0, float(wrist_y - _ELBOW_Y) * VS, 0.0))
+	var wpn := VoxelModel.VoxelDef.new()
+	_sculpt_weapon(wpn)
+	_add_model_mesh(_weapon, wpn, mat, Vector3i(_ARM_X, wrist_y, 0))
 
 # Bakuje JEDNĄ grupę voxeli do zbatchowanego ArrayMesh i wiesza pod 'parent'.
 # pivot_vox = logiczny punkt obrotu (w voxelach); geometrię przesuwamy o -pivot*VS,
@@ -922,11 +986,10 @@ func _sculpt_head(d: VoxelModel.VoxelDef) -> void:
 	d.fill_box(Vector3i(-hw, hair_lo, hd, ), Vector3i(hw + 1, y1, hd + 1), _C_HAIR)             # tył (+Z)
 	d.fill_box(Vector3i(-hw, hair_lo, -hd), Vector3i(-hw + 1, y1, hd + 1), _C_HAIR)             # lewy bok
 	d.fill_box(Vector3i( hw, hair_lo, -hd), Vector3i(hw + 1, y1, hd + 1), _C_HAIR)              # prawy bok
-	d.fill_box(Vector3i(-hw, y1 - 2, -hd - 1), Vector3i(hw + 1, y1, -hd), _C_HAIR)              # grzywka (front -Z)
+	# GRZYWKA (front -Z) wydzielona do osobnego pivota _hair (_sculpt_fringe) — secondary motion (lag).
 	# Pasemka połysku na czapie (światło z góry-przodu) — bez sterczących kosmyków.
 	for hx in range(-hw + 1, hw, 2):
 		d.set_voxel(Vector3i(hx, y1 + P_HAIR_TOP - 1, -hd + 1), _C_HAIR_HI)
-		d.set_voxel(Vector3i(hx, y1 - 1, -hd - 1), _C_HAIR_HI)   # rozjaśnienie grzywki
 	# --- TWARZ (front -Z) — CZYTELNA i proporcjonalna. Linia oczu na ~55% wysokości głowy. ---
 	# WSZYSTKO liczone z hw/P_HEAD_H, więc twarz skaluje się ze zmianą proporcji głowy
 	# (przy head_w=7 => hw=3: oczy przy x=±2; przy zwężeniu head_w=5 => hw=2: oczy przy x=±1).
@@ -949,6 +1012,31 @@ func _sculpt_head(d: VoxelModel.VoxelDef) -> void:
 	d.set_voxel(Vector3i( 1, mouth_y, fz), _C_MOUTH)
 	# Rumieńce (drobny akcent na policzkach, po bokach ust).
 	d.set_voxel(Vector3i(-ex, mouth_y, fz), _C_BLUSH); d.set_voxel(Vector3i(ex, mouth_y, fz), _C_BLUSH)
+
+# FAZA 2: GRZYWKA jako osobny segment (pivot _hair u czoła) — lag/spring za ruchem glowy.
+# Geometria w GLOBALNYCH y; _build_voxel_character bake'uje z offsetem pivota (fringe_pivot_y, _z),
+# wiec kosmyki zwisaja w dol od mocowania u gory czoła i moga sie kolysac.
+func _sculpt_fringe(d: VoxelModel.VoxelDef) -> void:
+	var hw := P_HEAD_W / 2
+	var hd := P_HEAD_D / 2
+	var y1 := _HEAD_TOP
+	# Grzywka na czole (front -Z), kilka voxeli wysoko — zwisa od czubka czoła.
+	d.fill_box(Vector3i(-hw, y1 - 2, -hd - 1), Vector3i(hw + 1, y1, -hd), _C_HAIR)
+	for hx in range(-hw + 1, hw, 2):
+		d.set_voxel(Vector3i(hx, y1 - 1, -hd - 1), _C_HAIR_HI)   # rozjaśnienie grzywki
+
+# FAZA 2: BROŃ/DŁOŃ jako osobny akcent (pivot _weapon u nadgarstka prawej reki) — kolysze sie za
+# zamachem. Maly „implement" (rekojesc + krotka glownia/kij) zwisajacy z dloni. Geometria w
+# GLOBALNYCH x/y; bake'owana z offsetem pivota (wrist_y, _ARM_X), wiec zwisa w dol od nadgarstka.
+func _sculpt_weapon(d: VoxelModel.VoxelDef) -> void:
+	var cx := _ARM_X
+	var wrist_y := _ELBOW_Y - P_FARM_H + 2
+	var dz := P_LIMB_D / 2
+	# Rekojesc (skora) tuz pod nadgarstkiem.
+	d.set_voxel(Vector3i(cx, wrist_y - 1, -dz), _C_LEATHER)
+	# Krotka glownia/akcent ku przodowi (-Z) — czytelny element, ktory „dociaga" po ramieniu.
+	d.fill_box(Vector3i(cx, wrist_y - 1, -dz - 2), Vector3i(cx + 1, wrist_y, -dz), _C_TRIM)
+	d.set_voxel(Vector3i(cx, wrist_y - 1, -dz - 3), _C_TRIM)
 
 # TUŁÓW — SMUKŁY kaftan/tunika z lekką talią (klepsydra), pasek, naramienniki, peleryna.
 # Geometria parametryczna: y[_HIP_Y.._SHOULDER_Y), barki szer. P_SHOULDER_W (góra), pas P_WAIST_W
@@ -983,12 +1071,22 @@ func _sculpt_torso(d: VoxelModel.VoxelDef) -> void:
 	d.fill_box(Vector3i(-ww, y0, -dz - 1), Vector3i(ww + 1, y0 + 2, dz + 1), _C_BELT)
 	d.set_voxel(Vector3i(0, y0, -dz - 1), _C_BUCKLE)
 	d.set_voxel(Vector3i(0, y0 + 1, -dz - 1), _C_BUCKLE)
-	# PELERYNKA: warstwa na plecach (+Z) od barków w dół — akcent koloru i ruch sylwetki.
+	# PELERYNA: wydzielona do osobnego pivota _cape (_sculpt_cape) — secondary motion (kolysze sie
+	# za tulowiem). Zapinki peleryny na barkach (złoto) zostaja na tulowiu (nieruchomy punkt mocowania).
+	d.set_voxel(Vector3i(-sw + 1, y1 - 1, dz + 1), _C_TRIM); d.set_voxel(Vector3i(sw - 1, y1 - 1, dz + 1), _C_TRIM)
+
+# FAZA 2: PELERYNA jako osobny segment (pivot _cape u nasady barkow) — kolysze sie za tulowiem.
+# Geometria liczona w GLOBALNYCH y/z (jak reszta sculptow); _build_voxel_character bake'uje ja z
+# offsetem pivota (cape_pivot_y, cape_pivot_z), wiec fala zwisa W DOL od mocowania na barkach.
+func _sculpt_cape(d: VoxelModel.VoxelDef) -> void:
+	var y0 := _HIP_Y                             # dol peleryny (na wysokosci pasa)
+	var y1 := _SHOULDER_Y                        # gora peleryny (barki)
+	var sw := P_SHOULDER_W / 2
+	var dz := P_TORSO_D / 2
+	# Warstwa peleryny na plecach (+Z) od barkow w dol — akcent koloru i ruch sylwetki.
 	d.fill_box(Vector3i(-sw + 1, y0, dz + 1), Vector3i(sw, y1, dz + 2), _C_CAPE)
 	d.fill_box(Vector3i(-sw + 1, y0, dz + 1), Vector3i(-1, y1, dz + 2), _C_CAPE_SH)   # cień fałdy (lewa)
 	d.fill_box(Vector3i(1, y0, dz + 1), Vector3i(sw, y1, dz + 2), _C_CAPE_SH)         # cień fałdy (prawa)
-	# Zapinki peleryny na barkach (złoto).
-	d.set_voxel(Vector3i(-sw + 1, y1 - 1, dz + 1), _C_TRIM); d.set_voxel(Vector3i(sw - 1, y1 - 1, dz + 1), _C_TRIM)
 
 # UDO (górny segment nogi, w spodniach). side=-1(L)/+1(R). y[_KNEE_Y.._HIP_Y).
 # Bryła CENTROWANA na zawiasie biodra (x=±_LEG_X), szer. P_LEG_W, głęb. P_LIMB_D -> owalny przekrój.
@@ -1390,6 +1488,178 @@ func _process(delta: float) -> void:
 	# --- GŁOWA: stabilizacja (kompensuje bob/lean tułowia) + subtelny oddech-nod ---
 	_animate_head(delta, hspeed)
 
+	# FAZA 2: warstwa ADDITIVE (breath/sway + secondary-motion + squash/stretch + atak-twist +
+	# hit-react + death) NAKLADANA na baze — OSTATNI krok, wiec nie rusza przetestowanej logiki Fazy 1.
+	_breath_phase += delta
+	_anim_additive(delta)
+
+# FAZA 2 — ADDITIVE: breath/sway, secondary motion (lag), squash/stretch, atak-twist, hit-react, death.
+# Wszystko NAKLADANE (+=) na baze ustawiona przez locomotion/idle/air/torso/head. Czysto wizualne,
+# frame-rate independent. Kapsula/kamera/HP nietkniete. Kazda warstwa niezaleznie wylaczalna.
+func _anim_additive(delta: float) -> void:
+	if _torso == null:
+		return
+	var dt := minf(delta, 0.05)            # clamp dt (stabilnosc springow przy spadku FPS)
+
+	# === WARSTWA 7 (DEATH) — dominuje, gdy martwy: poza przewrocenia, pomijamy reszte ===
+	if _dying:
+		_death_t = minf(1.0, _death_t + delta * 2.2)              # ~0.45 s do pelnej pozy
+		var e := _death_t * _death_t * (3.0 - 2.0 * _death_t)     # smoothstep
+		_model.rotation.z = e * 1.45                              # upadek na bok (~83 stopni)
+		_torso.rotation.x += e * 0.5                              # kuli sie
+		_head.rotation.x += e * 0.4
+		_arm_l.rotation.x += e * 0.3; _arm_r.rotation.x += e * 0.3   # rece bezwladnie
+		_model.scale = Vector3(_model.scale.x, (1.0 + _stretch) * (1.0 - e * 0.2), _model.scale.z)
+		return
+
+	# === FRAME-RATE INDEPENDENCE: zdejmij nakladke z POPRZEDNIEJ klatki, zanim policzymy swieza. ===
+	# _animate_torso/_animate_head robia lerpf(rotation, cel, _sm) czytajac WLASNE rotation — gdyby
+	# nakladka additive zostala wbita w rotation, lerp by ja wsiakal i amplituda rosla z FPS. Dlatego
+	# nakladka jest NIE-KUMULACYJNA: usuwamy ostatnia, akumulujemy nowa do _add_*, nakladamy raz na koncu.
+	_torso.rotation -= _add_torso
+	_head.rotation -= _add_head
+	_add_torso = Vector3.ZERO
+	_add_head = Vector3.ZERO
+
+	# === WARSTWA 2 (ODDECH/SWAY) — nakladany na KAZDY stan; amplituda mocniejsza w spoczynku ===
+	var breath := sin(_breath_phase * 1.6)                        # ~0.26 Hz, spokojny rytm
+	var breath_amp := lerpf(1.0, 0.35, _gait)                    # w ruchu wyciszony (~35%)
+	_torso.position.y += breath * 0.010 * breath_amp             # uniesienie klatki (wdech) — position.y
+	#  ustawiana absolutnie przez _animate_torso, wiec NIE wymaga un-bake (nadpisywana co klatke).
+	var inhale := maxf(0.0, breath) * 0.02 * breath_amp         # mikro-rozszerzenie klatki przy wdechu
+	_torso.scale = Vector3(1.0 - inhale * 0.3, 1.0 + inhale, 1.0 + inhale * 0.6)
+	var shift := sin(_breath_phase * 0.5) * 0.018 * lerpf(1.0, 0.2, _gait)   # idle weight-shift (roll)
+	_add_torso.z += shift
+	_add_head.x += breath * 0.012 * breath_amp                   # delikatny nod oddechu
+
+	# === WARSTWA 5 (ATAK: twist korpusu spiety z faza) — additive do torso.rotation.y ===
+	if _atk_phase == AtkPhase.ANTICIPATION:
+		_add_torso.y += lerpf(0.0, 0.22, 1.0 - _atk_phase_t / maxf(0.01, _atk_anticipation))
+	elif _atk_phase == AtkPhase.ACTIVE:
+		_add_torso.y += lerpf(0.22, -0.18, 1.0 - _atk_phase_t / maxf(0.01, _atk_active))
+	elif _atk_phase == AtkPhase.RECOVERY:
+		_add_torso.y += lerpf(-0.18, 0.0, 1.0 - _atk_phase_t / maxf(0.01, _atk_recovery))
+
+	# === WARSTWA 6 (HIT-REACT) — krotkie zachwianie tulowia+glowy od ciosu (gasnie ~0.12 s) ===
+	if _hitreact_t > 0.0:
+		_hitreact_t = maxf(0.0, _hitreact_t - delta)
+		var f := _hitreact_t / HITREACT_TIME
+		var amp := f * f                                          # ostre na starcie, miekko gasnie
+		var local := _model.global_transform.basis.inverse() * _hitreact_dir   # kierunek w lokalu modelu
+		_add_torso.x += local.z * 0.18 * amp                     # pochyl wzdluzny od/ku zrodlu
+		_add_torso.z += -local.x * 0.14 * amp                    # przechyl boczny
+		_add_head.x += local.z * 0.12 * amp                      # glowa szarpie mocniej
+		_add_head.z += -local.x * 0.10 * amp
+
+	# Naloz swieza nakladke RAZ (przed warstwa secondary-motion, by springi lagowaly za pelna,
+	# WIDOCZNA poza tulowia/glowy — overlay wlacznie). Nakladka zostanie zdjeta na poczatku nastepnej
+	# klatki, zanim _animate_torso/_animate_head policza baze, wiec nigdy nie kumuluje sie w lerp.
+	_torso.rotation += _add_torso
+	_head.rotation += _add_head
+
+	# === WARSTWA 4 (SQUASH/STRETCH) — jeden skalar -> skala modelu z zachowaniem objetosci ===
+	_stretch_target = 0.0
+	_stretch_target += clampf(absf(velocity.y) / 14.0, 0.0, 1.0) * 0.12 * _air_blend   # lot: rozciagniecie
+	_stretch_target -= _land_squash * 0.18                       # ladowanie: zgniecenie (wzmocniony _land_squash)
+	if _jump_antic_t > 0.0:
+		_jump_antic_t = maxf(0.0, _jump_antic_t - delta)
+		_stretch_target -= 0.10                                  # anticipation skoku: przysiad (krotkie okno)
+	if _atk_phase == AtkPhase.ANTICIPATION:
+		_stretch_target -= 0.05 * (1.0 - _atk_phase_t / maxf(0.01, _atk_anticipation))
+	elif _atk_phase == AtkPhase.ACTIVE:
+		_stretch_target += 0.06                                  # atak: "pchniecie" sylwetki
+	_stretch = lerpf(_stretch, _stretch_target, _sm(18.0, delta))
+	var sy := 1.0 + _stretch
+	var sxz := 1.0 / sqrt(maxf(0.2, sy))                         # zachowanie objetosci
+	_model.scale = Vector3(sxz, sy, sxz)
+
+	# === WARSTWA 3 (SECONDARY MOTION) — spring-lag akcentow za predkoscia katowa rodzicow ===
+	# Pol-jawny Euler tlumionego springu: vel += (target - ang)*stiff*dt - vel*damp*dt. Clamp dt.
+	# PELERYNA: driver = zmiana pitcha tulowia + skladowa biegu (powiew do tylu przy ruchu na ziemi).
+	var torso_pitch_vel := (_torso.rotation.x - _prev_torso_x) / maxf(dt, 0.001)
+	var cape_drive := -torso_pitch_vel * 0.06 - _gait * 0.25 * (1.0 - _air_blend)
+	_cape_vel += (cape_drive - _cape_ang) * 90.0 * dt - _cape_vel * 14.0 * dt
+	_cape_ang += _cape_vel * dt
+	if _cape != null: _cape.rotation.x = clampf(_cape_ang, -0.6, 0.6)
+	# GRZYWKA: driver = predkosc katowa glowy (bob/nod) -> wlosy podskakuja z lagiem.
+	var head_vel := (_head.rotation.x - _prev_head_x) / maxf(dt, 0.001)
+	_hair_vel += (-head_vel * 0.5 - _hair_ang) * 120.0 * dt - _hair_vel * 16.0 * dt
+	_hair_ang += _hair_vel * dt
+	if _hair != null: _hair.rotation.x = clampf(_hair_ang, -0.35, 0.35)
+	# BRON/DLON: lag za zamachem ramienia (najsilniejszy w ataku — bron "dociaga" po reke).
+	# Gain 0.035 (nie 0.12): zamach ACTIVE to ~35 rad/s, wiec target ~1.2 rad — clamp 0.5 nie saturuje
+	# sie na cala faze (proporcjonalny lag widoczny zamiast "przypiecia do limitu"). Stan wewnetrzny
+	# _wpn_ang TEZ clampowany po calkowaniu, by nie narastal ponad display i nie odplywal po zamachu.
+	var arm_vel := (_arm_r.rotation.x - _prev_arm_r_x) / maxf(dt, 0.001)
+	_wpn_vel += (-arm_vel * 0.035 - _wpn_ang) * 80.0 * dt - _wpn_vel * 12.0 * dt
+	_wpn_ang = clampf(_wpn_ang + _wpn_vel * dt, -0.5, 0.5)
+	if _weapon != null: _weapon.rotation.x = _wpn_ang
+	# Zapamietaj bazy do liczenia predkosci katowej w nastepnej klatce.
+	_prev_torso_x = _torso.rotation.x
+	_prev_head_x = _head.rotation.x
+	_prev_arm_r_x = _arm_r.rotation.x
+
+# FAZA 2 — FOOT IK / FOOT PLANTING (2-kosciowe IK biodro->kolano->stopa, analityczne).
+# W fazie PODPORU stopa jest NIERUCHOMA wzgledem ziemi (kompensuje ruch biodra do przodu = koniec
+# slizgu); w fazie PRZENOSZENIA leci po luku z uniesieniem. Raycast w dol dobiera wysokosc gruntu
+# (foot-plant na nierownym terenie). Rusza WYLACZNIE rotation.x pivotow wizualnych — kapsula i
+# kamera nietkniete. Konwencja: udo do przodu = +rot.x (hip), kolano gnie do tylu = -rot.x (knee).
+const _IK_K: float = 22.0   # smoothing nog (jak dotychczasowe _sm(22) na kolanach)
+
+func _foot_ik_leg(hip: Node3D, knee: Node3D, phase_off: float,
+		stride: float, lift: float, delta: float) -> void:
+	var ph := _walk_phase + phase_off
+	var swing_phase := sin(ph)
+	var foot_z: float                          # +Z = tyl, -Z = przod (konwencja modelu)
+	var foot_lift: float                        # uniesienie stopy nad podloge (m)
+	if swing_phase > 0.0:
+		# SWING: noga przenosi sie z tylu (+stride) do przodu (-stride) po luku; pieta sie podrywa.
+		var u := (cos(ph) * -0.5 + 0.5)         # 0->1 gladko przez faze swingu
+		foot_z = lerpf(stride, -stride, u)
+		foot_lift = sin(u * PI) * lift           # luk uniesienia, 0 na koncach
+	else:
+		# STANCE (FOOT PLANT): stopa nieruchoma wzgledem ziemi. W ukladzie biodra (jadacego do
+		# przodu) stopa zostaje w tyle => przesuwa sie LINIOWO -przod -> +tyl = kotwica. Zero uniesienia.
+		var u2 := (cos(ph) * 0.5 + 0.5)          # 0 (touchdown) -> 1 (toe-off), liniowo w stance
+		foot_z = lerpf(-stride, stride, u2)
+		foot_lift = 0.0
+	# RAYCAST w dol pod biodro dla realnej wysokosci gruntu (foot-plant na nierownym terenie).
+	# Maska=1 (teren), exclude=[self]. Bezpieczne headless: brak swiata fizyki => brak hitu => 0.
+	var ground_drop := 0.0
+	var world := get_world_3d()
+	if world != null and world.direct_space_state != null:
+		var hip_world := hip.global_position
+		var ro := hip_world + Vector3(0.0, 0.2, 0.0)
+		var rq := PhysicsRayQueryParameters3D.create(ro, ro + Vector3(0.0, -(float(_HIP_Y) * VS + 0.6), 0.0), 1)
+		rq.exclude = [self]
+		var hit := world.direct_space_state.intersect_ray(rq)
+		if hit:
+			# WYZSZY grunt (hit.y > poziom stop = global_position.y) PODNOSI stope: +ground_drop ->
+			# target.y mniej ujemny (stopa wyzej). Wczesniej odwrocony znak wpychal stope W WYZSZY teren
+			# (schody/auto-step/zbocze). global_position to poziom stop (kapsula wycentrowana na body_h*0.5).
+			ground_drop = clampf((hit.position.y - global_position.y), -0.25, 0.25)
+	# Cel stopy w LOKALU biodra (X=0; Z=krok; Y w dol). UWAGA: cel NIE siega pelnej dlugosci nogi —
+	# zostawiamy ~12% luzu (stand_drop), by przy kroku fore/aft noga miala zapas i kolano moglo sie
+	# ugiac (nie ma przeprostu/clampu zasiegu). To naturalna, lekko ugieta postawa stojaca.
+	var leg_len := float(_HIP_Y) * VS
+	var stand_drop := leg_len * 0.94               # bazowa wysokosc bioder nad stopa (luz na zgiecie)
+	var target_local := Vector3(0.0, -(stand_drop - foot_lift) + ground_drop, foot_z)
+	# --- 2-BONE IK (prawo cosinusow) ---
+	var L1 := float(_HIP_Y - _KNEE_Y) * VS       # udo (hip->knee)
+	var L2 := float(_KNEE_Y) * VS                # lydka+but (knee->podeszwa)
+	var d := clampf(target_local.length(), maxf(0.001, absf(L1 - L2) + 0.001), L1 + L2 - 0.001)
+	# Kat w kolanie (prawo cosinusow), zamieniony na zgiecie -rot.x (clamp ujemny = anti-lamanie).
+	var cos_knee := clampf((L1 * L1 + L2 * L2 - d * d) / (2.0 * L1 * L2), -1.0, 1.0)
+	var knee_inner := acos(cos_knee)             # PI = proste, mniej = zgiete
+	var knee_bend := -(PI - knee_inner)          # UJEMNY (gnie do tylu) — zgodne z konwencja
+	# Kat biodra: kierunek do celu (plaszczyzna YZ; przod=-Z, dol=-Y) + korekta na trojkat IK.
+	var aim := atan2(-target_local.z, -target_local.y)   # 0 = noga prosto w dol
+	var cos_hip := clampf((L1 * L1 + d * d - L2 * L2) / (2.0 * L1 * d), -1.0, 1.0)
+	var hip_corr := acos(cos_hip)
+	var hip_ang := aim + hip_corr                # udo wychylone tak, by stopa trafila w cel
+	hip.rotation.x = lerpf(hip.rotation.x, hip_ang, _sm(_IK_K, delta))
+	knee.rotation.x = lerpf(knee.rotation.x, minf(knee_bend, -0.02), _sm(_IK_K, delta))
+
 # --- CHÓD / BIEG -----------------------------------------------------------
 # Naturalny, WAŻONY krok: biodra w przeciwfazie, ramiona w przeciwfazie do nóg, kolana
 # zginają się TYLKO w fazie przenoszenia (foot-plant w podporze), łokcie „pompują" w rytm
@@ -1413,25 +1683,13 @@ func _anim_locomotion(delta: float, _hspeed: float, _sprinting: bool) -> void:
 	var ph := _walk_phase
 	var s := sin(ph)
 
-	# NOGI — biodra: przeciwne fazy L/R. Udo do przodu => rotation.x DODATNI (konwencja stawów).
-	var hip_l := -s * swing
-	var hip_r :=  s * swing
-	_leg_l.rotation.x = lerpf(_leg_l.rotation.x, hip_l, _sm(20.0, delta))
-	_leg_r.rotation.x = lerpf(_leg_r.rotation.x, hip_r, _sm(20.0, delta))
-	# KOLANA — gną się w fazie PRZENOSZENIA (udo w przód, pięta podrywa się => UJEMNY rot.x = tył).
-	# W podporze kolano niemal proste => stopa „trzyma" grunt (foot-plant). -cos(ph)>0 na
-	# (π/2,3π/2) z pikiem w π pokrywa się z mid-swingiem nogi L (analogicznie +cos dla R).
-	var bend := lerpf(1.25, 1.7, _run_blend) * _gait               # maks. zgięcie kolana (rad)
-	var knee_l := -maxf(0.0, -cos(ph)) * bend
-	var knee_r := -maxf(0.0,  cos(ph)) * bend
-	# Minimalne zgięcie podporowe (kolano nigdy idealnie sztywne — żywsza amortyzacja ciężaru).
-	# Start od idle: schodzi z -0.02 (= stały offset kolana w idle) do -0.05 przy pełnym chodzie,
-	# więc kolano NIE prostuje się chwilowo na progu ruchu (łączy się czysto z pozą idle).
-	var knee_floor := lerpf(-0.02, -0.05, _gait)
-	knee_l = minf(knee_l, knee_floor)
-	knee_r = minf(knee_r, knee_floor)
-	_leg_l_lo.rotation.x = lerpf(_leg_l_lo.rotation.x, knee_l, _sm(22.0, delta))
-	_leg_r_lo.rotation.x = lerpf(_leg_r_lo.rotation.x, knee_r, _sm(22.0, delta))
+	# NOGI — FAZA 2: FOOT IK / FOOT PLANTING. Zamiast czystej sinusoidy hip/knee (slizg), 2-kosciowe
+	# IK kotwiczy stope w fazie PODPORU (nieruchoma wzgledem ziemi), raycast dobiera wysokosc gruntu.
+	# To RDZEN fixu sztywnosci (jedyna ingerencja w baze locomocji — uzasadniona). L=faza 0, R=faza PI.
+	var stride := lerpf(0.14, 0.22, _run_blend) * _gait     # dlugosc kroku (m) skaluje z biegiem/rozruchem
+	var lift := lerpf(0.06, 0.12, _run_blend) * _gait       # uniesienie stopy w swingu (m)
+	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride, lift, delta)
+	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride, lift, delta)
 
 	# RĘCE — barki w PRZECIWFAZIE do nóg (ramię L z nogą R). Atak nadpisze je później, jeśli trwa.
 	if not is_attacking:
@@ -1507,39 +1765,49 @@ func _anim_air(delta: float, _hspeed: float) -> void:
 			_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.42, _sm(8.0, delta))
 
 # --- ATAK: zamach prawą ręką (nadpisuje ramiona po lokomocji/idle) ----------
-# FAZA 1: poza zalezna od FAZY timeline (proste hooki; pelne pozy = Faza 2):
-#   ANTICIPATION: rece COFAJA sie (wind-up) — bark do tylu (DODATNI), lokiec zgiety => czytelny zamach,
-#   ACTIVE: szybki zamach DO PRZODU (bark UJEMNY), lokiec prostuje sie na uderzeniu (cios "tnie"),
-#   RECOVERY: powrot do neutralu (rece wracaja).
-# Gdy timeline NIEAKTYWNY (np. finisher Wir Ostrzy / fallback) -> stara parabola z _attack_anim_t.
+# FAZA 2: pelne pozy spiete z timeline Fazy 1 (ANTICIPATION/ACTIVE/RECOVERY) + ANTICIPATION/OVERSHOOT/
+# FOLLOW-THROUGH (12 zasad anim):
+#   ANTICIPATION: ramie COFA sie mocniej (wind-up, easeIn), lokiec mocno zgiety — "naladowanie",
+#   ACTIVE: gwaltowny zamach z OVERSHOOT (konczyna PRZESKAKUJE cel i wraca), lokiec prostuje sie,
+#   RECOVERY: FOLLOW-THROUGH — ramie OSIADA miekko z przeregulowania do neutralu (nie skokowo).
+# Twist korpusu jest w _anim_additive (warstwa 5), by nie kolidowac z _animate_torso. Bron dociaga
+# springiem (secondary motion) ~2 klatki po ramieniu = follow-through narzedzia. Brak timeline
+# (finisher/fallback) -> stara parabola z _attack_anim_t (zachowanie sprzed Fazy 1).
 func _anim_attack_arms(delta: float) -> void:
-	var target_arm := -0.0
-	var target_elbow := 0.4
 	if _atk_phase == AtkPhase.ANTICIPATION:
-		# Wind-up: ramie cofa sie w tyl (DODATNI), lokiec mocno zgiety — "naladowanie" ciosu.
-		var k := 1.0 - (_atk_phase_t / maxf(0.01, _atk_anticipation))   # 0->1 postep wind-upu
-		target_arm = lerpf(0.0, 0.7, k)
-		target_elbow = lerpf(0.4, 1.1, k)
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, target_arm, _sm(26.0, delta))
-		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, target_elbow, _sm(26.0, delta))
+		var k := 1.0 - (_atk_phase_t / maxf(0.01, _atk_anticipation))   # 0->1 wind-up
+		var ease := k * k                                              # przyspieszajacy wind-up (naladowanie)
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, lerpf(0.0, 0.95, ease), _sm(28.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, lerpf(0.4, 1.25, ease), _sm(28.0, delta))
 	elif _atk_phase == AtkPhase.ACTIVE:
-		# Cios: gwaltowny zamach do przodu (UJEMNY), lokiec prostuje sie (uderzenie tnie).
-		var k2 := 1.0 - (_atk_phase_t / maxf(0.01, _atk_active))        # 0->1 w oknie aktywnym
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, lerpf(-1.6, -2.4, k2), _sm(34.0, delta))
-		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, lerpf(0.6, 0.05, k2), _sm(34.0, delta))
+		var k2 := 1.0 - (_atk_phase_t / maxf(0.01, _atk_active))        # 0->1
+		# CIOS + OVERSHOOT: krzywa PRZESKAKUJE cel (-2.6) i osiada (-2.2).
+		var swing := _overshoot(k2, -2.6, -2.2)
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, swing, _sm(38.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, lerpf(0.5, 0.02, k2), _sm(38.0, delta))
 	elif _atk_phase == AtkPhase.RECOVERY:
-		# Powrot: ramie wraca do neutralu (recovery — cancelable, ale wizualnie "domkniecie" ciosu).
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -0.2, _sm(16.0, delta))
-		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.45, _sm(16.0, delta))
+		var k3 := 1.0 - (_atk_phase_t / maxf(0.01, _atk_recovery))
+		# FOLLOW-THROUGH: ramie osiada miekko z przeregulowania do neutralu.
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, lerpf(-1.0, -0.2, k3), _sm(14.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, lerpf(0.15, 0.45, k3), _sm(14.0, delta))
 	else:
 		# Brak timeline (finisher/fallback): stara parabola z _attack_anim_t (zachowanie sprzed Fazy 1).
 		var t := 1.0 - (_attack_anim_t / attack_anim_time)   # 0..1 postęp animacji
-		var swing := sin(t * PI)                              # 0->1->0 parabola
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -2.2 * swing, _sm(28.0, delta))
-		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.9 * (1.0 - swing), _sm(28.0, delta))
+		var swing2 := sin(t * PI)                            # 0->1->0 parabola
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -2.2 * swing2, _sm(28.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.9 * (1.0 - swing2), _sm(28.0, delta))
 	# Lewa ręka: kontra w tył dla balansu (lekkie zgięcie łokcia).
 	_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.35, _sm(14.0, delta))
 	_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.4, _sm(14.0, delta))
+
+# Krzywa OVERSHOOT: k 0..1. 0..0.6: szybki smoothstep do 'peak' (przeskok celu); 0.6..1: smoothstep
+# z 'peak' do 'settle' (przeregulowanie = "miesistosc" ciosu). peak/settle docelowe katy (rad).
+func _overshoot(k: float, peak: float, settle: float) -> float:
+	if k < 0.6:
+		var a := k / 0.6
+		return lerpf(0.0, peak, a * a * (3.0 - 2.0 * a))
+	var b := (k - 0.6) / 0.4
+	return lerpf(peak, settle, b * b * (3.0 - 2.0 * b))
 
 # --- TUŁÓW: body-bob (2× tempo kroku), lean wg prędkości, twist wg fazy ------
 # ANTY-POP: amplitudy lean/twist/roll/bob czytają WYGŁADZONE wagi (_gait dławi rozruch z idle,
@@ -1679,6 +1947,8 @@ func _physics_process(delta: float) -> void:
 		_jump_buffer = jump_buffer_time
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
 	if _jump_buffer > 0.0 and _coyote > 0.0:
+		if is_on_floor():
+			_jump_antic_t = 0.08          # przysiad anticipation tuz przed wybiciem (widoczny squash)
 		velocity.y = jump_velocity
 		_jump_buffer = 0.0
 		_coyote = 0.0
@@ -2475,6 +2745,11 @@ func take_damage(amount: float, from: Node = null, knockback: float = -1.0) -> v
 	_knockback = dir.normalized() * force
 	_knockback.y = 3.0
 
+	# FAZA 2: HIT-REACT additive (zachwianie tulowia/glowy ~0.12 s). Kierunek OD zrodla (XZ swiatowy),
+	# reuse 'dir' policzonego wyzej. Czysto wizualne (gasnie w _anim_additive), nie psuje lokomocji.
+	_hitreact_dir = dir.normalized()
+	_hitreact_t = HITREACT_TIME
+
 	# HP: gdy wpięty HealthComponent — to ON liczy HP/śmierć (DoD). amount>0 (bezpośrednie wywołanie)
 	# kierujemy do niego; amount==0 to czysty hook FX (DamageService już zadał obrażenia komponentowi).
 	if _health != null:
@@ -2506,6 +2781,27 @@ func _die() -> void:
 	_attack_anim_t = 0.0
 	_dodge_t = 0.0
 	hp = 0.0
+	# Zamknij TIMELINE ataku na smierci: bez tego cios ktory dosiegnal w ANTICIPATION przechodzilby
+	# do ACTIVE (otwarcie okna hitboxa) JUZ PO smierci gracza — _tick_attack_timeline tyka bezwarunkowo.
+	# (Pre-existing; domykane przy okazji nowej sciezki smierci.) Zamknij tez okno hitboxa na wszelki wypadek.
+	if _atk_phase != AtkPhase.NONE:
+		_atk_phase = AtkPhase.NONE
+		_atk_phase_t = 0.0
+		if _hitbox != null:
+			_hitbox.close_window()
+	# FAZA 2: poza SMIERCI (przewrocenie) — animowana additive w _anim_additive (warstwa 7). Czysto
+	# wizualne; respawn nadal steruje Main (timer + respawn()), ktory zeruje _dying (patrz respawn()).
+	_dying = true
+	_death_t = 0.0
+	# Wyzeruj squash/stretch i skale modelu PRZED poza smierci — inaczej gracz ginacy w trakcie
+	# ladowania/lotu zachowuje rozlana/rozciagnieta sylwetke przez cala animacje przewrocenia
+	# (death branch pisze tylko scale.y, .x/.z zostawaly z ostatniej klatki squash/stretch).
+	_stretch = 0.0
+	if _model != null:
+		_model.scale = Vector3.ONE
+	# Zdejmij nakladke additive (rotacja) — death branch wraca wczesnie i nie un-bake'uje jej sam.
+	_add_torso = Vector3.ZERO
+	_add_head = Vector3.ZERO
 	hp_changed.emit(hp, max_hp)
 	died.emit()
 	# Uwaga: faktyczny respawn z opóźnieniem steruje Main (timer + wywołanie respawn()).
@@ -2527,6 +2823,19 @@ func respawn() -> void:
 	_dodge_cd = 0.0
 	is_attacking = false
 	is_dodging = false
+	# Wyzeruj TIMELINE ataku po odrodzeniu (czystosc — nie polegaj na samo-korekcie timeline'u).
+	_atk_phase = AtkPhase.NONE
+	_atk_phase_t = 0.0
+	# FAZA 2: zdejmij poze smierci — wstajemy prosto (wyzeruj przewrocenie i skale modelu).
+	_dying = false
+	_death_t = 0.0
+	if _model != null:
+		_model.rotation.z = 0.0
+		_model.scale = Vector3.ONE
+	_stretch = 0.0
+	# Wyzeruj nakladke additive (rotacja) — nastepny _anim_additive zaczyna od czystej bazy.
+	_add_torso = Vector3.ZERO
+	_add_head = Vector3.ZERO
 	_iframes = respawn_iframes   # nietykalność po odrodzeniu
 	global_position = respawn_point
 	# Teleport: wyzeruj interpolację, żeby postać nie „smużyła" z punktu śmierci do respawnu.
