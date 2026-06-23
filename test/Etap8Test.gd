@@ -215,16 +215,20 @@ func _test_audio_fallback() -> void:
 	# Wstrzykujemy do cache atrape strumienia dla bazowych id, a dla dedykowanych zostawiamy null,
 	# symulujac "uzytkownik wrzucil tylko loot/hit/dodge/explore". Stub != prawdziwy plik na dysku,
 	# ale _resolve_* czyta wlasnie _stream_cache, wiec test pokrywa logike fallbacku bez assetow.
+	# KLUCZ CACHE jest SKOPOWANY KATALOGIEM (dir + id) — patrz AudioManager._get_stream (fix kolizji
+	# cross-table). Dlatego seedujemy pod pelnym kluczem SFX_DIR/MUSIC_DIR + id, nie samym id.
+	var sfx_dir: String = AudioManager.SFX_DIR
+	var music_dir: String = AudioManager.MUSIC_DIR
 	var stub := AudioStreamWAV.new()   # lekki, wystarczy jako "istnieje" (nie odtwarzamy realnie)
-	AudioManager._stream_cache[&"loot"] = stub
-	AudioManager._stream_cache[&"hit"] = stub
-	AudioManager._stream_cache[&"dodge"] = stub
-	AudioManager._stream_cache[&"explore"] = stub
+	AudioManager._stream_cache[sfx_dir + "loot"] = stub
+	AudioManager._stream_cache[sfx_dir + "hit"] = stub
+	AudioManager._stream_cache[sfx_dir + "dodge"] = stub
+	AudioManager._stream_cache[music_dir + "explore"] = stub
 	# Dedykowane brak (null w cache) — wymusza sciezke fallbacku.
-	AudioManager._stream_cache[&"gold"] = null
-	AudioManager._stream_cache[&"crit"] = null
-	AudioManager._stream_cache[&"perfect_dodge"] = null
-	AudioManager._stream_cache[&"night"] = null
+	AudioManager._stream_cache[sfx_dir + "gold"] = null
+	AudioManager._stream_cache[sfx_dir + "crit"] = null
+	AudioManager._stream_cache[sfx_dir + "perfect_dodge"] = null
+	AudioManager._stream_cache[music_dir + "night"] = null
 
 	_check(AudioManager._resolve_sfx(&"gold") == stub, "fallback SFX: gold -> loot")
 	_check(AudioManager._resolve_sfx(&"crit") == stub, "fallback SFX: crit -> hit")

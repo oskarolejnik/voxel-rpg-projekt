@@ -82,6 +82,20 @@ signal loot_dropped(world_pos: Vector3, drops: Array)
 # Identyfikator wariantu (diagnostyka / loot). Np. &"goblin"/&"brute"/&"slinger"/&"ember_brute".
 @export var variant_id: StringName = &"goblin"
 
+# ============================================================================
+#  FAZA 5 — ROAMING ELITE (wedrujacy elite, widoczny z daleka jako cel/zagrozenie, model CW)
+# ============================================================================
+# Czy ten wrog jest WEDRUJACYM ELITE (WorldSpawner promuje rzadko). Wizualnie wyrozniony: wieksza
+# skala + emisyjna AURA (OmniLight pulsujacy) + boost statow; szeroki patrol/leash (wedruje po
+# swiecie). NIE wplywa na walke gracza poza silniejszym wrogiem (power-fantasy zachowane: nadal
+# kosisz hordy, elite to mini-cel). Pole czytane przez loot (wyzszy ilvl) i wizual.
+var _is_roaming_elite: bool = false
+# Aura emisyjna roaming-elite (OmniLight3D) — pulsuje, czytelna z daleka. null gdy nie-elite.
+var _elite_aura: OmniLight3D = null
+const ELITE_AURA_BASE_ENERGY: float = 2.2
+const ELITE_AURA_RANGE: float = 6.0
+var _elite_aura_phase: float = 0.0
+
 # Aktywny telegraf bieżącego ciosu (HazardZone preview). Zwalniany po zadaniu ciosu / przerwaniu.
 var _telegraph: HazardZone = null
 
@@ -133,6 +147,40 @@ func _apply_variant_meta(res: EnemyResource) -> void:
 		skin_tint = m["skin_tint"]
 	if m.has("eye_tint"):
 		eye_tint = m["eye_tint"]
+
+
+# ============================================================================
+#  FAZA 5 — PROMOCJA W ROAMING ELITE (wolane przez WorldSpawner PRZED add_child)
+# ============================================================================
+## Czyni z tego wroga WEDRUJACEGO ELITE: podbija staty (HP/dmg), powieksza model, ustawia threat_tier
+## na elite (telegraf ciosu), POSZERZA patrol/leash/aggro (wedruje szeroko po swiecie) i oznacza do
+## budowy AURY emisyjnej w _build_components/_ready. WOLAC tuz po configure_from_resource, ZANIM
+## add_child (jak configure_from_resource — staty wejda do StatsComponent). Mnozniki konserwatywne:
+## elite ma byc mini-celem, nie scianą — power-fantasy hordy zostaje (ROADMAP6).
+func promote_to_roaming_elite() -> void:
+	_is_roaming_elite = true
+	# Staty: +120% HP, +40% dmg — wyrazny "mini-boss" w terenie, ale wciaz do ubicia w kilka ciosow.
+	max_hp *= 2.2
+	hp = max_hp
+	attack_damage *= 1.4
+	# threat_tier elite => telegraf ciosu (czytelnosc) jesli nie byl juz elite/boss.
+	if threat_tier == &"trash":
+		threat_tier = &"elite"
+	# Wizualnie wiekszy (sylwetka "celu" z daleka). Mnoznik na istniejaca skale wariantu.
+	body_scale = maxf(body_scale, 1.0) * 1.35
+	# WEDROWKA: szeroki patrol + dlugi leash + duzy aggro => realnie krazy po swiecie, a nie stoi w
+	# miejscu (model CW: widoczne, przemieszczajace sie zagrozenie). Szybszy o ~15% by "scigal" feel.
+	patrol_radius = maxf(patrol_radius, 22.0)
+	leash_radius = maxf(leash_radius, 40.0)
+	aggro_radius = maxf(aggro_radius, 18.0)
+	move_speed *= 1.12
+	# Lepszy loot (mini-cel oplaca sie ubic): +1 do bonusu rzadkosci.
+	loot_tier_bonus += 1
+
+
+## Diagnostyka / test: czy to wedrujacy elite.
+func is_roaming_elite() -> bool:
+	return _is_roaming_elite
 
 # ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). Gdy z jakiegoś
 # powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + wbudowana maszyna), więc gra działa.
@@ -357,6 +405,34 @@ func _build_voxel_enemy() -> void:
 			_build_silhouette_slinger()
 		_:
 			_build_silhouette_goblin()
+	# FAZA 5: ROAMING ELITE — emisyjna AURA (OmniLight pulsujacy) czytelna z daleka jako "cel". Kolor
+	# wg elementu (ogien/mroz) lub zloty (neutralny). Tani: jedno swiatlo bez cieni + distance fade.
+	if _is_roaming_elite:
+		_build_elite_aura()
+
+
+# FAZA 5: aura roaming-elite — OmniLight3D pulsujacy nad torsem. Bez cieni (tanio), distance fade
+# (daleki elite nie kosztuje). Kolor wg elementu wariantu. Pulsacja w _process (_elite_aura_phase).
+func _build_elite_aura() -> void:
+	if _elite_aura != null:
+		return
+	var col := Color(1.0, 0.78, 0.25)        # neutralny: zloty (krolewski "elite")
+	if element == &"fire":
+		col = Color(1.0, 0.45, 0.15)
+	elif element == &"frost":
+		col = Color(0.5, 0.8, 1.0)
+	var l := OmniLight3D.new()
+	l.name = "EliteAura"
+	l.light_color = col
+	l.light_energy = ELITE_AURA_BASE_ENERGY
+	l.omni_range = ELITE_AURA_RANGE
+	l.shadow_enabled = false
+	l.distance_fade_enabled = true
+	l.distance_fade_begin = 40.0
+	l.distance_fade_length = 12.0
+	l.position = Vector3(0.0, 1.1, 0.0)
+	add_child(l)
+	_elite_aura = l
 
 # --- GOBLIN — krępy, duża głowa, długie szpony (sylwetka bazowa, szybki trash) ---
 func _build_silhouette_goblin() -> void:
@@ -853,6 +929,11 @@ func _pick_patrol_target() -> void:
 func _process(delta: float) -> void:
 	if _model == null:
 		return
+
+	# FAZA 5: ROAMING ELITE — pulsujaca aura (czytelne "tetno mocy" z daleka). Tania (jedno swiatlo).
+	if _elite_aura != null:
+		_elite_aura_phase += delta * 2.4
+		_elite_aura.light_energy = ELITE_AURA_BASE_ENERGY * (0.8 + 0.35 * (0.5 + 0.5 * sin(_elite_aura_phase)))
 
 	# Obrót modelu w stronę _face_dir (przód = -Z), płynnie.
 	if _face_dir.length() > 0.01:

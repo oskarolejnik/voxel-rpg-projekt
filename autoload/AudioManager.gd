@@ -18,6 +18,11 @@ extends Node
 const BUS_MASTER := &"Master"
 const BUS_SFX := &"SFX"
 const BUS_MUSIC := &"Music"
+# FAZA 5: osobna szyna AMBIENCE (tlo biomu: wiatr/ptaki/lawa) — niezalezna petla rownolegla do
+# muzyki. Wpada pod Music (suwak Music ja tlumi razem z utworem), wiec GameSettings nie wymaga
+# nowego suwaka. Cicha (-6 dB wzgledem muzyki) by nie zagluszala combat/explore.
+const BUS_AMBIENCE := &"Ambience"
+const AMBIENCE_DB_OFFSET: float = -6.0
 
 # Katalogi assetow (uzytkownik wrzuca tu pliki CC0 — patrz assets/audio/README.md).
 const SFX_DIR := "res://assets/audio/sfx/"
@@ -47,6 +52,21 @@ const MUSIC_FILES := {
 	&"combat": "combat",            # walka
 	&"night": "night",              # noc/ambient (fallback na explore)
 	&"menu": "menu",                # menu glowne
+	# FAZA 5: PER-BIOM muzyka eksploracji (drop-in). Brak dedykowanego pliku -> fallback na "explore"
+	# (MUSIC_FALLBACK), wiec gra dziala z jednym explore.ogg, a wrzucenie explore_verdant.ogg podmienia
+	# tlo TYLKO w tym biomie. Hook woła Main._update_music_context wg biomu pod graczem.
+	&"explore_verdant": "explore_verdant",
+	&"explore_emberwaste": "explore_emberwaste",
+	&"explore_frosthelm": "explore_frosthelm",
+}
+
+# FAZA 5: PER-BIOM AMBIENCE (tlo srodowiska: szum lasu/wiatr pustyni/zawieja). Osobna szyna, petla,
+# rownolegla do muzyki. Brak pliku -> no-op (jak SFX/Music). Drop-in po wrzuceniu CC0 wg README.
+const AMBIENCE_DIR := "res://assets/audio/ambience/"
+const AMBIENCE_FILES := {
+	&"verdant": "verdant",          # szum lasu / ptaki / liscie
+	&"emberwaste": "emberwaste",    # gorace pustkowie / odlegla lawa / wiatr
+	&"frosthelm": "frosthelm",      # zawieja / mrozny wiatr
 }
 
 # FALLBACKI drop-in (kontrakt README "wrzuc plik -> dziala"): gdy brak DEDYKOWANEGO pliku dla id,
@@ -61,6 +81,10 @@ const SFX_FALLBACK := {
 }
 const MUSIC_FALLBACK := {
 	&"night": &"explore",
+	# FAZA 5: muzyka per-biom dziedziczy po "explore" dopoki uzytkownik nie wrzuci dedykowanego pliku.
+	&"explore_verdant": &"explore",
+	&"explore_emberwaste": &"explore",
+	&"explore_frosthelm": &"explore",
 }
 
 const EXTENSIONS: Array[String] = [".ogg", ".wav", ".mp3"]
@@ -73,6 +97,10 @@ var _sfx_next: int = 0
 # Player muzyki (jeden strumien, crossfade-lite przez prosty restart).
 var _music_player: AudioStreamPlayer
 var _current_music: StringName = &""
+
+# FAZA 5: player AMBIENCE (tlo biomu) — osobny strumien petli, rownolegly do muzyki.
+var _ambience_player: AudioStreamPlayer
+var _current_ambience: StringName = &""
 
 # Cache zaladowanych strumieni id->AudioStream (lub null = brak pliku, juz sprawdzony).
 var _stream_cache: Dictionary = {}
@@ -114,17 +142,22 @@ func _on_hit_resolved(_source: Node, _target: Node, final_damage: float, was_cri
 ## Tworzy szyny SFX i Music jako dzieci Mastera, jesli jeszcze nie istnieja. Idempotentne
 ## (po reimporcie/restartcie nie duplikuje). Master (index 0) zawsze istnieje w Godocie.
 func _ensure_buses() -> void:
-	_ensure_bus(BUS_SFX)
-	_ensure_bus(BUS_MUSIC)
+	_ensure_bus(BUS_SFX, BUS_MASTER)
+	_ensure_bus(BUS_MUSIC, BUS_MASTER)
+	# FAZA 5: Ambience wpada pod Music (suwak Music tlumi tlo razem z utworem) z cichym offsetem.
+	_ensure_bus(BUS_AMBIENCE, BUS_MUSIC)
+	var aidx := AudioServer.get_bus_index(BUS_AMBIENCE)
+	if aidx != -1:
+		AudioServer.set_bus_volume_db(aidx, AMBIENCE_DB_OFFSET)
 
 
-func _ensure_bus(bus_name: StringName) -> void:
+func _ensure_bus(bus_name: StringName, send_to: StringName = BUS_MASTER) -> void:
 	if AudioServer.get_bus_index(bus_name) != -1:
 		return
 	var idx := AudioServer.bus_count
 	AudioServer.add_bus(idx)
 	AudioServer.set_bus_name(idx, String(bus_name))
-	AudioServer.set_bus_send(idx, String(BUS_MASTER))
+	AudioServer.set_bus_send(idx, String(send_to))
 
 
 func _build_players() -> void:
@@ -140,6 +173,11 @@ func _build_players() -> void:
 	_music_player.bus = String(BUS_MUSIC)
 	_music_player.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(_music_player)
+	# FAZA 5: ambience (tlo biomu) — osobny player na szynie Ambience.
+	_ambience_player = AudioStreamPlayer.new()
+	_ambience_player.bus = String(BUS_AMBIENCE)
+	_ambience_player.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(_ambience_player)
 
 
 # ============================================================================
@@ -216,6 +254,45 @@ func current_music() -> StringName:
 	return _current_music
 
 
+# ============================================================================
+#  FAZA 5 — AMBIENCE PER-BIOM (tlo srodowiska, petla, rownolegle do muzyki) — no-op-safe
+# ============================================================================
+## Odtwarza ambience (tlo) o danym id (zwykle id biomu: verdant/emberwaste/frosthelm). To samo juz
+## gra -> nic (brak restartu, plynne przejscia miedzy biomami bez "skoku"). Brak pliku -> NO-OP.
+## id == &"" -> stop_ambient(). Bezpieczne w headless i bez assetow (placeholder), jak play_music.
+func play_ambient(id: StringName) -> void:
+	if id == &"":
+		stop_ambient()
+		return
+	if id == _current_ambience and _ambience_player != null and _ambience_player.playing:
+		return
+	var stream := _resolve_ambience(id)
+	if stream == null:
+		_current_ambience = id   # zapamietaj intencje (drop-in: gdy plik dolozą, ruszy przy zmianie biomu)
+		_note_placeholder()
+		return
+	_current_ambience = id
+	_apply_loop(stream)
+	if _ambience_player != null:
+		_ambience_player.stream = stream
+		_ambience_player.play()
+
+
+func stop_ambient() -> void:
+	_current_ambience = &""
+	if _ambience_player != null:
+		_ambience_player.stop()
+
+
+func current_ambience() -> StringName:
+	return _current_ambience
+
+
+## Czy DEDYKOWANY plik ambience dla danego id istnieje (BEZ fallbacku) — sanity dla testu/decyzji.
+func has_ambience(id: StringName) -> bool:
+	return _get_stream(id, AMBIENCE_DIR, AMBIENCE_FILES) != null
+
+
 ## Czy DEDYKOWANY plik SFX dla danego id istnieje (BEZ fallbacku). Uzywane do warunkowych decyzji
 ## w wolajacym (np. _on_hit_resolved sprawdza, czy jest osobny crit, zanim zdecyduje crit vs hit).
 ## Brak fallbacku tutaj jest CELOWY: has_sfx pyta o KONKRETNY plik, nie o "czy cokolwiek zagra".
@@ -249,14 +326,23 @@ func _resolve_music(id: StringName) -> AudioStream:
 	return null
 
 
+## Rozwiazuje strumien ambience (bez fallbacku — ambience to opcjonalne tlo per-biom). null gdy brak.
+func _resolve_ambience(id: StringName) -> AudioStream:
+	return _get_stream(id, AMBIENCE_DIR, AMBIENCE_FILES)
+
+
 # ============================================================================
 #  Ladowanie strumieni (cache + tolerancja braku pliku)
 # ============================================================================
 ## Zwraca AudioStream dla id lub null (brak pliku -> placeholder). Cache'uje wynik (w tym null),
 ## by nie sprawdzac dysku przy kazdym ciosie. Probuje rozszerzen z EXTENSIONS po kolei.
+## KLUCZ CACHE jest SKOPOWANY KATALOGIEM (dir + id), bo to samo id moze byc rozwiazywane wzgledem
+## SFX_DIR / MUSIC_DIR / AMBIENCE_DIR. Bez tego pierwsze rozwiazanie danego id (w tym null z pustego
+## katalogu) zatrulo by lookupy z innych tabel — pulapka drop-in, gdyby user nazwal SFX np. "verdant".
 func _get_stream(id: StringName, dir: String, table: Dictionary) -> AudioStream:
-	if _stream_cache.has(id):
-		var c = _stream_cache[id]
+	var key: String = dir + String(id)
+	if _stream_cache.has(key):
+		var c = _stream_cache[key]
 		return c as AudioStream   # null tez jest poprawnym (zacache'owanym) wynikiem
 	var base: String = table.get(id, String(id))
 	var found: AudioStream = null
@@ -267,7 +353,7 @@ func _get_stream(id: StringName, dir: String, table: Dictionary) -> AudioStream:
 			if res is AudioStream:
 				found = res as AudioStream
 				break
-	_stream_cache[id] = found
+	_stream_cache[key] = found
 	return found
 
 

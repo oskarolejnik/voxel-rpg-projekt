@@ -53,6 +53,15 @@ var _feel_fx: FeelFX
 var _biome_fx: GPUParticles3D
 var _biome_fx_current: StringName = &""
 
+# FAZA 5 (WORLD ALIVENESS): ambient creatures (ptaki/krytery/ryby) + distant events (sylwetka/dym/
+# meteor/blysk). Czysto wizualne, pooled, despawn poza zasiegiem. Tyka z _process (update).
+const AmbientLifeScript := preload("res://src/world/AmbientLife.gd")
+var _ambient_life: AmbientLife
+# FAZA 5: biezacy biom pod graczem (cache do soundscape per-biom + wind_strength). &"" = jeszcze nie znany.
+var _current_biome: StringName = &""
+# FAZA 5: reactive foliage — co ile sekund odswiezamy liste "pushujacych" wrogow (nie co klatke).
+var _pusher_accum: float = 0.0
+
 # FEEL 3: PER-BIOM POST — barwny grade Environment wg biomu POD GRACZEM. Cała scena zmienia nastrój
 # (Emberwaste = ciepły, wysoki kontrast/nasycenie; Frosthelm = chłodny, wyblakły; Verdant = soczysty
 # neutral), więc biom czyta się jako MIEJSCE także w atmosferze, nie tylko w teksturze terenu.
@@ -115,6 +124,7 @@ func _ready() -> void:
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
 	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień + (FEEL) ambient biomu
 	_setup_feel_fx()       # FEEL (BATCH): hit-VFX + puls swiatla + damage numbers (spina hit_resolved)
+	_setup_ambient_life()  # FAZA 5: ambient creatures (ptaki/krytery/ryby) + distant events (skala swiata)
 	_setup_audio()         # ETAP 8: SFX walki/lootu/awansu + muzyka ambient (placeholdery, no-op bez plików)
 	_setup_menus()         # ETAP 8: menu główne (overlay startowy) + menu pauzy (ESC). Pomijane w VOXEL_PROBE.
 	_setup_fps_counter()   # diagnostyka: licznik FPS w rogu (do strojenia wydajności)
@@ -263,6 +273,19 @@ func _on_hit_for_flash(source: Node, _target: Node, final_damage: float, was_cri
 	elif final_damage >= FLASH_BIG_HIT_THRESHOLD:
 		_hud.flash(false)
 
+# FAZA 5 (WORLD ALIVENESS): tworzy system ambient creatures + distant events. Tani, pooled,
+# despawn poza zasiegiem. Pomijany w VOXEL_PROBE (sondy porownawcze maja staly kadr bez zywych
+# stworzen). update() wolane z _process gdy gra zywa (nie pauza).
+func _setup_ambient_life() -> void:
+	if OS.get_environment("VOXEL_PROBE") != "":
+		return
+	_ambient_life = AmbientLifeScript.new()
+	_ambient_life.name = "AmbientLife"
+	add_child(_ambient_life)
+	if _world != null and _player_ref != null:
+		_ambient_life.setup(_world, _player_ref)
+
+
 # FEEL (8): tworzy emiter ambientu biomu (spadajace czastki nad/wokol gracza). Parametry materialu
 # (kolor/grawitacja/predkosc/rozmiar) ustawia _apply_biome_fx wg biomu — tu tylko szkielet/pula.
 func _make_biome_fx() -> GPUParticles3D:
@@ -342,6 +365,9 @@ func _apply_biome_fx(biome: StringName) -> void:
 			pm.initial_velocity_min = 0.3
 			pm.initial_velocity_max = 0.9
 	_biome_fx.restart()
+
+	# FAZA 5: WIND ZONES per-biom — sila wiatru w shaderze propow (na zmianie biomu).
+	_apply_wind_for_biome(biome)
 
 	# FAZA 4 (6): per-biom kolor pylu spod stop gracza (sprint/zwrot). Emberwaste = cieplejszy/rdzawy,
 	# Frosthelm = chlodny/biały (snieg), Verdant = ziemisty. Tani: jeden set albedo na zmianie biomu.
@@ -429,6 +455,64 @@ func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: 
 	add_child(p)
 	return p
 
+# FAZA 5: WIND ZONES per-biom — ustawia globalna sile wiatru (wind_strength) w wspoldzielonym
+# materiale propow. Frosthelm = mocny mrozny wiatr; Emberwaste = lagodny (gorace, gęste powietrze);
+# Verdant = baza. Tani: jeden set_shader_parameter na zmianie biomu (wolane z _apply_biome_fx).
+func _apply_wind_for_biome(biome: StringName) -> void:
+	if _world == null or _world.props_material == null:
+		return
+	var strength: float
+	var dir: Vector2
+	match biome:
+		&"frosthelm":
+			strength = 1.6          # zawieja — trawa/krzewy mocno kładzione
+			dir = Vector2(0.8, 0.6)
+		&"emberwaste":
+			strength = 0.7          # gorące, stojące powietrze — leniwe podmuchy
+			dir = Vector2(1.0, 0.15)
+		_:
+			strength = 1.0          # Verdant: spokojna łąka (baza)
+			dir = Vector2(1.0, 0.3)
+	_world.props_material.set_shader_parameter("wind_strength", strength)
+	_world.props_material.set_shader_parameter("wind_dir", dir)
+
+
+# FAZA 5: REAKTYWNA FOLIAGE — pcha pozycje gracza + 2 najblizszych wrogow do shadera propow, by
+# trawa rozstepowala sie przed nogami. Gracz co klatke (plynne), wrogowie throttlowani (co ~0.3 s).
+const PUSHER_REFRESH: float = 0.3
+func _update_reactive_foliage(delta: float, player_pos: Vector3) -> void:
+	if _world == null or _world.props_material == null:
+		return
+	var mat := _world.props_material
+	# Gracz: czubek odgina sie od jego pozycji (y do detekcji "brak gracza" w shaderze nie potrzebne,
+	# bo gracz zawsze istnieje gdy gramy; przekazujemy realny y).
+	mat.set_shader_parameter("player_pos", player_pos)
+	# Wrogowie (pushujacy) — odswiezamy liste rzadziej niz co klatke (tani; pozycje i tak plynnie
+	# interpoluje shader przez ruch gracza/wrogow). Wybieramy 2 najblizszych w zasiegu pushu+marginesie.
+	_pusher_accum += delta
+	if _pusher_accum < PUSHER_REFRESH:
+		return
+	_pusher_accum = 0.0
+	var best_a := Vector4(0.0, -9999.0, 0.0, 0.0)
+	var best_b := Vector4(0.0, -9999.0, 0.0, 0.0)
+	var da := INF
+	var db := INF
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if not (e is Node3D) or not is_instance_valid(e):
+			continue
+		var ep: Vector3 = (e as Node3D).global_position
+		var d := Vector2(ep.x - player_pos.x, ep.z - player_pos.z).length()
+		if d > 24.0:
+			continue   # tylko bliscy wrogowie maja sens dla rozsuwania trawy widocznej u gracza
+		if d < da:
+			db = da; best_b = best_a
+			da = d; best_a = Vector4(ep.x, ep.y, ep.z, 1.0)
+		elif d < db:
+			db = d; best_b = Vector4(ep.x, ep.y, ep.z, 1.0)
+	mat.set_shader_parameter("pusher_a", best_a)
+	mat.set_shader_parameter("pusher_b", best_b)
+
+
 func _process(_delta: float) -> void:
 	if _fps_label != null:
 		_fps_label.text = "FPS: %d" % Engine.get_frames_per_second()
@@ -453,7 +537,8 @@ func _process(_delta: float) -> void:
 	if _biome_fx != null and _world != null:
 		_biome_fx.global_position = pos + Vector3(0.0, 6.0, 0.0)
 		var biome := _world.get_biome(int(floor(pos.x)), int(floor(pos.z)))
-		_apply_biome_fx(biome)
+		_current_biome = biome
+		_apply_biome_fx(biome)   # FAZA 5: ten sam call ustawia tez wind_strength wg biomu (gated zmiana)
 		# FEEL 3: PER-BIOM POST — ustaw cel grade'u wg biomu, potem płynnie do niego lerpuj. Cała scena
 		# zmienia nastrój (Ember ciepły/kontrastowy, Frost chłodny/wyblakły) => biom czyta się jako MIEJSCE.
 		_set_biome_post_target(biome)
@@ -463,6 +548,14 @@ func _process(_delta: float) -> void:
 		var want_biome_fx := not get_tree().paused
 		if _biome_fx.emitting != want_biome_fx:
 			_biome_fx.emitting = want_biome_fx
+
+	# FAZA 5: REAKTYWNA FOLIAGE — pchamy pozycje gracza (co klatke) + najblizszych wrogow (throttling)
+	# do shadera propow, by trawa rozstepowala sie przed nogami. Tani: kilka set_shader_parameter.
+	_update_reactive_foliage(_delta, pos)
+
+	# FAZA 5: ambient creatures + distant events — tyka tylko gdy gra zywa (na pauzie zamrozone).
+	if _ambient_life != null and not get_tree().paused:
+		_ambient_life.update(_delta)
 
 	# ETAP 8: muzyka kontekstowa (explore <-> combat). Throttling ~0,5 s, by nie sprawdzac co klatkę.
 	_music_check_accum += _delta
@@ -1201,8 +1294,12 @@ func _play_sfx(id: StringName) -> void:
 		am.play_sfx(id)
 
 
-## ETAP 8 — przełącza muzykę explore <-> combat wg tego, czy w pobliżu gracza są żywi wrogowie.
-## Throttlowane z _process (co ~0,5 s). No-op gdy brak AudioManager/gracza lub gdy gracz w menu/pauzie.
+## ETAP 8 + FAZA 5 — przełącza muzykę explore <-> combat wg tego, czy w pobliżu gracza są żywi
+## wrogowie, ORAZ utrzymuje ambience per-biom (tlo srodowiska rownolegle do muzyki). Throttlowane z
+## _process (co ~0,5 s). No-op gdy brak AudioManager/gracza lub gdy gracz w menu/pauzie. Soundscape:
+##   - walka  -> muzyka "combat" (trigger wejscia w walke)
+##   - eksploracja -> muzyka "explore_<biom>" (fallback na "explore" gdy brak dedykowanego pliku)
+##   - zawsze -> ambience biomu (verdant/emberwaste/frosthelm) na osobnej szynie (no-op bez pliku)
 func _update_music_context() -> void:
 	var am := _audio_manager()
 	if am == null or _player_ref == null or not is_instance_valid(_player_ref):
@@ -1210,11 +1307,20 @@ func _update_music_context() -> void:
 	# W menu głównym (gra spauzowana za menu) nie nadpisujemy muzyki menu.
 	if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.visible:
 		return
+	# FAZA 5: ambience per-biom (tlo) — utrzymywane zawsze (gra spokojnie w tle pod muzyka).
+	if _current_biome != &"" and am.has_method("play_ambient"):
+		am.play_ambient(_current_biome)
 	var in_combat := _enemy_near_player()
-	if in_combat == _was_in_combat:
+	# FAZA 5: muzyka eksploracji per-biom — id "explore_<biom>" (fallback na "explore" w AudioManager).
+	var explore_id: StringName = &"explore"
+	if _current_biome != &"":
+		explore_id = StringName("explore_" + String(_current_biome))
+	# Przelaczamy tylko na ZMIANIE kontekstu walki LUB zmianie biomu (gdy eksplorujemy).
+	var want_music: StringName = &"combat" if in_combat else explore_id
+	if in_combat == _was_in_combat and (in_combat or am.current_music() == want_music):
 		return
 	_was_in_combat = in_combat
-	am.play_music(&"combat" if in_combat else &"explore")
+	am.play_music(want_music)
 
 
 ## Czy w promieniu walki jest żywy wróg (prosty heurystyk dla muzyki). Tani: iteruje grupę "enemies".

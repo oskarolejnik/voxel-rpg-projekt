@@ -378,8 +378,10 @@ var _afterimage_left: int = 0                   # ile duchow jeszcze spawnowac w
 var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 
 # --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
-@export var base_fov: float = 75.0          # bazowe FOV kamery
-@export var sprint_fov_add: float = 9.0     # ile FOV dokładamy przy biegu
+# FAZA 5 (TUNING KAMERY): bazowe FOV 75->78 — szerszy kadr pod world-aliveness (więcej świata/hordy
+# w polu widzenia), nadal poniżej progu "rybie oko". Sprint-kick 9->10 (mocniejsze poczucie pędu).
+@export var base_fov: float = 78.0          # bazowe FOV kamery
+@export var sprint_fov_add: float = 10.0    # ile FOV dokładamy przy biegu
 @export var fov_lerp: float = 8.0           # szybkość zmiany FOV
 @export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
 var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
@@ -1212,8 +1214,13 @@ func _build_camera() -> void:
 
 	# SpringArm: odsuwa kamerę do tyłu i automatycznie ją przysuwa,
 	# gdy coś zasłoni (np. ściana), żeby nie patrzeć przez geometrię.
+	# FAZA 5 (TUNING KAMERY pod world-aliveness/power-fantasy): odsunięta nieco dalej (5.0->5.6) —
+	# więcej świata w kadrze (widać ambient creatures / roaming-elite / distant events i hordę 8-12
+	# wrogów naraz), bez utraty czytelności postaci. Lekki DOMYŚLNY pitch w dół (model CW: patrzymy
+	# na bohatera i teren wokół, nie w horyzont) — daje natychmiast bardziej "action-RPG" kadr.
 	_spring = SpringArm3D.new()
-	_spring.spring_length = 5.0
+	_spring.spring_length = 5.6
+	_spring.rotation.x = deg_to_rad(-12.0)   # start lekko z góry; gracz i tak swobodnie reguluje myszą
 	_pivot.add_child(_spring)
 
 	_camera = Camera3D.new()

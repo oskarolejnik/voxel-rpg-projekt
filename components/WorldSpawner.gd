@@ -22,8 +22,11 @@ extends Node
 const REGION_SIZE: float = 48.0
 ## Promień regionów (w komórkach) aktywowanych wokół gracza. 1 => siatka 3×3 regionów.
 const REGION_RADIUS: int = 1
-## Twardy limit jednocześnie żywych wrogów (anti-flood; chroni FPS 2A/2B).
-const MAX_ACTIVE: int = 16
+## Twardy limit jednocześnie żywych wrogów (anti-flood; chroni FPS 2A/2B). FAZA 5 (BALANS HORDY,
+## ROADMAP6): 16->14 — cel odczuciowy "horda 8-12 goblinów na arenę" (czytelność + power-fantasy).
+## 14 zostawia ~12 trash + do 2 roaming-elite (MAX_ACTIVE_ELITES) bez przekroczenia czytelnego progu;
+## gracz "kosi hordy, ale musi się ruszać" (GDD), nie tonie w nieczytelnym tłumie 16+.
+const MAX_ACTIVE: int = 14
 ## Ile NOWYCH wrogów spawnujemy max w jednej aktywacji (rozłożenie kosztu add_child).
 const MAX_SPAWN_PER_TICK: int = 6
 ## Co ile sekund przeliczamy regiony (nie co klatkę — tani throttling).
@@ -37,10 +40,21 @@ const MIN_SPAWN_DIST: float = 6.0
 const SALT_COUNT: int = 0x51A1
 const SALT_PICK: int = 0x71B2
 const SALT_POS: int = 0x93C3
+## FAZA 5: salt rzutu na ROAMING ELITE (rozłączny — nie psuje determinizmu zwykłego spawnu regionu).
+const SALT_ELITE: int = 0xE11E
+
+## FAZA 5: szansa, że region wystawi WĘDRUJĄCEGO ELITE (deterministyczna z RNG regionu). Rzadkie —
+## elite ma być "wydarzeniem" w terenie, nie normą (model CW: pojedynczy widoczny cel/zagrożenie).
+const ELITE_REGION_CHANCE: float = 0.14
+## Twardy limit jednocześnie żywych roaming-elite (czytelność: max 1-2 cele na raz, nie tłum elit).
+const MAX_ACTIVE_ELITES: int = 2
+## Min. dystans spawnu elite od gracza (ma być widoczny "z daleka jako cel", nie wyrastać na głowie).
+const ELITE_MIN_SPAWN_DIST: float = 18.0
 
 var _world: VoxelWorld = null
 var _player: Node3D = null
 var _active: int = 0                       # aktualnie żywi wrogowie (z tego spawnera)
+var _active_elites: int = 0                # FAZA 5: aktualnie żywi roaming-elite (podzbiór _active)
 var _activated: Dictionary = {}            # Vector2i(region) -> true (już zaktywowany, nie dubluj)
 var _tick_left: float = 0.0
 ## Callbacki właściciela (Main) — podpięcie sygnałów wroga (śmierć/loot) jak w starym _spawn_enemies.
@@ -133,6 +147,43 @@ func _activate_region(region: Vector2i) -> void:
 		_spawn_enemy(enemy_id, ppos, biome_id, dtier)
 		spawned += 1
 
+	# FAZA 5: ROAMING ELITE — rzadko region wystawia WĘDRUJĄCEGO ELITE (deterministyczny rzut z RNG
+	# regionu, rozłączny salt). Cap globalny (MAX_ACTIVE_ELITES) i limit aktywnych. Dobieramy najsilniejszy
+	# wpis tabeli biomu (najwyższa "waga zagrożenia" — preferuje brute/elite), promujemy go i spawnujemy
+	# DALEKO od gracza, by był widoczny "jako cel". Tani: jedno dodatkowe Enemy, rzadko.
+	if _active_elites < MAX_ACTIVE_ELITES and _active < MAX_ACTIVE:
+		var elite_rng := RandomNumberGenerator.new()
+		elite_rng.seed = region_seed(_base_seed() ^ SALT_ELITE, region)
+		if elite_rng.randf() < ELITE_REGION_CHANCE:
+			var elite_id := _elite_pick(table)
+			if elite_id != &"":
+				var epos := _spawn_pos(elite_rng, region)
+				var ok_dist := true
+				if _player != null and is_instance_valid(_player):
+					ok_dist = Vector2(epos.x - _player.global_position.x, epos.z - _player.global_position.z).length() >= ELITE_MIN_SPAWN_DIST
+				if ok_dist:
+					_spawn_enemy(elite_id, epos, biome_id, dtier, true)
+
+
+## FAZA 5: wybiera wpis tabeli na ROAMING ELITE — preferuje "elite"/brute (najwyższy weight wśród
+## wpisów z max_alive==1, tj. rzadkich/mocnych), fallback na najcięższy ID. Zwraca enemy_id lub &"".
+func _elite_pick(table: Array) -> StringName:
+	var best_id: StringName = &""
+	var best_score: float = -1.0
+	for e in table:
+		var d := e as Dictionary
+		var id := StringName(d.get("enemy_id", &""))
+		if id == &"":
+			continue
+		# Heurystyka "siły": rzadcy wrogowie (mały max_alive) z nazwą brute = najlepszi kandydaci.
+		var rarity := 1.0 / maxf(1.0, float(d.get("max_alive", 8)))
+		var brute_bonus := 2.0 if String(id).ends_with("brute") else 0.0
+		var score := rarity + brute_bonus
+		if score > best_score:
+			best_score = score
+			best_id = id
+	return best_id
+
 
 ## Buduje LOKALNY deterministyczny RNG regionu z base_seed + współrzędnych (jak feature_hash).
 func _region_rng(region: Vector2i) -> RandomNumberGenerator:
@@ -209,10 +260,13 @@ func _spawn_pos(rng: RandomNumberGenerator, region: Vector2i) -> Vector3:
 
 ## Tworzy Enemy z EnemyResource (EnemyDB), konfiguruje PRZED add_child (staty wejdą do komponentów),
 ## ustawia loot (ilvl wg dystansu, biom regionu), cel = gracz, sygnały. Zlicza aktywnych.
-func _spawn_enemy(enemy_id: StringName, pos: Vector3, biome_id: StringName, dtier: int) -> void:
+func _spawn_enemy(enemy_id: StringName, pos: Vector3, biome_id: StringName, dtier: int, is_elite: bool = false) -> void:
 	var res: EnemyResource = EnemyDB.enemy(enemy_id) if EnemyDB != null else null
 	var e := Enemy.new()
 	e.configure_from_resource(res)       # PRZED add_child -> _build_components widzi docelowe staty
+	# FAZA 5: ROAMING ELITE — promocja PRZED add_child (staty/skala/aura wejdą do _ready/_build_components).
+	if is_elite:
+		e.promote_to_roaming_elite()
 	# Loot: ilvl skaluje się z dystansem (model CW), biom regionu filtruje afiksy tematyczne.
 	# ETAP 4 (review #MAJOR — loot_tier biomu wpięty BEHAWIORALNIE, nie tylko deklaratywnie):
 	# pobieramy BiomeResource.loot_tier i (a) PODBIJAMY ilvl o (loot_tier-1)*2 — bogatszy biom daje
@@ -242,6 +296,8 @@ func _spawn_enemy(enemy_id: StringName, pos: Vector3, biome_id: StringName, dtie
 	if _on_died.is_valid():
 		e.died.connect(_on_died)
 	_active += 1
+	if is_elite:
+		_active_elites += 1
 	# ETAP 7b: HOST replikuje tego wroga do klientow (stabilna sciezka Enemy_<id> + synchronizer
 	# transformu + sync HP istniejacym kanalem). SP -> natychmiastowy no-op; klient tu nie wchodzi
 	# (jego _process/_update_regions sa bramkowane wyzej). Jedyne zrodlo wrogow w co-opie = host.
@@ -249,13 +305,21 @@ func _spawn_enemy(enemy_id: StringName, pos: Vector3, biome_id: StringName, dtie
 		NetManager.host_spawn_enemy(e, enemy_id, e.global_position, e.loot_ilvl, biome_id, e.loot_tier_bonus)
 
 
-func _on_enemy_died(_e: Enemy) -> void:
+func _on_enemy_died(e: Enemy) -> void:
 	_active = maxi(0, _active - 1)
+	# FAZA 5: zdejmij licznik roaming-elite (by region mogl znow wystawic elite po jego smierci).
+	if e != null and is_instance_valid(e) and e.has_method("is_roaming_elite") and e.is_roaming_elite():
+		_active_elites = maxi(0, _active_elites - 1)
 
 
 ## Diagnostyka: liczba aktywnych wrogów z tego spawnera.
 func active_count() -> int:
 	return _active
+
+
+## FAZA 5 diagnostyka/test: liczba aktywnych roaming-elite.
+func active_elite_count() -> int:
+	return _active_elites
 
 
 ## Zeruje licznik aktywnych wrogów (review #MAJOR). Wołane przez DungeonManager przy wejściu do
@@ -266,3 +330,4 @@ func active_count() -> int:
 ## samego ziarna => ci sami wrogowie dopiero po zapomnieniu regionu — kontrakt determinizmu Etapu 4).
 func reset_active() -> void:
 	_active = 0
+	_active_elites = 0   # FAZA 5: razem z _active (wrogowie swiata usuwani przy wejsciu do dungeonu)

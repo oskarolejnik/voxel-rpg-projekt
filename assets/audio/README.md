@@ -40,6 +40,30 @@ crashy). Po wrzuceniu pliku o właściwej nazwie i **restarcie gry** dźwięk gr
 | `music/combat.ogg`   | walka (żywy wróg < 22 m od gracza)         |
 | `music/night.ogg`    | noc/ambient (rezerwa; fallback: `explore`) |
 
+### Muzyka PER-BIOM (FAZA 5 — opcjonalna, drop-in)
+
+Eksploracja może mieć osobny motyw w każdym biomie. **Wszystkie mają fallback na `explore.ogg`**,
+więc gra działa z jednym plikiem; wrzucenie dedykowanego podmienia tło tylko w danym biomie.
+
+| Plik (id)                      | Kiedy gra (eksploracja w biomie)        | Fallback   |
+|--------------------------------|------------------------------------------|------------|
+| `music/explore_verdant.ogg`    | Verdant Hollow                           | `explore`  |
+| `music/explore_emberwaste.ogg` | Emberwaste                               | `explore`  |
+| `music/explore_frosthelm.ogg`  | Frosthelm Peaks                          | `explore`  |
+
+## Ambience PER-BIOM (folder `ambience/`) — FAZA 5
+
+Tło środowiska (szum lasu / wiatr pustyni / zawieja) gra **równolegle do muzyki** na osobnej szynie
+`Ambience` (cichszej o 6 dB, tłumionej suwakiem Music). Brak pliku → no-op (cisza). Pętla
+automatyczna. Hook: `Main._update_music_context` woła `AudioManager.play_ambient(<biom>)` wg biomu
+pod graczem (płynne przejścia bez "skoku" przy zmianie biomu).
+
+| Plik (id)                 | Kiedy gra                                          |
+|---------------------------|----------------------------------------------------|
+| `ambience/verdant.ogg`    | Verdant Hollow (szum lasu, ptaki, liście)          |
+| `ambience/emberwaste.ogg` | Emberwaste (gorące pustkowie, odległa lawa, wiatr) |
+| `ambience/frosthelm.ogg`  | Frosthelm Peaks (zawieja, mroźny wiatr)            |
+
 ## Źródła CC0 (sugestie — zweryfikuj licencję przy pobraniu)
 
 - **freesound.org** (filtr licencji CC0) — SFX (ciosy, kroki, UI, śmierć).

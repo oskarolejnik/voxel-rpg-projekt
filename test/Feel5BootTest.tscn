@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://test/Feel5BootTest.gd" id="1_feel5boot"]
+
+[node name="Feel5BootTest" type="Node"]
+script = ExtResource("1_feel5boot")
