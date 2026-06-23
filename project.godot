@@ -32,6 +32,7 @@ DamageService="*res://autoload/DamageService.gd"
 LootService="*res://autoload/LootService.gd"
 GameSettings="*res://autoload/GameSettings.gd"
 AudioManager="*res://autoload/AudioManager.gd"
+ContentDB="*res://autoload/ContentDB.gd"
 
 [physics]
 
