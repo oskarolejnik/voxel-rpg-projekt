@@ -186,6 +186,13 @@ var _attacking: bool = false                  # czy trwa cykl zamachu
 var _flash_timer: float = 0.0
 var _walk_phase: float = 0.0
 
+# FEEL (3): FLINCH (szarpniecie modelu na trafieniu) — wizualne, niezalezne od HP/knockbacku.
+const FLINCH_TIME: float = 0.11      # s trwania szarpniecia
+const FLINCH_OFFSET: float = 0.14    # m maksymalnego przesuniecia modelu w kierunku ciosu
+const FLINCH_TILT: float = 0.35      # rad maksymalnego przechylu (pitch) od uderzenia
+var _flinch_t: float = 0.0
+var _flinch_dir: Vector3 = Vector3.ZERO   # znormalizowany kierunek OD zrodla (XZ)
+
 # Knockback jako gasnący wektor (jak u gracza) — przeżywa nadpisanie velocity przez AI.
 # Doliczany do velocity PO wyborze stanu i wygaszany przez move_toward.
 var _knockback: Vector3 = Vector3.ZERO
@@ -247,6 +254,7 @@ func _build_components() -> void:
 	add_child(_health)
 	_health.died.connect(_on_health_died)
 	_health.hp_changed.connect(_on_health_hp_changed)
+	_health.damaged.connect(_on_health_damaged)   # FEEL (3): flinch (szarpniecie modelu) na obrazeniach
 	hp = _health.current_hp
 
 	# 3) HurtboxComponent (Area3D) — cel hitboxów gracza. Kształt ~ kapsuła ciała.
@@ -782,6 +790,23 @@ func _process(delta: float) -> void:
 			for i in _mats.size():
 				_mats[i].albedo_color = _base_colors[i]
 
+	# FEEL (3): FLINCH — krotkie szarpniecie modelu (przesuniecie + przechyl) na trafieniu. Gasnie
+	# wykladniczo (~0.1 s). To CZYSTO wizual nakladany na pozycje/rotacje MODELU (nie na cialo/HP).
+	# Daje "odczuty" cios poza czerwonym flashem — wrog reaguje WIDOCZNIE.
+	if _flinch_t > 0.0:
+		_flinch_t = maxf(0.0, _flinch_t - delta)
+		var f := _flinch_t / FLINCH_TIME             # 1 → 0
+		var amp := f * f                             # ostre na starcie, miekkie wygaszenie
+		# Przesuniecie modelu w kierunku ciosu (lokalny XZ wzgledem rotacji modelu pomijamy — maly efekt).
+		_model.position.x = _flinch_dir.x * FLINCH_OFFSET * amp
+		_model.position.z = _flinch_dir.z * FLINCH_OFFSET * amp
+		# Przechyl (pitch w kierunku ciosu) — model "kuli sie" od uderzenia.
+		_model.rotation.x = -amp * FLINCH_TILT
+		if _flinch_t == 0.0:
+			_model.position.x = 0.0
+			_model.position.z = 0.0
+			_model.rotation.x = 0.0
+
 # Animacja samych nóg (używana podczas zamachu).
 func _animate_legs(delta: float, hspeed: float) -> void:
 	if hspeed > 0.3:
@@ -846,6 +871,20 @@ var _dead_emitted: bool = false
 func _on_health_hp_changed(current: float, _maximum: float) -> void:
 	hp = current
 
+# FEEL (3): HealthComponent.damaged (amount>0) -> wyzwala FLINCH (szarpniecie modelu). Kierunek OD
+# zrodla (jak knockback); brak zrodla -> losowy mikro-flinch. CZYSTO wizualne, zero wplywu na HP/AI.
+func _on_health_damaged(amount: float, from: Node, _current_hp: float) -> void:
+	if amount <= 0.0 or is_dead():
+		return
+	var dir := Vector3.ZERO
+	if from != null and is_instance_valid(from) and from is Node3D:
+		dir = global_position - (from as Node3D).global_position
+		dir.y = 0.0
+	if dir.length() < 0.01:
+		dir = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+	_flinch_dir = dir.normalized()
+	_flinch_t = FLINCH_TIME
+
 # Śmierć przez HealthComponent -> wspólna ścieżka _die (idempotentna).
 func _on_health_died(_from: Node) -> void:
 	_die()
@@ -900,11 +939,21 @@ func _stat(key: StringName, fallback: float) -> float:
 # Slinger: spawnuje Projectile lecący w stronę celu. CCD pociska sam liczy trafienie/teren przez
 # DamageService (jedno źródło obrażeń). Maska: teren | ciało gracza (warstwa 2).
 func _spawn_projectile() -> void:
-	if _target == null or not is_instance_valid(_target):
+	# ETAP 6 (review): CEL POCISKU zalezny od allegiance. WROG strzela w _target (gracz). PET (ALLY)
+	# strzela we WROGA rozwiazanego przez AIComponent (_nearest_enemy), bo _target peta jest
+	# NIEJEDNOZNACZNY: take_damage() ustawia go na atakujacego wroga, a fallback _physics_process (~L475)
+	# na GRACZA. Gdyby ranged pet celowal w _target, smierc celu w trakcie windupu (fallback przestawia
+	# _target na gracza) -> pet strzelilby w GRACZA. AI-rozwiazany cel jest jednoznaczny i NIGDY nie jest
+	# graczem; brak zywego wroga w zasiegu -> nie strzelaj (pet nie marnuje pocisku w gracza). Lustro
+	# maski nizej (body_bit), ktora juz jest allegiance-aware (ALLY -> enemy_body bit2).
+	var aim_target: Node3D = _target
+	if allegiance == Allegiance.ALLY:
+		aim_target = _ai.current_target() if _ai != null else null
+	if aim_target == null or not is_instance_valid(aim_target):
 		return
 	var proj := Projectile.new()
 	var origin := global_position + Vector3(0.0, 1.0, 0.0)         # z wysokości tułowia
-	var aim: Vector3 = (_target as Node3D).global_position + Vector3(0.0, 0.9, 0.0)
+	var aim: Vector3 = aim_target.global_position + Vector3(0.0, 0.9, 0.0)
 	var dir := (aim - origin)
 	# ETAP 6 (review): maska pocisku zalezy od allegiance. WROG celuje w teren|cialo gracza (bit1);
 	# PET (ALLY) celuje w teren|cialo wroga (enemy_body=bit2) — inaczej pocisk peta trafialby gracza
@@ -915,8 +964,9 @@ func _spawn_projectile() -> void:
 	# Builder HitData per cel (Projectile woła go przy trafieniu) — domknięcie na self.
 	proj.setup(self, dir, projectile_speed, func(_t: Node) -> HitData: return _build_hit(),
 		mask, projectile_gravity, projectile_pierce)
-	proj.global_position = origin
 	# Dodaj do drzewa świata (rodzic Enemy = Main/świat), żeby pocisk żył niezależnie od wroga.
+	# global_position ustawiamy DOPIERO po add_child — przed wejściem do drzewa set jest ignorowany
+	# (Node3D.get_global_transform ostrzega "!is_inside_tree()" i zwraca identyczność).
 	var parent := get_parent()
 	if parent != null:
 		parent.add_child(proj)

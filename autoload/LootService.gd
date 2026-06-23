@@ -167,12 +167,42 @@ func drop_for(enemy: Node) -> Array:
 		var inst := roll_item(item_seed, ilvl, biome, rarity, slot, base_id)
 		out.append({ "kind": "item", "instance": inst })
 
+	# --- Dropy CELOWANE z tabeli (item_drops): konkretny item z szansa, np. tame_charm dla bestii ---
+	# Niezalezne od rarity (to konsumpcyjne/materialy — bierzemy je WPROST z ItemDB po item_id, bez
+	# afiksow). Szansa per-wpis ze strumienia loot (HOST-ONLY — jestesmy juz za bramka autorytetu).
+	if table != null:
+		for entry in table.item_drops:
+			if not (entry is Dictionary):
+				continue
+			var iid := StringName((entry as Dictionary).get("item_id", &""))
+			if iid == &"":
+				continue
+			var chance := clampf(float((entry as Dictionary).get("chance", 1.0)), 0.0, 1.0)
+			if RNGService.loot.randf() < chance:
+				var targeted := _make_item_drop(iid, ilvl)
+				if targeted != null:
+					out.append({ "kind": "item", "instance": targeted })
+
 	return out
 
 
 # ============================================================================
 #  WEWNETRZNE: losowanie skladnikow
 # ============================================================================
+
+## Buduje ItemInstance dla KONKRETNEGO itemu z ItemDB (base_id), BEZ losowania afiksow — uzywane przez
+## dropy celowane (LootTableResource.item_drops, np. tame_charm). To itemy nieekwipowane (konsumpcyjne/
+## materialy), wiec rarity nie ma znaczenia mechanicznie — ustawiamy COMMON dla spojnego wizualu dropu.
+## ilvl niesiemy z kontekstu wroga (gdyby item kiedys skalowal sie poziomem). null gdy item nieznany.
+func _make_item_drop(item_id: StringName, ilvl: int) -> ItemInstance:
+	if ItemDB == null or ItemDB.item(item_id) == null:
+		return null
+	var inst := ItemInstance.new()
+	inst.base_id = item_id
+	inst.rarity = ItemResource.Rarity.COMMON
+	inst.ilvl = maxi(1, ilvl)
+	return inst
+
 
 func _affix_count(tier: int) -> int:
 	if tier >= 0 and tier < AFFIX_COUNT.size():

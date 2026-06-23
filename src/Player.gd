@@ -221,6 +221,11 @@ var _shake_noise: FastNoiseLite
 var _was_on_floor: bool = true
 var _hitstop_active: bool = false
 var _local_freeze_t: float = 0.0                # co-op: lokalny freeze-frame pozy ataku (s, w _process)
+# FEEL (2): TIEROWANY hitstop — wynik ostatniego NASZEGO ciosu (z DamageService.hit_resolved),
+# czytany przez _on_hitbox_hit_landed, by dobrac dlugosc bezczasu. _is_heavy_attack ustawia finisher
+# (AoE/ciezka bron) na czas okna — wtedy nawet bez krytyka bezczas jest dluzszy (waga ciosu).
+var _last_hit_crit: bool = false
+var _is_heavy_attack: bool = false
 
 # --- ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). ---
 # Gdy z jakiegoś powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + ręczna pętla), więc
@@ -269,6 +274,12 @@ var _dodge_active_t: float = 0.0                # ile czasu już trwa bieżący 
 var _perfect_bonus_next: bool = false           # następny cios dostaje premię za perfect-dodge
 signal perfect_dodge()                          # HUD/FX: udany perfect-dodge
 
+# --- FEEL (5): AFTERIMAGE uniku (duchy modelu) + interwal spawnu ---
+const AFTERIMAGE_INTERVAL: float = 0.05         # s miedzy duchami (3 duchy w ~0.1 s zrywu)
+const AFTERIMAGE_LIFE: float = 0.22             # s gasniecia ducha
+var _afterimage_left: int = 0                   # ile duchow jeszcze spawnowac w tym dashu
+var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
+
 # --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
 @export var base_fov: float = 75.0          # bazowe FOV kamery
 @export var sprint_fov_add: float = 9.0     # ile FOV dokładamy przy biegu
@@ -276,6 +287,9 @@ signal perfect_dodge()                          # HUD/FX: udany perfect-dodge
 @export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
 var _cam_bob_phase: float = 0.0             # faza walk-bob kamery (czas*tempo)
 var _land_dust: GPUParticles3D              # one-shot pył przy lądowaniu (reuse wzorca z Main)
+# FEEL 7: pyl spod stop podczas biegu (kadencja kroku) — re-use _land_dust co interwal.
+const SPRINT_DUST_INTERVAL: float = 0.26    # s miedzy obloczkami przy biegu (tempo kroku)
+var _sprint_dust_t: float = 0.0
 
 func _ready() -> void:
 	_compute_proportions()  # WYLICZ VS + wysokości pivotów z parametrów (PRZED budową modelu)
@@ -369,6 +383,12 @@ func _build_components() -> void:
 	_hitbox.hit_landed.connect(_on_hitbox_hit_landed)
 	_hitbox.window_ended.connect(_on_hitbox_window_ended)
 
+	# FEEL (2): hitstop TIEROWANY. Krytyk/ciezkosc ostatniego NASZEGO ciosu czytamy z DamageService
+	# (jedyne miejsce, ktore zna wynik krytyka). Zapamietujemy w _last_hit_crit, by _on_hitbox_hit_landed
+	# dobralo dlugosc bezczasu (light/heavy/crit). To czysto LOKALNE odczucie — HP liczy host.
+	if DamageService != null and not DamageService.hit_resolved.is_connected(_on_damage_resolved):
+		DamageService.hit_resolved.connect(_on_damage_resolved)
+
 	# 5) AbilityComponent — wykonuje atak/dash jako SkillResource (bufor + cancel w komponencie).
 	#    LMB/dash przechodzą przez try_use() -> perform_skill (encja deleguje wykonanie). To literalna
 	#    ścieżka DoD: AbilityComponent -> HitboxComponent (perform_skill atak otwiera okno hitboxa).
@@ -453,6 +473,21 @@ func _build_progression() -> void:
 	_tame = TameSystem.new()
 	add_child(_tame)
 	_tame.setup(self, _level, _stats)
+	# ETAP 6 (loot pipeline): item-oswajacz idzie przez REALNY ekwipunek. Wpinamy peek (czy gracz ma
+	# tame_charm) i provider (zuzyj 1) jako Callable szukajace InventoryComponentu LENIWIE — Main tworzy
+	# go jako dziecko gracza PO tym _ready, wiec lookup robimy DOPIERO przy oswajaniu (gdy juz istnieje),
+	# a nie teraz. charm_count zostaje fallbackiem dla testow bez ekwipunku.
+	# Locale Callable'i jako Node (duck-type), NIE InventoryComponent: na CZYSTYM checkoutcie
+	# class_name InventoryComponent bywa jeszcze nierejestrowany w TYM samym przebiegu --import, co
+	# kompiluje Player.gd (dwuprzebiegowa rejestracja Godota). Zalezno do nazwanej klasy w ciele tych
+	# Callable'i potrafila wtedy transient'owo wywalic _find_inventory jako "not found". has_item/
+	# consume_item sa kaczkowane, wiec Node wystarcza i znosi zaleznosc od rejestracji klasy (1-pass CI).
+	_tame.charm_peek = func() -> bool:
+		var inv: Node = _find_inventory()
+		return inv != null and inv.has_item(TameSystem.TAME_CHARM_ITEM)
+	_tame.charm_provider = func() -> bool:
+		var inv: Node = _find_inventory()
+		return inv != null and inv.consume_item(TameSystem.TAME_CHARM_ITEM)
 
 	# 4) Finisher zasobu klasy (sink, by zasob mial sens w grze). Wojownik: Wir Ostrzy (30 Furii,
 	#    CD 1 s, AoE wokol — ROADMAP 6). Koszt/CD pilnuje AbilityComponent (cost_resource=rage).
@@ -534,6 +569,20 @@ func class_resource_component() -> ClassResourceComponent:
 ## ETAP 6 — TameSystem (oswajanie/pet). Main/test wola try_tame / load_pet_from_save przez to.
 func tame_system() -> TameSystem:
 	return _tame
+
+## ETAP 6 — InventoryComponent gracza. Tworzy go Main jako dziecko gracza (po _ready), wiec szukamy
+## LENIWIE wsrod dzieci. Uzywane przez charm_peek/charm_provider (item-oswajacz w plecaku). Null gdy
+## ekwipunku jeszcze/wcale nie ma (np. headless bez Main) -> oswajanie spada na charm_count.
+## Zwracamy Node (duck-type), NIE InventoryComponent: adnotacja zwrotu wymuszalaby rejestracje
+## class_name InventoryComponent juz przy KOMPILACJI Player.gd, co na czystym checkoutcie potrafi
+## byc jeszcze niedostepne w tym samym przebiegu --import (dwuprzebiegowa rejestracja klas Godota) ->
+## transient parse error i "Failed to load Main.gd" na 1-pass CI. is InventoryComponent w ciele jest
+## bezpieczne (sprawdzane w RUNTIME), a wolajacy uzywaja tylko kaczkowanych has_item/consume_item.
+func _find_inventory() -> Node:
+	for c in get_children():
+		if c is InventoryComponent:
+			return c
+	return null
 
 ## Wczytanie stanu progresji z save (Main wola po spawnie). poziom/XP + alokacja drzewka.
 func load_progression(p_level: int, p_xp: int, p_allocated: Array[StringName]) -> void:
@@ -1006,6 +1055,19 @@ func _spawn_land_dust(strength: float) -> void:
 	_land_dust.restart()
 	_land_dust.emitting = true
 
+# FEEL 7: lekki obloczek pylu spod stop przy biegu (re-use emitera _land_dust; mniej czastek niz
+# ladowanie). Lekko za postacia (przeciwnie do ruchu), by "odbijal sie" od kroku.
+func _spawn_sprint_dust() -> void:
+	if _land_dust == null:
+		return
+	var back := Vector3(velocity.x, 0.0, velocity.z)
+	if back.length() > 0.01:
+		back = -back.normalized() * 0.3
+	_land_dust.global_position = global_position + back
+	_land_dust.amount = 6
+	_land_dust.restart()
+	_land_dust.emitting = true
+
 func _unhandled_input(event: InputEvent) -> void:
 	# Ruch myszy obraca kamerę (gdy kursor jest złapany).
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
@@ -1138,6 +1200,14 @@ func _process(delta: float) -> void:
 	_update_camera(delta)
 	if _model == null:
 		return
+
+	# FEEL (5): spawn duchow afterimage w trakcie dasha (co AFTERIMAGE_INTERVAL, lacznie 3).
+	if _afterimage_left > 0:
+		_afterimage_t -= delta
+		if _afterimage_t <= 0.0:
+			_afterimage_t = AFTERIMAGE_INTERVAL
+			_afterimage_left -= 1
+			_spawn_afterimage()
 
 	# --- Regeneracja staminy w czasie (po krótkiej ciszy od ostatniego wydatku), gdy gracz żyje ---
 	if not is_dead:
@@ -1541,16 +1611,30 @@ func _physics_process(delta: float) -> void:
 		if moving and is_on_floor() and not is_dead and _dodge_t <= 0.0:
 			_try_step_up(direction, current_speed, delta)
 
-		# Lądowanie (0C + JUICE): trzask kamery + przysiad (squash) + pył, skalowane prędkością upadku.
+		# Lądowanie (0C + JUICE / FEEL 7): trzask kamery + przysiad (squash) + pył, skalowane upadkiem.
 		if is_on_floor() and not _was_on_floor and pre_vy < -3.0:
 			var fall := -pre_vy
-			add_trauma(clampf(fall / 30.0, 0.0, 0.35))
-			# Squash: krótki przysiad ciała (anim _animate_torso zaniża tułów wg _land_squash).
-			_land_squash = clampf(fall / 16.0, 0.15, 1.0)
-			# Pył pod stopami przy mocniejszym lądowaniu (próg, by drobne kroki nie kurzyły).
-			if fall > 5.0:
-				_spawn_land_dust(clampf(fall / 16.0, 0.0, 1.0))
+			# FEEL 7: mocniejszy trzask kamery przy lądowaniu (waga ruchu) — wyzszy sufit trauma.
+			add_trauma(clampf(fall / 24.0, 0.05, 0.45))
+			# Squash: glebszy przysiad ciala (anim _animate_torso zaniża tułów wg _land_squash).
+			_land_squash = clampf(fall / 13.0, 0.2, 1.2)
+			# FEEL 7: pyl juz przy lzejszym ladowaniu (prog 3.5 zamiast 5) + mocniejszy puff przy upadku.
+			if fall > 3.5:
+				_spawn_land_dust(clampf(fall / 14.0, 0.0, 1.2))
+			_play_sfx(&"land")   # FEEL 7: SFX ladowania (no-op bez pliku)
 		_was_on_floor = is_on_floor()
+
+		# FEEL 7: SPRINT JUICE — przy biegu po ziemi pyl spod stop (kadencja kroku) + (FOV/bob juz sa).
+		# Tani: re-use one-shot _land_dust co krok (przy fazie chodu mijajacej dolny punkt). Waga ruchu.
+		if simulate and is_on_floor() and not is_dead and _dodge_t <= 0.0:
+			var hsp := Vector2(velocity.x, velocity.z).length()
+			if hsp > speed + 0.6:                  # tylko BIEG (nie zwykly chod)
+				_sprint_dust_t -= delta
+				if _sprint_dust_t <= 0.0:
+					_sprint_dust_t = SPRINT_DUST_INTERVAL
+					_spawn_sprint_dust()
+			else:
+				_sprint_dust_t = 0.0
 
 	# ETAP 7: PREDYKCJA/REKONSYLIACJA + INTERPOLACJA. No-op w SP (net_post_physics -> return gdy brak
 	# sieci). Klient-właściciel: buforuje input + wysyła do hosta; host: rozsyła snapshoty; cudza postać
@@ -1651,6 +1735,7 @@ func _try_attack() -> void:
 # Atak -> otwórz okno hitboxa (Area3D) w stronę kamery; dash -> uruchom zryw uniku.
 func _perform_skill(skill: SkillResource, _target: Node) -> void:
 	if skill == _skill_attack:
+		_is_heavy_attack = false             # FEEL (2): zwykly cios = lekki tier hitstopu
 		var fyaw := _pivot.rotation.y
 		var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
 		if _hitbox != null:
@@ -1663,6 +1748,7 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 	elif skill == _skill_finisher:
 		# ETAP 3: Wir Ostrzy — AoE 360°. Otwieramy okno hitboxa BEZ filtra łuku (dot=-1 -> wszystko
 		# wokół) i z lekkim juicem. Damage idzie tą samą ścieżką DamageService (HitData z _build_hit).
+		_is_heavy_attack = true              # FEEL (2): AoE/finisher = ciezki tier hitstopu
 		_attack_anim_t = attack_anim_time
 		is_attacking = true
 		if _hitbox != null:
@@ -1676,12 +1762,22 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 # przez DamageService z poziomu hitboxa — tu tylko odczucie walki.
 func _on_hitbox_hit_landed(_target: Node) -> void:
 	_combo_timer = combo_window
+	# FEEL (2): hitstop TIEROWANY — krytyk (0.14) > ciezki/AoE (0.10) > zwykly (0.04). Mocniej na
+	# TRAFIENIU, nigdy na zamachu. _last_hit_crit przychodzi z DamageService tuz przed tym callbackiem.
 	if not _hitstop_active:
-		_hitstop(0.06)
-	add_trauma(0.12)
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, _is_heavy_attack))
+	# Trauma kamery proporcjonalna do wagi (krytyk/ciezki = mocniejszy wstrzas).
+	add_trauma(0.20 if (_last_hit_crit or _is_heavy_attack) else 0.12)
 	# ETAP 3: zadany cios wrecz buduje zasob klasy (Furia +6 / Combo +1 — GDD 4.2/4.3, ROADMAP 6).
 	if _class_res != null:
 		_class_res.on_hit_dealt(true)
+
+# FEEL (2): zapamietuje wynik krytyka NASZEGO ostatniego ciosu (z centralnego DamageService).
+# Filtrujemy po source==self — interesuje nas tylko cios zadany przez gracza (nie obrazenia wziete).
+# Czysto lokalne: steruje tylko dlugoscia hitstopu/trauma, ZERO wplywu na HP (host-authoritative).
+func _on_damage_resolved(source: Node, _target: Node, _final_damage: float, was_crit: bool) -> void:
+	if source == self:
+		_last_hit_crit = was_crit
 
 # Okno hitboxa zamknięte: gdy 0 trafień -> pudło = reset combo (kasuje inkrement z _try_attack).
 func _on_hitbox_window_ended(hit_count: int) -> void:
@@ -1708,8 +1804,9 @@ func _melee_sweep(forward: Vector3) -> void:
 		hit_any = true
 	if hit_any:
 		_combo_timer = combo_window
-		_hitstop(0.06)
-		add_trauma(0.12)
+		# FEEL (2): tiered hitstop tez w fallbacku recznej petli (krytyk znamy z _last_hit_crit).
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, _is_heavy_attack))
+		add_trauma(0.20 if (_last_hit_crit or _is_heavy_attack) else 0.12)
 	else:
 		_combo_count = 0
 		_combo_timer = 0.0
@@ -1801,6 +1898,11 @@ func _begin_dash() -> void:
 	_iframes = maxf(_iframes, dodge_iframes)
 	is_dodging = true
 	_play_sfx(&"dodge")             # ETAP 8: SFX uniku (no-op bez pliku). perfect_dodge gra osobno (Main).
+	# FEEL (5): POWER FANTASY uniku — 3 "duchy" modelu gasnace wzdluz toru dasha (afterimage).
+	# Spawnujemy 3 klony pozy z lekkim opoznieniem przez _afterimage_left (zlapie ruch postaci).
+	_afterimage_left = 3
+	_afterimage_t = 0.0
+	_spawn_afterimage()            # pierwszy duch natychmiast (start zrywu)
 	# ETAP 1: CANCEL ataku w unik (unik przerywa atak — priorytet ucieczki). Czyści też bufor ataku.
 	is_attacking = false
 	_attack_anim_t = 0.0
@@ -1842,6 +1944,14 @@ func _on_perfect_dodge() -> void:
 	_perfect_bonus_next = true
 	add_trauma(0.18)
 	perfect_dodge.emit()
+	_play_sfx(&"perfect_dodge")          # FEEL (5): osobny dzwiek nagrody (no-op bez pliku; AudioManager ma fallback)
+	# FEEL (5): ZWROT ZASOBU — perfect-dodge oddaje wydana stamine (nagroda za timing -> agresywna gra).
+	if stamina < max_stamina:
+		stamina = minf(max_stamina, stamina + dodge_stamina_cost)
+		_stamina_idle = 0.0
+		stamina_changed.emit(stamina, max_stamina)
+	# FEEL (5): ROZBLYSK wokol gracza (puls swiatla przez FeelFX) — czytelna nagroda za perfect.
+	_spawn_perfect_flash()
 	if _hitstop_active:
 		return
 	_hitstop_active = true
@@ -1853,6 +1963,16 @@ func _on_perfect_dodge() -> void:
 		_local_freeze_t = perfect_dodge_slowmo_time
 		await get_tree().create_timer(perfect_dodge_slowmo_time, true, false, true).timeout
 	_hitstop_active = false
+
+# FEEL (5): rozblysk perfect-dodge przez centralny FeelFX (puls swiatla + iskra wokol gracza).
+# FeelFX jest w drzewie (Main go dodaje); brak (test/headless) -> ciche no-op (bez crasha).
+func _spawn_perfect_flash() -> void:
+	var tree := get_tree()
+	if tree == null or tree.root == null:
+		return
+	var fx := tree.root.find_child("FeelFX", true, false)
+	if fx != null and fx.has_method("spawn_hit_vfx"):
+		fx.spawn_hit_vfx(global_position + Vector3(0.0, 1.0, 0.0), Color(0.6, 0.85, 1.0), true)
 
 # ============================================================================
 #  HP, OBRAŻENIA, ŚMIERĆ, RESPAWN
@@ -2001,6 +2121,50 @@ func _flash_hit() -> void:
 			if m != null:
 				m.emission_enabled = false
 	)
+
+# ============================================================================
+#  FEEL (5): AFTERIMAGE uniku — duch modelu (klon pozy) gasnacy w miejscu
+# ============================================================================
+# Tworzy lekki "duch": jeden MeshInstance3D z polaczonym meshem aktualnej pozy modelu, w GLOBALNEJ
+# transformacie (top_level), z dodatnia emisja na chlodny blekit. Gasnie Tweenem i sam sie zwalnia.
+# Tanio: 1 node + 1 material per duch, max 3 na unik, zycie 0.22 s. Brak wplywu na rozgrywke.
+func _spawn_afterimage() -> void:
+	if _model == null:
+		return
+	var meshes := _collect_meshes(_model)
+	if meshes.is_empty():
+		return
+	# Ghost jako kontener w GLOBALNEJ pozie modelu — kopiujemy KAZDY mesh ze wzgledna transformata,
+	# by zachowac aktualne zgiecia konczyn (poza zamrozona w chwili spawnu).
+	var ghost := Node3D.new()
+	ghost.top_level = true
+	get_tree().current_scene.add_child(ghost)
+	ghost.global_transform = _model.global_transform
+	var inv := _model.global_transform.affine_inverse()
+	var ghost_mat := StandardMaterial3D.new()
+	ghost_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ghost_mat.albedo_color = Color(0.4, 0.7, 1.0, 0.5)
+	ghost_mat.emission_enabled = true
+	ghost_mat.emission = Color(0.35, 0.6, 1.0)
+	ghost_mat.emission_energy_multiplier = 1.6
+	ghost_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ghost_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	for src in meshes:
+		var gi := MeshInstance3D.new()
+		gi.mesh = src.mesh
+		gi.material_override = ghost_mat
+		gi.transform = inv * src.global_transform   # poza wzgledem roota modelu (zamrozona)
+		ghost.add_child(gi)
+	# Gasniecie: alpha + emisja -> 0, potem free. set_ignore_time_scale(true) — duch gasnie w REALNYM
+	# czasie, niezaleznie od bullet-time perfect-dodge (Engine.time_scale 0.05). Bez tego duch z poprzed-
+	# niej klatki dasha wisialby ~20x dluzej na ekranie podczas slow-mo (kosmetyczny smuga). Zgodnie z
+	# timerami hitstopu, ktore juz przekazuja ignore_time_scale=true.
+	var tw := ghost.create_tween()
+	tw.set_ignore_time_scale(true)
+	tw.set_parallel(true)
+	tw.tween_property(ghost_mat, "albedo_color:a", 0.0, AFTERIMAGE_LIFE)
+	tw.tween_property(ghost_mat, "emission_energy_multiplier", 0.0, AFTERIMAGE_LIFE)
+	tw.chain().tween_callback(ghost.queue_free)
 
 # Zbiera wszystkie MeshInstance3D z poddrzewa modelu (tułów, głowa, kończyny).
 func _collect_meshes(node: Node) -> Array[MeshInstance3D]:

@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="1_tame"]
+
+[resource]
+script = ExtResource("1_tame")
+id = &"tame_charm"
+display_name = "Amulet Oswojenia"
+slot = 6
+req_level = 1
+stack_size = 99

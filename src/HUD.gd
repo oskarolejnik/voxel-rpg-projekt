@@ -21,6 +21,17 @@ var _res_bg: ColorRect
 var _res_fill: ColorRect
 var _res_label: Label
 var _res_max: float = 100.0
+# ETAP 3 (Ranger): pipsy COMBO (0..combo_max) — OSOBNY widget od melee "Combo xN" (_combo_label/
+# set_combo). To zasob builder/finisher klasy (GDD 4.3). Budowane przez setup_combo() z Main TYLKO
+# dla Rangera (kind COMBO_FOCUS); inne klasy nie maja tego widgetu. Kolory wystawione jako const,
+# by test mogl policzyc zapalone pipsy.
+const COMBO_PIP_ON: Color = Color(1.0, 0.78, 0.25, 0.98)    # zapalony pip (cieply zloty akcent)
+const COMBO_PIP_OFF: Color = Color(0.18, 0.20, 0.22, 0.70)  # pusty slot combo
+const COMBO_PIP_SIZE: float = 16.0
+const COMBO_PIP_GAP: float = 6.0
+var _combo_root: Control          # kontener pipsow (obok paska FOCUS; ukryty do setup_combo)
+var _combo_caption: Label
+var _combo_pips: Array[ColorRect] = []
 # ETAP 3: poziom + XP (lewy górny, pod paskami) + chwilowy napis "AWANS!".
 var _level_label: Label
 var _xp_label: Label
@@ -122,6 +133,21 @@ func _build_bars() -> void:
 	_combo_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_combo_label)
 
+	# --- ETAP 3: pipsy COMBO (Ranger), OBOK paska zasobu (FOCUS), na tej samej wysokości. ---
+	# Pusty kontener + etykieta; właściwe pipsy tworzy setup_combo (zna combo_max). Ukryty do wtedy,
+	# więc klasy bez combo (Mag/Wojownik) nie widzą tego widgetu.
+	_combo_root = Control.new()
+	_combo_root.position = Vector2(PAD + BAR_W + 12.0, PAD + (BAR_H + 6.0) * 2.0)
+	_combo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_combo_root.visible = false
+	add_child(_combo_root)
+	_combo_caption = Label.new()
+	_combo_caption.text = "COMBO"
+	_combo_caption.position = Vector2(0.0, 0.0)
+	_combo_caption.modulate = Color(1.0, 0.85, 0.4)
+	_combo_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_combo_root.add_child(_combo_caption)
+
 # Tworzy prostokąt o danym kolorze i rozmiarze. HUD nie łapie kliknięć.
 func _make_rect(color: Color, size: Vector2) -> ColorRect:
 	var r := ColorRect.new()
@@ -200,6 +226,32 @@ func on_class_resource_changed(_name: StringName, current: float, maximum: float
 		_res_max = maximum
 	var frac := 0.0 if _res_max <= 0.0 else clampf(current / _res_max, 0.0, 1.0)
 	_res_fill.size.x = BAR_W * frac
+
+## ETAP 3 (Ranger): buduje N pipsów COMBO (0..maximum) jako osobny widget obok paska FOCUS.
+## Woła Main TYLKO dla Rangera (kind COMBO_FOCUS). To NIE jest melee "Combo xN" (set_combo) —
+## tu pokazujemy zasób builder/finisher (GDD 4.3). Ponowne wywołanie przebudowuje pipsy (np. gdy
+## combo_max urośnie z lootu) — etykieta i kontener zostają.
+func setup_combo(maximum: int) -> void:
+	var n := maxi(0, maximum)
+	for pip in _combo_pips:
+		pip.queue_free()
+	_combo_pips.clear()
+	var x0 := 64.0   # tuż za etykietą "COMBO"
+	for i in n:
+		var pip := _make_rect(COMBO_PIP_OFF, Vector2(COMBO_PIP_SIZE, COMBO_PIP_SIZE))
+		pip.position = Vector2(x0 + float(i) * (COMBO_PIP_SIZE + COMBO_PIP_GAP), 2.0)
+		_combo_root.add_child(pip)
+		_combo_pips.append(pip)
+	_combo_root.visible = n > 0
+
+## ETAP 3 (Ranger): zapala `count` pierwszych pipsów (reszta pusta). Gdy maximum różni się od liczby
+## pipsów (np. wzrost combo_max), najpierw przebudowuje widget. count clamp do [0, liczba pipsów].
+func on_class_combo_changed(count: int, maximum: int) -> void:
+	if maximum != _combo_pips.size():
+		setup_combo(maximum)
+	var lit := clampi(count, 0, _combo_pips.size())
+	for i in _combo_pips.size():
+		_combo_pips[i].color = COMBO_PIP_ON if i < lit else COMBO_PIP_OFF
 
 ## Poziom + XP (pasek tekstowy). xp_to_next=0 oznacza MAX (poziom 99).
 func on_level_changed(level: int, xp: int, xp_to_next: int) -> void:

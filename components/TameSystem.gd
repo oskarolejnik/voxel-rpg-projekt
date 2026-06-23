@@ -10,9 +10,11 @@ extends Node
 ## Komponent wisi pod graczem (dziecko Player). Czyta jego LevelComponent + StatsComponent.
 ## HOST-ONLY (NetManager.has_authority) — w SP zawsze liczy lokalnie; Etap 7 doda RPC do hosta.
 ##
-## Item-oswajacz: kontrakt `charm_provider` -> bool (czy gracz MA i zuzywa 1x charm). Domyslnie
-## prosty licznik `charm_count` (drop z bestii wpina sie w grze; test ustawia licznik/flage). To
-## trzyma TameSystem niezaleznym od konkretnego InventoryComponent (loot-pipeline poza rdzeniem E6).
+## Item-oswajacz: kontrakt `charm_provider` -> bool (czy gracz MA i zuzywa 1x charm) + opcjonalny
+## `charm_peek` -> bool (czy MA, BEZ zuzycia — do bramki "no_item" przed rzutem szansy). W grze Player
+## wpina oba w InventoryComponent (peek=has_item, provider=consume_item dla &"tame_charm"); test moze
+## uzyc prostego licznika `charm_count`. To trzyma TameSystem niezaleznym od konkretnego
+## InventoryComponent (kontrakt Callable; realny loot-pipeline zostaje poza rdzeniem E6).
 
 const TAME_HP_FRACTION: float = 0.35      # cel musi miec < 35% HP (GDD 9)
 const TAME_MIN_LEVEL: int = 5             # od poziomu 5 (ROADMAP/GDD 9)
@@ -27,6 +29,11 @@ var charm_count: int = 0
 ## Opcjonalny zewnetrzny dostawca charma: func() -> bool (zwraca true i ZUZYWA 1 charm). Gdy ustawiony,
 ## ma pierwszenstwo nad charm_count (np. podpiecie do InventoryComponent). Pusty -> uzyj charm_count.
 var charm_provider: Callable = Callable()
+## Opcjonalny "peek": func() -> bool (czy gracz MA charm, BEZ zuzycia). Gdy ustawiony, bramka 4
+## (no_item) sprawdza realne posiadanie PRZED rzutem szansy — wiec brak charma daje czytelny
+## tame_failed(&"no_item"), a nie mylacy &"chance". Pusty + provider ustawiony -> zakladamy posiadanie
+## (consume-on-success weryfikuje przy _consume_charm). Pusty + brak providera -> charm_count.
+var charm_peek: Callable = Callable()
 
 var _player: Node3D = null
 var _level: LevelComponent = null
@@ -160,9 +167,12 @@ func _tame_rand() -> float:
 
 
 ## Czy gracz POSIADA item-oswajacz (BEZ zuzycia). Uzywane jako bramka 4 przed rzutem szansy, by
-## nieudana proba nie marnowala charma. charm_provider nie ma "peek" (sam zuzywa), wiec dla niego
-## zakladamy posiadanie i realnie weryfikujemy przy _consume_charm() na sukcesie (consume-on-success).
+## nieudana proba nie marnowala charma. Kolejnosc: charm_peek (realny stan ekwipunku) > charm_provider
+## (sam zuzywa -> brak peek, zakladamy posiadanie i weryfikujemy przy _consume_charm na sukcesie) >
+## charm_count (test). Dzieki peek brak charma w grze daje czytelny &"no_item", nie mylacy &"chance".
 func _has_charm() -> bool:
+	if charm_peek.is_valid():
+		return bool(charm_peek.call())
 	if charm_provider.is_valid():
 		return true
 	return charm_count > 0

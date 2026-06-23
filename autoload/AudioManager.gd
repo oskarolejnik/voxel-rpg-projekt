@@ -38,6 +38,7 @@ const SFX_FILES := {
 	&"ability": "ability",          # finisher/skill zasobu klasy (R)
 	&"dodge": "dodge",              # unik/dash
 	&"perfect_dodge": "perfect_dodge", # udany perfect-dodge (fallback na dodge)
+	&"land": "land",                # FEEL 7: ladowanie po skoku (fallback na dodge)
 	&"ui_click": "ui_click",        # klikniecie w menu
 }
 
@@ -56,6 +57,7 @@ const SFX_FALLBACK := {
 	&"gold": &"loot",
 	&"crit": &"hit",
 	&"perfect_dodge": &"dodge",
+	&"land": &"dodge",
 }
 const MUSIC_FALLBACK := {
 	&"night": &"explore",

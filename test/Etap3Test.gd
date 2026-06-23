@@ -14,9 +14,13 @@ extends Node
 ##  (9) Zasob klasy MANA (Mag): regen w czasie; COMBO (Ranger): builder +1, cap 5.
 ## (10) Starter Wojownik/Berserker: drzewko z SkillDB ma 8 wezlow + keystone lvl 25.
 ## (11) Save round-trip progresji (level/xp/allocated_passives) przez SaveData.
+## (14) HUD Ranger: widget pipsów COMBO (setup_combo/on_class_combo_changed) buduje N pipsów i
+##      zapala dokładnie `count` — osobny od melee "Combo xN" (set_combo).
 ## Kod wyjścia: 0 = ALL OK, 1 = FAIL. Print "[E3] ..." + ALL OK + quit.
 
 const EPS: float = 0.0001
+# HUD walki bez class_name -> ładujemy przez preload, by przetestować widget pipsów COMBO (Ranger).
+const HUDScript := preload("res://src/HUD.gd")
 
 var _failures: int = 0
 
@@ -37,6 +41,7 @@ func _ready() -> void:
 	_test_save_roundtrip()
 	_test_save_file_roundtrip()
 	_test_mana_max_rescale()
+	_test_ranger_hud_combo_pips()
 
 	if _failures == 0:
 		print("[E3] ALL OK")
@@ -464,6 +469,44 @@ func _test_mana_max_rescale() -> void:
 	_check(absf(cr.mana - 150.0) < EPS, "pelny mag skaluje do nowego max (jest %.1f)" % cr.mana)
 	print("[E3] mana_max sledzi StatsComponent (loot +50 -> %.0f) OK" % cr.mana_max)
 	stats.queue_free(); cr.queue_free()
+
+
+# ---------------------------------------------------------------------------
+#  (14) HUD Ranger — widget pipsow COMBO (setup_combo + on_class_combo_changed)
+# ---------------------------------------------------------------------------
+## Smoke: HUD buduje N pipsow COMBO i zapala dokladnie `count`. To OSOBNY widget od melee "Combo xN"
+## (set_combo) — pokazuje zasob builder/finisher Rangera (GDD 4.3). Lustro spiecia w Main._setup_hud.
+func _test_ranger_hud_combo_pips() -> void:
+	var hud = HUDScript.new()
+	add_child(hud)   # _ready -> _build_bars (kontener pipsow pusty/ukryty do setup_combo)
+	_check(hud.has_method("setup_combo"), "HUD ma setup_combo")
+	_check(hud.has_method("on_class_combo_changed"), "HUD ma on_class_combo_changed")
+
+	# combo_max Rangera (0..5) buduje 5 pipsow; widget staje sie widoczny.
+	hud.setup_combo(5)
+	_check(hud._combo_pips.size() == 5, "setup_combo(5) tworzy 5 pipsow (jest %d)" % hud._combo_pips.size())
+	_check(hud._combo_root.visible, "widget pipsow COMBO widoczny po setup_combo")
+
+	# Builder: 3 combo -> dokladnie 3 zapalone pipsy, reszta pusta.
+	hud.on_class_combo_changed(3, 5)
+	var lit := 0
+	for pip in hud._combo_pips:
+		if pip.color == HUDScript.COMBO_PIP_ON:
+			lit += 1
+	_check(lit == 3, "on_class_combo_changed(3,5) zapala 3 pipsy (jest %d)" % lit)
+
+	# Finisher: wydanie combo -> 0 zapalonych.
+	hud.on_class_combo_changed(0, 5)
+	var lit0 := 0
+	for pip in hud._combo_pips:
+		if pip.color == HUDScript.COMBO_PIP_ON:
+			lit0 += 1
+	_check(lit0 == 0, "po finisherze 0 zapalonych pipsow (jest %d)" % lit0)
+
+	# Melee "Combo xN" (set_combo) to INNY widget — nie rusza pipsow zasobu klasy.
+	_check(hud.has_method("set_combo"), "HUD nadal ma osobne melee set_combo (nie scalone z pipsami)")
+	print("[E3] HUD Ranger: 5 pipsow COMBO, zapala count, finisher gasi; melee set_combo osobno OK")
+	hud.queue_free()
 
 
 func _free_stack(stack: Array) -> void:

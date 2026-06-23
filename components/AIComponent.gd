@@ -86,6 +86,16 @@ func get_state() -> State:
 	return _state
 
 
+## ETAP 6 — PUBLICZNY dostep do AI-rozwiazanego celu (liczony na biezaco z pozycji hosta). Uzywa go
+## ranged pet przy spawnie pocisku: MUSI celowac we WROGA wskazanego przez maszyne, a nie w
+## niejednoznaczne Enemy._target (fallback _physics_process potrafi przestawic _target na GRACZA,
+## a take_damage na atakujacego wroga). Wrog: gracz (ai_get_target). Pet (ALLY): najblizszy zywy wrog.
+func current_target() -> Node3D:
+	if _host == null or not is_instance_valid(_host):
+		return null
+	return _resolve_target(_host.ai_get_position())
+
+
 ## Wybudzenie przez trafienie (z Enemy.take_damage): wymusza pogon.
 ## ETAP 6 (review): FOLLOW tez wybudza sie do CHASE — pet trafiony spoza aggro (np. ranged wrog)
 ## natychmiast kontratakuje, zamiast czekac az _follow() sam zobaczy wroga. Bezpieczne: CHASE bez

@@ -13,6 +13,11 @@ extends Node
 ##  (6) Pet SKALUJE sie wg pet_damage/pet_hp gracza (damage/max_hp peta * mnozniki gracza).
 ##  (7) SAVE round-trip: pet_id przez to_dict/from_dict; load_pet_from_save odtwarza ALLY tego typu.
 ##  (8) 1 AKTYWNY PET: drugie oswojenie zastepuje pierwszego (stary znika, typ w stajni).
+##  (9) RANGED ALLY PET: oswojona bestia ranged celuje pociskiem we WROGA rozwiazanego przez AIComponent
+##      (nie w niejednoznaczne _target/gracza). Pocisk leci ku wrogowi; mask == enemy_body (bit2), NIE
+##      player_body (bit1). Pulapka latentna pod ranged-pety (dzis jedyny oswajalny goblin jest melee).
+## (10) LOOT PIPELINE: oswajalna bestia DROPI tame_charm (LootService.drop_for) + TameSystem ZUZYWA
+##      go z InventoryComponentu gracza (charm_peek/charm_provider), a NIE z licznika charm_count.
 ## Kod wyjscia: 0 = ALL OK, 1 = FAIL. Print "[E6] ..." + ALL OK + quit.
 
 var _failures: int = 0
@@ -22,6 +27,9 @@ func _ready() -> void:
 	print("[E6] === Etap 6 mini-test start ===")
 	if EnemyDB != null:
 		EnemyDB.reload()
+	# (10) potrzebuje definicji tame_charm w ItemDB (drop_for buduje ItemInstance po base_id).
+	if ItemDB != null:
+		ItemDB.reload()
 
 	# await miedzy testami: queue_free() leftover encji musi sie dokonczyc, inaczej martwe goblliny
 	# zostaja w grupie "enemies" i mylą skan _nearest_enemy w kolejnym tescie (izolacja testow).
@@ -30,9 +38,11 @@ func _ready() -> void:
 	_test_gate_no_item();            await _settle()
 	_test_success_becomes_ally();    await _settle()
 	_test_ally_targets_enemy_not_player(); await _settle()
+	_test_ranged_pet_aims_at_enemy(); await _settle()
 	_test_pet_scaling();             await _settle()
 	_test_save_roundtrip();          await _settle()
 	await _test_one_active_pet();    await _settle()
+	_test_charm_drop_and_inventory_consume(); await _settle()
 
 	# Settle: pozwol deferred queue_free dokonczyc sie przed quit (free Enemy/komponentow).
 	for _f in 6:
@@ -261,6 +271,121 @@ func _ai_of(e: Enemy) -> AIComponent:
 
 
 # ---------------------------------------------------------------------------
+#  (9) Ranged ALLY pet celuje pociskiem we WROGA (nie w gracza)
+# ---------------------------------------------------------------------------
+## REGRESJA latentnej pulapki: ranged pet musi celowac we wroga rozwiazanego przez AIComponent, a nie
+## w Enemy._target (ten dla peta bywa graczem — fallback _physics_process — albo atakujacym wrogiem —
+## take_damage). Dzis jedyny oswajalny goblin jest melee, wiec budujemy RANGED+tameable bestie runtime.
+func _test_ranged_pet_aims_at_enemy() -> void:
+	var player := _make_player(5)
+	player.global_position = Vector3.ZERO
+	var tame := _player_tame(player)
+	tame.charm_count = 1
+
+	# "Oznacz ranged bestie jako oswajalna": rejestrujemy runtime EnemyResource w EnemyDB (bez .tres,
+	# nie zanieczyszcza DB innych testow — reload() bylo tylko raz w _ready).
+	var res := _ranged_tameable_resource()
+	if EnemyDB != null:
+		EnemyDB.enemies[res.id] = res
+
+	# Pet (oswojona bestia ranged) tuz przy graczu (w ZERO+X).
+	var pet := _make_enemy_from_res(res, Vector3(1, 0, 0), 0.2)  # <35% HP -> da sie oswoic
+	_check(pet.ai_profile == &"ranged", "(9) testowa bestia nie jest ranged (jest '%s')" % pet.ai_profile)
+	var ok := tame.try_tame(pet)
+	_check(ok, "(9) nie udalo sie oswoic ranged bestii")
+	_check(pet.allegiance == Enemy.Allegiance.ALLY, "(9) ranged bestia nie jest ALLY po oswojeniu")
+
+	# Wrog-cel +Z od peta (gracz jest -X od peta) -> kierunki pet->wrog i pet->gracz sa ROZNE,
+	# wiec test ROZROZNI czy pocisk celuje we wroga czy w gracza.
+	var foe := _make_goblin(Vector3(1, 0, 6), 1.0)
+	_check(foe.is_in_group("enemies"), "(9) wrog-cel nie w grupie enemies")
+
+	# PULAPKA: ustawiamy _target peta na GRACZA (tak jak zrobilby fallback _physics_process). Poprawka
+	# MUSI to zignorowac i wziac cel z AIComponent.
+	pet.set_target(player)
+	var ai := _ai_of(pet)
+	_check(ai != null and ai.current_target() == foe,
+		"(9) AIComponent.current_target nie wskazal wroga (wskazal %s)" % (ai.current_target() if ai != null else null))
+
+	# Odpal spawn pocisku (jedyna sciezka ranged ataku). Policz pociski przed/po.
+	var before := _all_projectiles().size()
+	pet._spawn_projectile()
+	var projectiles := _all_projectiles()
+	_check(projectiles.size() == before + 1, "(9) ranged pet NIE zespawnowal pocisku (przed=%d, po=%d)" % [before, projectiles.size()])
+	if projectiles.size() > before:
+		var proj: Projectile = projectiles[projectiles.size() - 1]
+		# (a) MASKA: teren|enemy_body (bit2) wlaczone; player_body (bit1) NIGDY (pet nie trafia gracza).
+		_check((proj.collide_mask & (1 << 2)) != 0,
+			"(9) pocisk peta nie ma maski enemy_body (bit2) (mask=%d)" % proj.collide_mask)
+		_check((proj.collide_mask & (1 << 1)) == 0,
+			"(9) pocisk peta MA maske player_body (bit1) -> moglby trafic gracza (mask=%d)" % proj.collide_mask)
+		# (b) KIERUNEK: leci ku WROGOWI, nie ku graczowi. Liczymy na plaszczyznie XZ z origin pocisku.
+		var origin := pet.global_position + Vector3(0.0, 1.0, 0.0)
+		var to_foe := foe.global_position - origin; to_foe.y = 0.0
+		var to_player := player.global_position - origin; to_player.y = 0.0
+		var vel := proj._velocity; vel.y = 0.0
+		var dot_foe := vel.normalized().dot(to_foe.normalized())
+		var dot_player := vel.normalized().dot(to_player.normalized())
+		_check(dot_foe > 0.9, "(9) pocisk peta NIE leci ku wrogowi (dot=%.2f)" % dot_foe)
+		_check(dot_player < 0.5, "(9) pocisk peta leci ku GRACZOWI (dot=%.2f)" % dot_player)
+		proj.queue_free()
+
+	player.queue_free()
+	pet.queue_free()
+	foe.queue_free()
+	if EnemyDB != null:
+		EnemyDB.enemies.erase(res.id)
+	print("[E6] (9) ranged ALLY pet celuje we WROGA (mask enemy_body, nie gracz) OK")
+
+
+## Buduje runtime EnemyResource: ranged + tameable (StatBlock jak goblin: hp30/dmg8). Nie dotyka .tres.
+func _ranged_tameable_resource() -> EnemyResource:
+	var sb := StatBlock.new()
+	sb.max_hp = 30.0
+	sb.damage = 8.0
+	sb.attack_speed = 0.833
+	sb.move_speed = 3.5
+	var res := EnemyResource.new()
+	res.id = &"ranged_test"
+	res.display_name = "Test Slinger"
+	res.stats = sb
+	res.ai_profile = &"ranged"
+	res.threat_tier = &"trash"          # bez telegrafu (czysty test pocisku)
+	res.tameable = true
+	res.tame_difficulty_mult = 1.0      # oswojenie pewne przy spelnionych warunkach
+	res.variant_meta = {
+		"attack_windup": 0.35,
+		"attack_range": 8.0,            # ranged: szerszy zasieg niz melee
+		"attack_entry_delay": 0.35,
+		"projectile_speed": 16.0,
+	}
+	return res
+
+
+## Wrog z runtime EnemyResource (analog _make_goblin): konfiguruje, dodaje do drzewa, ustawia HP-ulamek.
+func _make_enemy_from_res(res: EnemyResource, pos: Vector3, hp_fraction: float) -> Enemy:
+	var e := Enemy.new()
+	e.configure_from_resource(res)
+	add_child(e)                        # _ready buduje komponenty (Stats/Health/AI/hitbox/hurtbox)
+	e.global_position = pos
+	if e._health != null:
+		e._health.current_hp = e._health.max_hp() * hp_fraction
+		e.hp = e._health.current_hp
+	else:
+		e.hp = e.max_hp * hp_fraction
+	return e
+
+
+## Wszystkie zywe Projectile w drzewie testu (pociski spawnuja sie jako dzieci rodzica peta == ten Node).
+func _all_projectiles() -> Array:
+	var out: Array = []
+	for c in get_children():
+		if c is Projectile and not c.is_queued_for_deletion():
+			out.append(c)
+	return out
+
+
+# ---------------------------------------------------------------------------
 #  (6) Pet skaluje sie wg pet_damage/pet_hp gracza
 # ---------------------------------------------------------------------------
 func _test_pet_scaling() -> void:
@@ -351,3 +476,61 @@ func _test_one_active_pet() -> void:
 	if is_instance_valid(g2):
 		g2.queue_free()
 	print("[E6] (8) 1 aktywny pet (zamiana przy nowym oswojeniu) OK")
+
+
+# ---------------------------------------------------------------------------
+#  (10) Loot pipeline: bestia DROPI tame_charm + TameSystem zuzywa go z EKWIPUNKU
+# ---------------------------------------------------------------------------
+func _test_charm_drop_and_inventory_consume() -> void:
+	# --- (a) Oswajalna bestia (goblin) potrafi dropic tame_charm przez LootService.drop_for ---
+	# configure_from_resource kopiuje goblin_loot.tres (item_drops: tame_charm) do enemy.loot_table.
+	# Szansa per-drop = 0.5, wiec petla do ~60 prob praktycznie gwarantuje trafienie (P(miss)~1e-18).
+	var beast := _make_goblin(Vector3(30, 0, 0), 1.0)
+	var dropped_charm := false
+	for _i in 60:
+		for d in LootService.drop_for(beast):
+			if (d as Dictionary).get("kind", "") == "item":
+				var inst: ItemInstance = (d as Dictionary).get("instance", null)
+				if inst != null and inst.base_id == TameSystem.TAME_CHARM_ITEM:
+					dropped_charm = true
+		if dropped_charm:
+			break
+	_check(dropped_charm, "(10) oswajalny goblin NIE dropnal tame_charm przez drop_for (item_drops martwe?)")
+	beast.queue_free()
+
+	# --- (b) charm_peek/charm_provider wpiete w InventoryComponent: oswojenie ZUZYWA charm z plecaka ---
+	var player := _make_player(5)
+	var tame := _player_tame(player)
+	var inv := InventoryComponent.new()
+	player.add_child(inv)
+	# Wpiecie jak w Player.gd, ale na lokalny inv (stub testowy bez Main). charm_count=0 dowodzi,
+	# ze zrodlem oswajacza jest EKWIPUNEK, nie licznik-fallback.
+	tame.charm_peek = func() -> bool: return inv.has_item(TameSystem.TAME_CHARM_ITEM)
+	tame.charm_provider = func() -> bool: return inv.consume_item(TameSystem.TAME_CHARM_ITEM)
+	tame.charm_count = 0
+
+	# Pusty plecak -> blokada no_item (peek widzi brak charma PRZED rzutem szansy).
+	var reason := [&""]
+	tame.tame_failed.connect(func(r: StringName) -> void: reason[0] = r)
+	var goblin_empty := _make_goblin(player.global_position + Vector3(2, 0, 0), 0.2)
+	_check(not tame.try_tame(goblin_empty), "(10) oswojenie udane mimo pustego plecaka (brak tame_charm)")
+	_check(reason[0] == &"no_item", "(10) brak charma w plecaku -> reason != 'no_item' (jest '%s')" % reason[0])
+	goblin_empty.queue_free()
+
+	# Dorzucamy tame_charm do plecaka (jak pickup z LootDrop) i oswajamy ponownie.
+	var charm := ItemInstance.new()
+	charm.base_id = TameSystem.TAME_CHARM_ITEM
+	inv.add_to_backpack(charm)
+	_check(inv.count_item(TameSystem.TAME_CHARM_ITEM) == 1, "(10) setup: plecak nie ma 1 tame_charm")
+	var goblin := _make_goblin(player.global_position + Vector3(2, 0, 0), 0.2)
+	var ok := tame.try_tame(goblin)
+	_check(ok, "(10) oswojenie nie udane mimo tame_charm w plecaku")
+	_check(inv.count_item(TameSystem.TAME_CHARM_ITEM) == 0,
+		"(10) tame_charm NIE zuzyty z plecaka (count=%d)" % inv.count_item(TameSystem.TAME_CHARM_ITEM))
+	_check(tame.charm_count == 0, "(10) charm_count ruszony mimo zrodla z ekwipunku (=%d)" % tame.charm_count)
+	_check(goblin.allegiance == Enemy.Allegiance.ALLY, "(10) goblin nie zostal petem po oswojeniu z plecaka")
+
+	player.queue_free()
+	if is_instance_valid(goblin):
+		goblin.queue_free()
+	print("[E6] (10) drop tame_charm + zuzycie z InventoryComponent OK")

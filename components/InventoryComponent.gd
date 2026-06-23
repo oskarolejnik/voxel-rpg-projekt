@@ -202,6 +202,42 @@ func add_to_backpack(item: ItemInstance) -> void:
 	inventory_changed.emit()
 
 
+## Liczy itemy w PLECAKU o danym base_id (np. tame_charm). Zalozone (equipment) NIE licza sie —
+## konsumpcyjne/materialy leza w plecaku. Uzywane m.in. przez TameSystem (peek item-oswajacza).
+func count_item(base_id: StringName) -> int:
+	var n := 0
+	for it in backpack:
+		if it != null and it.base_id == base_id:
+			n += 1
+	return n
+
+
+## Czy plecak ma >=1 item o danym base_id (peek, BEZ zuzycia). Para z consume_item().
+func has_item(base_id: StringName) -> bool:
+	return count_item(base_id) > 0
+
+
+## Zuzywa (usuwa z plecaka) `count` itemow o danym base_id. ATOMOWE: gdy w plecaku jest mniej niz
+## `count`, NIC nie usuwa i zwraca false (caller nie placi czesciowo). Usuwa od konca (stabilnie),
+## emituje inventory_changed tylko gdy faktycznie cos zniklo. Zwraca true przy pelnym zuzyciu.
+func consume_item(base_id: StringName, count: int = 1) -> bool:
+	if count <= 0:
+		return true
+	if count_item(base_id) < count:
+		return false
+	var removed := 0
+	var i := backpack.size() - 1
+	while i >= 0 and removed < count:
+		var it := backpack[i]
+		if it != null and it.base_id == base_id:
+			backpack.remove_at(i)
+			removed += 1
+		i -= 1
+	if removed > 0:
+		inventory_changed.emit()
+	return removed == count
+
+
 func get_equipped(slot: int) -> ItemInstance:
 	return equipment.get(slot, null)
 

@@ -43,6 +43,16 @@ var _day_night: DayNight
 var _ambient_day: GPUParticles3D
 var _fireflies: GPUParticles3D
 
+# FEEL (BATCH): centralna warstwa odczucia walki (hit-VFX + puls swiatla + damage numbers).
+# Czysto wizualna, spina sie pod DamageService.hit_resolved. Host liczy HP — to tylko FX.
+const FeelFXScript := preload("res://src/world/FeelFX.gd")
+var _feel_fx: FeelFX
+
+# FEEL (8): ambient SWIATA per-biom — spadajace liscie (Verdant) / pyl (Emberwaste) / snieg
+# (Frosthelm). Jeden emiter, przelaczany wg biomu pod graczem (tani, podaza za graczem jak fireflies).
+var _biome_fx: GPUParticles3D
+var _biome_fx_current: StringName = &""
+
 # HUD walki + licznik żywych wrogów.
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
@@ -91,7 +101,8 @@ func _ready() -> void:
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
 	_setup_coop()          # ETAP 7: lobby co-op (Host/Join) + spawn zdalnych graczy. SP = no-op (brak peera).
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
-	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
+	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień + (FEEL) ambient biomu
+	_setup_feel_fx()       # FEEL (BATCH): hit-VFX + puls swiatla + damage numbers (spina hit_resolved)
 	_setup_audio()         # ETAP 8: SFX walki/lootu/awansu + muzyka ambient (placeholdery, no-op bez plików)
 	_setup_menus()         # ETAP 8: menu główne (overlay startowy) + menu pauzy (ESC). Pomijane w VOXEL_PROBE.
 	_setup_fps_counter()   # diagnostyka: licznik FPS w rogu (do strojenia wydajności)
@@ -207,6 +218,97 @@ func _setup_vignette() -> void:
 func _setup_ambient_fx() -> void:
 	_fireflies = _make_particles(44, Vector3(14, 7, 14), 0.22, Color(0.85, 1.0, 0.45), 7.0, 0.05, 0.22, 5.0)
 	_ambient_day = _make_particles(46, Vector3(15, 9, 15), 0.05, Color(1.0, 0.95, 0.8), 1.2, 0.04, 0.18, 8.0)
+	# FEEL (8): emiter ambientu biomu (spadajace liscie/pyl/snieg). Konfig wg biomu w _apply_biome_fx;
+	# domyslnie wylaczony do pierwszego _process (gdy znamy biom pod graczem).
+	_biome_fx = _make_biome_fx()
+	add_child(_biome_fx)
+
+# FEEL (BATCH): centralna warstwa FX walki — spawnuje iskry/swiatlo/liczby z hit_resolved.
+func _setup_feel_fx() -> void:
+	_feel_fx = FeelFXScript.new()
+	_feel_fx.name = "FeelFX"
+	add_child(_feel_fx)
+	_feel_fx.connect_damage_service()
+
+# FEEL (8): tworzy emiter ambientu biomu (spadajace czastki nad/wokol gracza). Parametry materialu
+# (kolor/grawitacja/predkosc/rozmiar) ustawia _apply_biome_fx wg biomu — tu tylko szkielet/pula.
+func _make_biome_fx() -> GPUParticles3D:
+	var p := GPUParticles3D.new()
+	p.name = "BiomeAmbientFX"
+	p.amount = 40
+	p.lifetime = 6.0
+	p.local_coords = false
+	p.preprocess = 6.0
+	p.emitting = false
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(16, 8, 16)   # emisja w gornej kopule wokol gracza
+	pm.gravity = Vector3(0.0, -0.6, 0.0)
+	pm.direction = Vector3(0.3, -1.0, 0.1)
+	pm.spread = 25.0
+	pm.initial_velocity_min = 0.3
+	pm.initial_velocity_max = 1.0
+	pm.angular_velocity_min = -40.0                # falujacy obrot (liscie wiruja opadajac)
+	pm.angular_velocity_max = 40.0
+	pm.scale_min = 0.6
+	pm.scale_max = 1.2
+	p.process_material = pm
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.12, 0.12)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.5, 0.7, 0.3)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mesh.material = mat
+	p.draw_pass_1 = mesh
+	return p
+
+# FEEL (8): przelacza wyglad ambientu biomu (liscie/pyl/snieg) gdy gracz wejdzie w nowy biom.
+# Tani: zmienia tylko parametry materialu + amount, nie tworzy nowych nodow.
+func _apply_biome_fx(biome: StringName) -> void:
+	if _biome_fx == null or biome == _biome_fx_current:
+		return
+	_biome_fx_current = biome
+	var pm := _biome_fx.process_material as ParticleProcessMaterial
+	var mat := (_biome_fx.draw_pass_1 as QuadMesh).material as StandardMaterial3D
+	if pm == null or mat == null:
+		return
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+	mat.emission_enabled = false
+	match biome:
+		&"emberwaste":
+			# Pyl/zar: drobny, ciepy, unosi sie lekko w gore (gorace powietrze), swieci.
+			_biome_fx.amount = 34
+			mat.albedo_color = Color(1.0, 0.6, 0.3, 0.75)
+			mat.emission_enabled = true
+			mat.emission = Color(1.0, 0.5, 0.2)
+			mat.emission_energy_multiplier = 2.0
+			mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+			(_biome_fx.draw_pass_1 as QuadMesh).size = Vector2(0.07, 0.07)
+			pm.gravity = Vector3(0.0, 0.25, 0.0)      # zar unosi sie w gore
+			pm.direction = Vector3(0.4, 0.6, 0.2)
+			pm.initial_velocity_min = 0.2
+			pm.initial_velocity_max = 0.8
+		&"frosthelm":
+			# Snieg: bialy, gesto, powolny opad z lekkim dryfem bocznym.
+			_biome_fx.amount = 60
+			mat.albedo_color = Color(0.95, 0.97, 1.0, 0.9)
+			(_biome_fx.draw_pass_1 as QuadMesh).size = Vector2(0.09, 0.09)
+			pm.gravity = Vector3(0.0, -1.0, 0.0)
+			pm.direction = Vector3(0.5, -1.0, 0.2)
+			pm.initial_velocity_min = 0.4
+			pm.initial_velocity_max = 1.0
+		_:
+			# Verdant (i fallback): spadajace liscie — zielono-zlote, wiruja, sredni opad.
+			_biome_fx.amount = 36
+			mat.albedo_color = Color(0.55, 0.72, 0.28, 0.92)
+			(_biome_fx.draw_pass_1 as QuadMesh).size = Vector2(0.13, 0.1)
+			pm.gravity = Vector3(0.0, -0.55, 0.0)
+			pm.direction = Vector3(0.6, -1.0, 0.2)        # dryf z wiatrem
+			pm.initial_velocity_min = 0.3
+			pm.initial_velocity_max = 0.9
+	_biome_fx.restart()
 
 func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: float, vmin: float, vmax: float, life: float) -> GPUParticles3D:
 	var p := GPUParticles3D.new()
@@ -259,6 +361,18 @@ func _process(_delta: float) -> void:
 	var night := t < 0.18 or t > 0.82
 	_fireflies.emitting = night
 	_ambient_day.emitting = not night
+
+	# FEEL (8): ambient biomu (liscie/pyl/snieg) — podaza za graczem, przelacza wyglad wg biomu.
+	# Emiter wyzej (gora kopuly), by czastki "spadaly" przez pole widzenia. Pyl Emberwaste leci spod.
+	if _biome_fx != null and _world != null:
+		_biome_fx.global_position = pos + Vector3(0.0, 6.0, 0.0)
+		var biome := _world.get_biome(int(floor(pos.x)), int(floor(pos.z)))
+		_apply_biome_fx(biome)
+		# Bramkujemy emitting (tylko gdy sie zmienia, jak firefly/ambient wyzej) i GASIMY na pauzie —
+		# snieg Frosthelm (amount 60) nie rysuje sie w menu pauzy (oszczednosc na celu 4GB).
+		var want_biome_fx := not get_tree().paused
+		if _biome_fx.emitting != want_biome_fx:
+			_biome_fx.emitting = want_biome_fx
 
 	# ETAP 8: muzyka kontekstowa (explore <-> combat). Throttling ~0,5 s, by nie sprawdzac co klatkę.
 	_music_check_accum += _delta
@@ -645,6 +759,17 @@ func _setup_hud() -> void:
 				_hud.on_class_resource_changed(cr.resource_name(), cr.current_value(), cr.max_value())
 		if _hud.has_method("on_class_resource_changed"):
 			_player_ref.class_resource_changed.connect(_hud.on_class_resource_changed)
+
+		# ETAP 3: pipsy COMBO (Ranger) — osobny widget obok paska FOCUS. To NIE melee "Combo xN"
+		# (set_combo) — tu pokazujemy zasob builder/finisher (0..combo_max, GDD 4.3). Guard has_method
+		# + kind COMBO_FOCUS => Mag/Wojownik nie tworza tego widgetu (Furia/Mana bez zmian).
+		if _hud.has_method("setup_combo") and _hud.has_method("on_class_combo_changed"):
+			var crc = _player_ref.class_resource_component()
+			if crc != null and crc.kind == ClassResourceComponent.Kind.COMBO_FOCUS:
+				_hud.setup_combo(crc.combo_max)
+				_hud.on_class_combo_changed(crc.combo, crc.combo_max)
+				_player_ref.class_combo_changed.connect(_hud.on_class_combo_changed)
+
 		if _hud.has_method("on_level_changed"):
 			_player_ref.level_changed.connect(_hud.on_level_changed)
 			_hud.on_level_changed(_player_ref.get_level(), _player_ref.get_xp(),

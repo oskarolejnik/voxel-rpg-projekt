@@ -14,6 +14,8 @@ extends Node
 ##  (9) Serializacja ItemInstance round-trip (seed/sockety/enchant) zachowana.
 ## (10) PEŁNA pętla pickupu w świecie: LootDrop.spawn_item -> Area3D.body_entered(gracz) ->
 ##      _try_pickup -> InventoryComponent.add_to_backpack (warstwy kolizji 2/bit1 + grupa "player").
+## (11) DROP CELOWANY (LootTableResource.item_drops): konkretny item (np. tame_charm) z szansą,
+##      niezależny od losowanego rarity — drop_for zwraca ItemInstance o tym base_id (ETAP 6 loot).
 ## Kod wyjścia: 0 = ALL OK, 1 = FAIL. Print "[E2] ..." + ALL OK + quit.
 
 const EPS: float = 0.0001
@@ -37,6 +39,7 @@ func _ready() -> void:
 	_test_ilvl_scaling()
 	_test_serialization_roundtrip()
 	_test_equip_unwearable_keeps_item()   # regresja: item-loss przy niewdziewalnym slocie
+	_test_targeted_item_drop()   # ETAP 6: drop celowany z item_drops (tame_charm)
 	await _test_world_pickup()   # pelna petla w-swiecie: LootDrop -> Area3D -> add_to_backpack
 
 	if _failures == 0:
@@ -392,3 +395,46 @@ func _test_world_pickup() -> void:
 	_check(picked[0], "pickup w świecie nie wyemitował picked_up (warstwy kolizji/grupa zepsute?)")
 	_check(inv.backpack.size() == 1, "pickup nie dodał itemu do plecaka (size=%d != 1)" % inv.backpack.size())
 	player.queue_free()
+
+
+# (11) DROP CELOWANY: LootTableResource.item_drops emituje konkretny item (po item_id z ItemDB), z
+#      szansą, NIEZALEŻNIE od losowanego rarity. To kanał, którym oswajalne bestie dropią tame_charm.
+func _test_targeted_item_drop() -> void:
+	# Definicja itemu w ItemDB (test ma czyste, wstrzyknięte DB — nie zależymy od plików na dysku).
+	var charm := ItemResource.new()
+	charm.id = &"t_tame_charm"
+	charm.slot = ItemResource.Slot.CONSUMABLE
+	ItemDB.items[&"t_tame_charm"] = charm
+
+	# Tabela: ZERO losowego itemu (wszystkie rarity_weights=0) + gwarantowany drop celowany (chance 1).
+	# Tak izolujemy item_drops od losowania rarity — w dropie ma być WYŁĄCZNIE celowany item.
+	var table := LootTableResource.new()
+	table.gold_min = 0
+	table.gold_max = 0
+	table.rarity_weights = { 0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0 }
+	var idrops: Array[Dictionary] = [{ "item_id": &"t_tame_charm", "chance": 1.0 }]
+	table.item_drops = idrops
+
+	var enemy := Node.new()
+	enemy.set_script(preload("res://test/LootDummyEnemy.gd"))
+	enemy.loot_ilvl = 3
+	enemy.loot_biome = &"verdant"
+	enemy.loot_table = table
+	add_child(enemy)
+
+	var got_charm := false
+	var got_other := false
+	var drops := LootService.drop_for(enemy)
+	for d in drops:
+		if d.get("kind", "") == "item":
+			var inst: ItemInstance = d.get("instance", null)
+			if inst != null and inst.base_id == &"t_tame_charm":
+				got_charm = true
+			elif inst != null:
+				got_other = true
+	print("[E2] targeted drop: got_charm=%s, got_other=%s, drops=%d" % [str(got_charm), str(got_other), drops.size()])
+	_check(got_charm, "item_drops chance=1.0 nie dropnął celowanego itemu (kanał martwy?)")
+	_check(not got_other, "item_drops: pojawił się losowy item mimo zerowych rarity_weights (izolacja zepsuta)")
+
+	ItemDB.items.erase(&"t_tame_charm")
+	enemy.queue_free()

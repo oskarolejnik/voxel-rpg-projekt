@@ -13,3 +13,7 @@ rarity_weights = {
 }
 gold_min = 3
 gold_max = 15
+item_drops = Array[Dictionary]([{
+"item_id": &"tame_charm",
+"chance": 0.5
+}])
