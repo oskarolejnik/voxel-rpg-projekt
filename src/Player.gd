@@ -187,6 +187,9 @@ var _cape: Node3D            # pivot peleryny (dziecko _torso)
 # Dodatkowy stan dla NATURALNEJ animacji (wygładzane „blend weights" 0..1 i fazy).
 var _gait: float = 0.0        # 0=idle/stoi, 1=pełny chód — wygładzona „siła" lokomocji (anti-pop)
 var _run_blend: float = 0.0   # 0=chód, 1=bieg — wygładzone przejście chód<->bieg (amplitudy/tempo)
+var _loco_fwd: float = 1.0     # kierunek kroku vs twarz: +1=przód, -1=tył (backpedal w walce); wygładzony
+var _prev_model_yaw: float = 0.0  # yaw modelu z poprz. klatki (do liczenia tempa obrotu = turn-in-place)
+var _turn_rate: float = 0.0    # |tempo obrotu twarzy| rad/s; wysokie + bezruch => turn-in-place
 var _air_blend: float = 0.0   # 0=na ziemi, 1=w powietrzu — wygładza wejście/wyjście z pozy lotu
 # Wspólny próg prędkości wejścia w lokomocję (nogi) i startu narastania _gait — JEDNO źródło,
 # by nogi i tułów/głowa zaczynały „chodzić" razem (bez rozjazdu progów).
@@ -1579,8 +1582,15 @@ func _process(delta: float) -> void:
 	_run_blend = lerpf(_run_blend, run_target, _sm(6.0, delta))
 	_air_blend = lerpf(_air_blend, 0.0 if on_floor else 1.0, _sm(10.0, delta))
 
+	# Turn-in-place: tempo obrotu TWARZY (rad/s) z różnicy yaw modelu między klatkami (clamp na spike np.
+	# po respawnie). Gdy stoimy i szybko się obracamy (celowanie w walce / reorientacja) — nogi
+	# PRZESTĘPUJĄ zamiast ślizgać stopami w miejscu.
+	var yaw_now := _model.rotation.y
+	_turn_rate = minf(absf(wrapf(yaw_now - _prev_model_yaw, -PI, PI)) / maxf(delta, 0.0001), 12.0)
+	_prev_model_yaw = yaw_now
+
 	# --- WYBÓR STANU NÓG/RĄK ---
-	# Priorytet: powietrze > chód/bieg > idle. Atak nadpisuje TYLKO ręce (nogi grają normalnie).
+	# Priorytet: powietrze > chód/bieg > turn-in-place > idle. Atak nadpisuje TYLKO ręce (nogi grają normalnie).
 	# Cykl kroku liczymy na ziemi powyżej _LOCO_MIN_SPEED (ten sam próg co start narastania _gait),
 	# a _gait skaluje amplitudę — start/stop ruchu jest płynny (nogi „rozkręcają się", nie skaczą).
 	# Tułów/głowa NIE mają osobnego progu prędkości — mieszają się przez _gait/_air_blend, więc
@@ -1589,6 +1599,8 @@ func _process(delta: float) -> void:
 		_anim_air(delta, hspeed)
 	elif hspeed > _LOCO_MIN_SPEED:
 		_anim_locomotion(delta, hspeed, sprinting)
+	elif _turn_rate > 1.8:
+		_anim_turn_in_place(delta, _turn_rate)
 	else:
 		_anim_idle(delta)
 
@@ -1801,8 +1813,18 @@ func _anim_locomotion(delta: float, _hspeed: float, _sprinting: bool) -> void:
 	# To RDZEN fixu sztywnosci (jedyna ingerencja w baze locomocji — uzasadniona). L=faza 0, R=faza PI.
 	var stride := lerpf(0.14, 0.22, _run_blend) * _gait     # dlugosc kroku (m) skaluje z biegiem/rozruchem
 	var lift := lerpf(0.06, 0.12, _run_blend) * _gait       # uniesienie stopy w swingu (m)
-	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride, lift, delta)
-	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride, lift, delta)
+	# KIERUNEK KROKU vs TWARZ: gdy ruch jest DO TYŁU względem twarzy (np. cofanie w walce — postać celuje
+	# w przód, a wycofuje się), odwracamy znak kroku => BACKPEDAL zamiast „ślizgu" tyłem. Sagittalnie
+	# (przód/tył); boczny strafe wymaga abdukcji bioder (osobna zmiana rigu) — tu poza zakresem.
+	var hsp := Vector2(velocity.x, velocity.z).length()
+	if hsp > 0.3:
+		var mloc := Vector3(velocity.x, 0.0, velocity.z).rotated(Vector3.UP, -_model.rotation.y)
+		_loco_fwd = lerpf(_loco_fwd, clampf(-mloc.z / hsp, -1.0, 1.0), _sm(8.0, delta))   # +1 przód, -1 tył
+	else:
+		_loco_fwd = lerpf(_loco_fwd, 1.0, _sm(6.0, delta))
+	var fwd_sign := -1.0 if _loco_fwd < -0.15 else 1.0
+	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride * fwd_sign, lift, delta)
+	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride * fwd_sign, lift, delta)
 
 	# RĘCE — barki w PRZECIWFAZIE do nóg (ramię L z nogą R). Atak nadpisze je później, jeśli trwa.
 	if not is_attacking:
@@ -1817,6 +1839,25 @@ func _anim_locomotion(delta: float, _hspeed: float, _sprinting: bool) -> void:
 		var elbow_r := base_elbow + maxf(0.0, -s) * pump
 		_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, elbow_l, _sm(18.0, delta))
 		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, elbow_r, _sm(18.0, delta))
+
+# --- TURN-IN-PLACE: stoimy, ale obracamy twarz (celowanie w walce / reorientacja) ------------
+# Zamiast ślizgu nieruchomych stóp — DROBNE PRZESTĘPOWANIE: stopy szurają w rytmie skalowanym tempem
+# obrotu (sagittalnie, przez istniejące foot-IK; mały krok/uniesienie). Dłonie balansują przeciwfazą.
+# Czysto wizualne; gdy obrót zwalnia, płynnie wraca do idle (przez próg w wyborze stanu).
+func _anim_turn_in_place(delta: float, rate: float) -> void:
+	var t := clampf(rate / 6.0, 0.0, 1.0)            # 0..1 jak szybki obrót
+	_walk_phase += delta * (3.0 + rate)              # kadencja szurania rośnie z tempem obrotu
+	var stride := 0.05 + 0.045 * t                   # mały krok (m)
+	var lift := 0.03 + 0.03 * t                      # niskie uniesienie stopy (m)
+	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride, lift, delta)
+	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride, lift, delta)
+	if not is_attacking:
+		var s := sin(_walk_phase)
+		var sw := 0.18 * t                           # drobny balans rąk
+		_arm_l.rotation.x = lerpf(_arm_l.rotation.x,  s * sw, _sm(14.0, delta))
+		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -s * sw, _sm(14.0, delta))
+		_arm_l_lo.rotation.x = lerpf(_arm_l_lo.rotation.x, 0.2, _sm(10.0, delta))
+		_arm_r_lo.rotation.x = lerpf(_arm_r_lo.rotation.x, 0.2, _sm(10.0, delta))
 
 # --- IDLE: spokojny oddech + powolne przestępowanie (weight-shift) ----------
 # Sylwetka STOI WYSOKO: kolana niemal proste (stały offset ~-0.02, dopasowany do startowej
