@@ -722,6 +722,22 @@ func prime(center: Vector2i, radius: int = 1) -> void:
 			_build_chunk_sync(coord)
 
 
+## ETAP 8 (review #minor): wymusza NATYCHMIASTOWE przeliczenie pierścienia streamingu wokół gracza.
+## Wołane po RUNTIME zmianie presetu grafiki (LOW<->HIGH zmienia near_dist/far_dist) — bez tego nowy
+## zasięg "wchodzi" dopiero gdy gracz przekroczy granicę chunku (_process gatuje _update_chunks przez
+## center != _last_center). Tu: przelicz dla AKTUALNEGO środka i zresetuj _last_center (sentinel),
+## by _process w następnej klatce dokończył submity/usuwanie wg nowego far_dist. No-op bez gracza
+## (headless/test) — czysto defensywne, nie psuje SP ani co-opu (sam streaming jest lokalny).
+func refresh_streaming() -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	var center := world_to_chunk(_player.global_position)
+	_update_chunks(center)
+	# Sentinel: następny _process znów wejdzie w gałąź center != _last_center i dokona reszty
+	# (HIGH->LOW usuwa nadmiar FAR, LOW->HIGH dosyła nowy pierścień) zamiast czekać na ruch gracza.
+	_last_center = Vector2i(2147483647, 2147483647)
+
+
 ## SYNCHRONICZNA budowa pojedynczego chunku na GŁÓWNYM watku (dla prime/kill-plane).
 ## ZAWSZE NEAR (pełny detal + kolizja): prime gwarantuje twardy grunt pod spawnem/po kill-plane.
 func _build_chunk_sync(coord: Vector2i) -> void:

@@ -16,6 +16,9 @@ extends CharacterBody3D
 @export var sprint_speed: float = 10.0    # prędkość biegu (shift)
 @export var jump_velocity: float = 7.0    # siła skoku
 @export var mouse_sensitivity: float = 0.0025
+## ETAP 8: bazowa czulosc myszy (rad/px). mouse_sensitivity = MOUSE_SENS_BASE * mnoznik z GameSettings.
+## Trzymamy baze osobno, by suwak ustawien mogl skalowac czulosc bez gubienia wartosci domyslnej.
+const MOUSE_SENS_BASE: float = 0.0025
 
 # ============================================================================
 #  STATYSTYKI WALKI (ETAP 3) — eksporty do łatwego strojenia w inspektorze
@@ -303,6 +306,12 @@ func _ready() -> void:
 	call_deferred("emit_signal", "stamina_changed", stamina, max_stamina)
 
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED  # chowamy i łapiemy kursor
+
+	# ETAP 8: zastosuj zapisana czulosc myszy (GameSettings). Brak autoloadu (test) = zostaje baza.
+	if GameState != null and typeof(GameState) == TYPE_OBJECT:
+		var gs := get_node_or_null("/root/GameSettings")
+		if gs != null and "mouse_sensitivity" in gs:
+			set_mouse_sensitivity_mult(gs.mouse_sensitivity)
 
 # ETAP 1: buduje stos komponentów gracza i wpina go w istniejące pola/sygnały. Po tym:
 # HP żyje w HealthComponent (hp mirroruje), atak LMB idzie AbilityComponent -> HitboxComponent
@@ -1006,8 +1015,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		_spring.rotation.x = clampf(_spring.rotation.x, deg_to_rad(-70.0), deg_to_rad(30.0))
 
 	# ESC: pokaż/ukryj kursor (przydatne, żeby wyjść z gry).
+	# ETAP 8: jeśli w grze jest PauseMenu, ESC należy DO NIEGO (pauza), nie do toggle kursora —
+	# inaczej jeden ESC zrobiłby PODWÓJNĄ akcję (kursor + pauza). PauseMenu konsumuje zdarzenie
+	# w swoim _unhandled_input; gdyby dotarło tu mimo to, ten gate i tak nie odpala toggle myszy.
 	if event.is_action_pressed("ui_cancel"):
-		_toggle_mouse()
+		if not _pause_menu_present():
+			_toggle_mouse()
 
 	# --- WALKA: klik myszy (tylko gdy kursor złapany, by klik w odsłoniętym kursorze nie atakował) ---
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventMouseButton and event.pressed:
@@ -1034,6 +1047,29 @@ func _toggle_mouse() -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+## ETAP 8: ustawia czulosc myszy = baza * mnoznik (z GameSettings/SettingsMenu). Suwak ustawien
+## woła to przez GameSettings.apply_mouse(). Mnoznik >0; zabezpieczamy przed 0/ujemnym (kamera by stanela).
+func set_mouse_sensitivity_mult(mult: float) -> void:
+	mouse_sensitivity = MOUSE_SENS_BASE * maxf(0.01, mult)
+
+## ETAP 8: bezpieczne SFX przez AudioManager (autoload). No-op gdy brak autoloadu (test/headless) lub
+## pliku audio (placeholder). Tylko lokalny gracz dudni dzwiekiem akcji — repliki/cudze postacie nie
+## (inaczej w co-opie kazdy slyszalby N nakladajacych sie zamachow). _net_sync==null => SP (gra).
+func _play_sfx(id: StringName, pitch: float = 1.0) -> void:
+	if _net_sync != null and not _net_sync.should_read_local_input():
+		return    # to nie NASZA postac (replika/symulacja cudza) — dzwiek akcji gra wlasciciel u siebie
+	var am := get_node_or_null("/root/AudioManager")
+	if am != null and am.has_method("play_sfx"):
+		am.play_sfx(id, pitch)
+
+## ETAP 8: czy w drzewie istnieje PauseMenu (Main go dodaje). Jesli tak, ESC obsluguje pauza,
+## a Player NIE przelacza kursora (uniknij podwojnej akcji). Brak (test/headless) = stary toggle dziala.
+func _pause_menu_present() -> bool:
+	var tree := get_tree()
+	if tree == null or tree.root == null:
+		return false
+	return tree.root.find_child("PauseMenu", true, false) != null
 
 # Game feel (0C): kamera podąża z wygładzeniem/lagiem + trauma-shake + (JUICE) FOV kick i walk-bob.
 func _update_camera(delta: float) -> void:
@@ -1570,6 +1606,9 @@ func _can_dodge() -> bool:
 func _try_finisher() -> void:
 	if is_dead or _ability == null or _skill_finisher == null:
 		return
+	# ETAP 8: SFX skilla zasobu klasy (R). AbilityComponent i tak waliduje koszt/CD — dźwięk gramy
+	# optymistycznie przy próbie (vertical slice; precyzyjne "tylko gdy odpalił" to przyszły hook).
+	_play_sfx(&"ability")
 	_ability.try_use(_skill_finisher)
 
 func _try_attack() -> void:
@@ -1583,6 +1622,10 @@ func _try_attack() -> void:
 	_attack_cd = attack_cooldown
 	_attack_anim_t = attack_anim_time   # start animacji zamachu
 	is_attacking = true
+
+	# ETAP 8: SFX zamachu (whoosh). Lekka wariacja pitchu z combo -> seria ciosow nie brzmi identycznie.
+	# No-op bez AudioManager/pliku (placeholder). Trafienie/krytyk gra osobno (DamageService.hit_resolved).
+	_play_sfx(&"attack", 1.0 + 0.04 * float(_combo_count))
 
 	# WARIANT A (rekomendacja): pierwszy cios serii już z 15% przebicia.
 	# Inkrement combo PRZED oknem trafień (pudło zresetuje go do 0 w _on_hitbox_window_ended).
@@ -1757,6 +1800,7 @@ func _begin_dash() -> void:
 	_dodge_active_t = 0.0           # ETAP 1: start okna perfect-dodge
 	_iframes = maxf(_iframes, dodge_iframes)
 	is_dodging = true
+	_play_sfx(&"dodge")             # ETAP 8: SFX uniku (no-op bez pliku). perfect_dodge gra osobno (Main).
 	# ETAP 1: CANCEL ataku w unik (unik przerywa atak — priorytet ucieczki). Czyści też bufor ataku.
 	is_attacking = false
 	_attack_anim_t = 0.0

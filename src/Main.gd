@@ -25,6 +25,9 @@ const LootDropScript := preload("res://src/LootDrop.gd")
 const InventoryComponentScript := preload("res://components/InventoryComponent.gd")
 # ETAP 7: minimalne lobby co-op (Host/Join) + spawn zdalnych graczy. SP = brak peera -> wszystko lokalne.
 const LobbyUIScript := preload("res://src/LobbyUI.gd")
+# ETAP 8: menu glowne (overlay startowy) + menu pauzy (ESC). Polish/UX vertical slice.
+const MainMenuScript := preload("res://src/MainMenu.gd")
+const PauseMenuScript := preload("res://src/PauseMenu.gd")
 
 # Referencje przechowywane jako pola — VoxelWorld potrzebuje gracza do streamingu.
 var _world: VoxelWorld
@@ -53,6 +56,12 @@ var _dungeon_mgr: DungeonManager
 var _lobby: CanvasLayer
 var _remote_players: Dictionary = {}        # int(peer) -> CharacterBody3D (zdalna postać)
 
+# ETAP 8: menu glowne (overlay startowy w grze) + menu pauzy (ESC). Audio + ambient music state.
+var _main_menu: CanvasLayer
+var _pause_menu: CanvasLayer
+var _was_in_combat: bool = false            # do przelaczania muzyki explore<->combat
+var _music_check_accum: float = 0.0         # throttling sprawdzania kontekstu muzyki
+
 # ETAP 2: ekran ekwipunku/toast lootu + ekwipunek gracza (komponent).
 var _inv_ui: InventoryUI
 var _inventory: InventoryComponent
@@ -76,12 +85,15 @@ func _ready() -> void:
 	# od Environment, więc reorder jest bezpieczny.
 	_setup_world()         # proceduralny teren voxelowy (zastępuje płaską podłogę)
 	_setup_environment()   # słońce + niebo + światło otoczenia + cykl dnia i nocy
+	_apply_graphics_settings()  # ETAP 8: nadpisz Environment/VoxelWorld presetem grafiki (LOW domyślnie)
 	_spawn_player()        # nasza postać — stawiana NA terenie przez height_at()
 	_spawn_enemies()       # 3 wrogów blisko gracza (po prime() terenu wokół spawnu)
 	_setup_hud()           # podpowiedź ze sterowaniem + HUD walki
 	_setup_coop()          # ETAP 7: lobby co-op (Host/Join) + spawn zdalnych graczy. SP = no-op (brak peera).
 	_setup_vignette()      # Faza 0B: winieta (przyciemnienie krawędzi ekranu)
 	_setup_ambient_fx()    # Faza 1C: świetliki nocą / pył w dzień
+	_setup_audio()         # ETAP 8: SFX walki/lootu/awansu + muzyka ambient (placeholdery, no-op bez plików)
+	_setup_menus()         # ETAP 8: menu główne (overlay startowy) + menu pauzy (ESC). Pomijane w VOXEL_PROBE.
 	_setup_fps_counter()   # diagnostyka: licznik FPS w rogu (do strojenia wydajności)
 	# Sonda zrzutów tylko gdy uruchomione z VOXEL_PROBE != "" — normalne F5 gra bez sondy.
 	if OS.get_environment("VOXEL_PROBE") != "":
@@ -247,6 +259,12 @@ func _process(_delta: float) -> void:
 	var night := t < 0.18 or t > 0.82
 	_fireflies.emitting = night
 	_ambient_day.emitting = not night
+
+	# ETAP 8: muzyka kontekstowa (explore <-> combat). Throttling ~0,5 s, by nie sprawdzac co klatkę.
+	_music_check_accum += _delta
+	if _music_check_accum >= 0.5:
+		_music_check_accum = 0.0
+		_update_music_context()
 
 # TYMCZASOWE: stała sceneria do porównań before/after (stała pora + kąt kamery), zrzut, wyjście.
 func _probe_shot() -> void:
@@ -558,13 +576,12 @@ func _spawn_player() -> void:
 	if GameState != null:
 		GameState.set_local_player(_player_ref)
 
-	# ETAP 3: jesli istnieje zapis postaci — wczytaj progresje (poziom/xp/alokacja/waluty). Brak
-	# zapisu = swiezy start (lvl 1) jak dotad. Ustaw klase z save PRZED budowa zasobu (juz zbudowany
-	# w Player._ready, wiec read_progression tylko odtwarza poziom/drzewko/waluty — bezpiecznie).
-	if SaveManager != null and _player_ref.has_method("read_progression_from_save"):
-		var sd: SaveData = SaveManager.load_character()
-		if sd != null:
-			_player_ref.read_progression_from_save(sd)
+	# ETAP 3/8: wczytanie progresji jest teraz STEROWANE MENU GLOWNYM (Nowa gra vs Kontynuuj).
+	# W trybie z menu (_setup_menus) wczytanie odpala continue_requested -> _load_character_save();
+	# "Nowa gra" pomija je (swiezy start lvl 1). Gdy menu NIE ma (VOXEL_PROBE/headless/test),
+	# zachowujemy STARE zachowanie: auto-wczytanie zapisu jak w Etapach 3-7 (regresja).
+	if not _menus_enabled():
+		_load_character_save()
 
 func _spawn_enemies() -> void:
 	# ETAP 4: DETERMINISTYCZNY spawn wg biomu + seeda (WorldSpawner) zamiast stałego 3×.
@@ -634,6 +651,9 @@ func _setup_hud() -> void:
 				LevelComponent.xp_to_next(_player_ref.get_level()))
 		if _hud.has_method("on_leveled_up"):
 			_player_ref.leveled_up.connect(_hud.on_leveled_up)
+
+		# ETAP 8: SFX awansu poziomu (no-op gdy brak pliku).
+		_player_ref.leveled_up.connect(func(_lv: int, _pts: int) -> void: _play_sfx(&"levelup"))
 
 		# ETAP 3: autosave progresji na awansie i po kazdej zmianie alokacji drzewka / respec.
 		# Razem z zapisem na zamknieciu okna (_notification) daje to trwala progresje w realnej grze.
@@ -815,6 +835,7 @@ func _notification(what: int) -> void:
 
 # Po śmierci gracza: chwila na ekran śmierci, potem respawn na punkcie startowym.
 func _on_player_died() -> void:
+	_play_sfx(&"player_death")   # ETAP 8: SFX śmierci gracza (no-op gdy brak pliku)
 	var t := get_tree().create_timer(respawn_delay)
 	t.timeout.connect(func() -> void:
 		if is_instance_valid(_player_ref):
@@ -836,6 +857,8 @@ func _on_enemy_died(e: Enemy) -> void:
 		_enemies_alive = maxi(0, _enemies_alive - 1)
 	if _hud != null and _hud.has_method("set_enemy_count"):
 		_hud.set_enemy_count(_enemies_alive)
+	# ETAP 8: SFX śmierci wroga (no-op gdy brak pliku CC0).
+	_play_sfx(&"death")
 	# ETAP 3: XP za zabicie wroga (hook smierci -> grant_xp). Skala wg HP (goblin HP 30 -> 12 XP).
 	if _player_ref != null and _player_ref.has_method("grant_xp"):
 		_player_ref.grant_xp(_xp_reward_for(e))
@@ -887,6 +910,11 @@ func _on_enemy_loot_dropped(world_pos: Vector3, drops: Array) -> void:
 
 # ETAP 2: gracz podniósł loot -> toast w kolorze rzadkości (item) lub złoty (złoto).
 func _on_loot_picked_up(drop: LootDrop) -> void:
+	# ETAP 8: SFX podniesienia lootu (item -> "loot", zloto -> "gold" z fallbackiem na "loot").
+	if drop.item != null:
+		_play_sfx(&"loot")
+	elif drop.gold > 0:
+		_play_sfx(&"gold")
 	if _inv_ui == null:
 		return
 	if drop.item != null:
@@ -903,3 +931,167 @@ func bind_remote_loot(drop: LootDrop) -> void:
 		return
 	if not drop.picked_up.is_connected(_on_loot_picked_up):
 		drop.picked_up.connect(_on_loot_picked_up)
+
+
+# ============================================================================
+#  ETAP 8 — GRAFIKA (preset LOW/HIGH) + AUDIO + MENU (główne / pauza / ustawienia)
+# ============================================================================
+
+## Aplikuje BIEŻĄCY preset grafiki (GameSettings, domyślnie LOW) na żywych Environment/VoxelWorld.
+## Wołane w _ready PO _setup_environment (oba węzły istnieją). Podpina też sygnał zmiany presetu z
+## SettingsMenu, by zmiana w trakcie gry przeliczyła property bez restartu. Brak GameSettings (np.
+## headless bez autoloadu) = bezpieczny no-op (zostaje baseline z _setup_environment = LOW).
+func _apply_graphics_settings() -> void:
+	var gs := _game_settings()
+	if gs == null:
+		return
+	gs.apply_graphics(_world, _environment)
+	# Zmiana presetu w SettingsMenu -> przelicz na AKTUALNYCH węzłach (raz podpinamy).
+	if gs.has_signal("graphics_preset_changed") \
+			and not gs.graphics_preset_changed.is_connected(_on_graphics_preset_changed):
+		gs.graphics_preset_changed.connect(_on_graphics_preset_changed)
+
+
+func _on_graphics_preset_changed(_preset: int) -> void:
+	var gs := _game_settings()
+	if gs != null:
+		gs.apply_graphics(_world, _environment)
+		# ETAP 8 (review #minor): RUNTIME przelacznik LOW<->HIGH zmienia near_dist/far_dist na zywym
+		# VoxelWorld, ale streaming gatuje _update_chunks przez center != _last_center — przy zmianie
+		# presetu W MIEJSCU nowy pierscien nie wszedłby do czasu ruchu gracza. Wymuszamy odswiezenie
+		# teraz, by efekt presetu byl natychmiastowy. No-op gdy brak gracza/swiata (headless).
+		if _world != null and is_instance_valid(_world) and _world.has_method("refresh_streaming"):
+			_world.refresh_streaming()
+
+
+## ETAP 8 — AUDIO: AudioManager (autoload) sam tworzy szyny i podpina się pod DamageService.hit_resolved
+## (atak/trafienie/krytyk). Tu startujemy muzykę eksploracji (no-op bez pliku CC0) i inicjujemy stan
+## przełączania explore<->combat. SFX zdarzeń (śmierć/loot/awans) wpięte przy ich handlerach.
+func _setup_audio() -> void:
+	var am := _audio_manager()
+	if am == null:
+		return
+	# W trybie z menu głównym muzykę gry uruchomi START gry (Nowa gra/Kontynuuj); tu tylko gdy menu
+	# nie ma (VOXEL_PROBE/headless) — by gra od razu miała tło. Z menu: MainMenu gra muzykę "menu".
+	if not _menus_enabled():
+		am.play_music(&"explore")
+	_was_in_combat = false
+
+
+## ETAP 8 — SFX po logicznym id przez AudioManager. Bezpieczny no-op gdy brak autoloadu/pliku
+## (kontrakt placeholderów Etapu 8: zero crashy). Jedno miejsce wołania z handlerów gry.
+func _play_sfx(id: StringName) -> void:
+	var am := _audio_manager()
+	if am != null and am.has_method("play_sfx"):
+		am.play_sfx(id)
+
+
+## ETAP 8 — przełącza muzykę explore <-> combat wg tego, czy w pobliżu gracza są żywi wrogowie.
+## Throttlowane z _process (co ~0,5 s). No-op gdy brak AudioManager/gracza lub gdy gracz w menu/pauzie.
+func _update_music_context() -> void:
+	var am := _audio_manager()
+	if am == null or _player_ref == null or not is_instance_valid(_player_ref):
+		return
+	# W menu głównym (gra spauzowana za menu) nie nadpisujemy muzyki menu.
+	if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.visible:
+		return
+	var in_combat := _enemy_near_player()
+	if in_combat == _was_in_combat:
+		return
+	_was_in_combat = in_combat
+	am.play_music(&"combat" if in_combat else &"explore")
+
+
+## Czy w promieniu walki jest żywy wróg (prosty heurystyk dla muzyki). Tani: iteruje grupę "enemies".
+func _enemy_near_player() -> bool:
+	if _player_ref == null:
+		return false
+	var pp := _player_ref.global_position
+	for e in get_tree().get_nodes_in_group("enemies"):
+		if e is Node3D and is_instance_valid(e):
+			if (e as Node3D).global_position.distance_to(pp) < 22.0:
+				return true
+	return false
+
+
+# ============================================================================
+#  ETAP 8 — MENU (główne overlay + pauza). Przepływ scen BEZ zmiany Main.tscn.
+# ============================================================================
+
+## Czy menu są aktywne. Wyłączamy je w trybie sond/testu (VOXEL_PROBE) — wtedy gra zachowuje się jak
+## w Etapach 0-7 (auto-wczytanie zapisu, brak pauzy startowej), żeby sondy/headless działały bez zmian.
+func _menus_enabled() -> bool:
+	return OS.get_environment("VOXEL_PROBE") == ""
+
+
+## Tworzy menu główne (overlay startowy: gra rusza spauzowana za menu) + menu pauzy (ESC). Pomijane w
+## VOXEL_PROBE/headless (sondy mają grać od razu). Menu główne steruje startem: Nowa gra (świeży lvl 1)
+## vs Kontynuuj (wczytanie zapisu). Menu pauzy: Wznow / Ustawienia / Wyjście do menu głównego.
+func _setup_menus() -> void:
+	if not _menus_enabled():
+		return
+	# Menu pauzy (ESC) — istnieje od startu, ukryte; obsługuje ESC sam (konsumuje zdarzenie).
+	_pause_menu = PauseMenuScript.new()
+	_pause_menu.name = "PauseMenu"
+	add_child(_pause_menu)
+	if _pause_menu.has_signal("exit_to_menu_requested"):
+		_pause_menu.exit_to_menu_requested.connect(_on_exit_to_menu)
+
+	# Menu główne — pokazuje się na starcie i pauzuje grę pod spodem.
+	_main_menu = MainMenuScript.new()
+	_main_menu.name = "MainMenu"
+	add_child(_main_menu)
+	if _main_menu.has_signal("new_game_requested"):
+		_main_menu.new_game_requested.connect(_on_new_game)
+	if _main_menu.has_signal("continue_requested"):
+		_main_menu.continue_requested.connect(_on_continue)
+
+
+## START: Nowa gra — świeży start (lvl 1). NIE wczytujemy zapisu postaci (read_progression pominięte).
+## Gra już zbudowana (spawn/HUD), menu się chowa i oddaje sterowanie. Muzyka gry rusza.
+func _on_new_game() -> void:
+	var am := _audio_manager()
+	if am != null:
+		am.play_music(&"explore")
+	_was_in_combat = false
+
+
+## START: Kontynuuj — wczytaj zapis postaci (poziom/xp/drzewko/waluty) na istniejącą postać, potem graj.
+func _on_continue() -> void:
+	_load_character_save()
+	var am := _audio_manager()
+	if am != null:
+		am.play_music(&"explore")
+	_was_in_combat = false
+
+
+## ETAP 3 (wydzielone w 8): wczytuje progresję postaci z zapisu, jeśli istnieje. Świeży start = brak
+## zapisu = no-op (postać zostaje lvl 1). Wołane przez "Kontynuuj" lub (bez menu) wprost ze _spawn_player.
+func _load_character_save() -> void:
+	if _player_ref == null or not is_instance_valid(_player_ref):
+		return
+	if SaveManager != null and _player_ref.has_method("read_progression_from_save"):
+		var sd: SaveData = SaveManager.load_character()
+		if sd != null:
+			_player_ref.read_progression_from_save(sd)
+
+
+## Z menu pauzy: "Wyjście do menu głównego". Zapisz progresję, pokaż menu główne ponownie (gra
+## pauzuje się pod spodem). Postać zostaje w świecie — to powrót do menu, nie restart sceny (vertical
+## slice: jeden świat; pełny restart świata to przyszły etap). Muzyka wraca do "menu".
+func _on_exit_to_menu() -> void:
+	_save_progression()
+	var am := _audio_manager()
+	if am != null:
+		am.play_music(&"menu")
+	if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.has_method("show_menu"):
+		_main_menu.show_menu()
+
+
+# --- Helpery dostępu do autoloadów (działają też, gdy autoload nie jest zarejestrowany — test) ---
+func _game_settings() -> Node:
+	return get_node_or_null("/root/GameSettings")
+
+
+func _audio_manager() -> Node:
+	return get_node_or_null("/root/AudioManager")

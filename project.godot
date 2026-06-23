@@ -30,6 +30,8 @@ EnemyDB="*res://autoload/EnemyDB.gd"
 SaveManager="*res://autoload/SaveManager.gd"
 DamageService="*res://autoload/DamageService.gd"
 LootService="*res://autoload/LootService.gd"
+GameSettings="*res://autoload/GameSettings.gd"
+AudioManager="*res://autoload/AudioManager.gd"
 
 [physics]
 
