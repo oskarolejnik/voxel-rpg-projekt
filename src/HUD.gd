@@ -86,6 +86,13 @@ var _level: int = 1;       var _xp: int = 0;          var _xp_next: int = 50
 var _enemies: int = 0;     var _combo: int = 1
 var _skill_sel: int = 0    # podświetlony slot skilla (aktywny)
 var _show_crosshair: bool = true   # celownik TPS (środek ekranu)
+# HOTBAR — dane slotów (rysowane w _paint). Skille: ikona+klawisz+cooldown; przedmioty: ikona+licznik.
+var _skill_slots: Array = []   # [{icon:String, key:String, cd:float(0..1), secs:float}]
+var _item_slots: Array = []    # [{icon:String, count:int}]
+# Ikony hotbara (autorskie 5x5/5x7 piksele; rysowane _blit jednokolorowo z tintem z _hotbar_icon).
+const IC_WHIRL: Array = ["..#..", "#.#.#", ".###.", "#.#.#", "..#.."]
+const IC_DASH: Array = [".#...", "..#..", "...#.", "..#..", ".#..."]
+const IC_POTION: Array = ["..#..", ".###.", "..#..", ".###.", "#####", "#####", ".###."]
 
 # Screen-flash.
 var _flash_t: float = 0.0
@@ -114,6 +121,14 @@ func _ready() -> void:
 	_painter.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_painter.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_painter)
+
+	# Hotbar: domyślne puste sloty (Main je wypełnia przez set_skill_slot/set_item_slot).
+	_skill_slots.clear()
+	for i in SKILL_SLOTS:
+		_skill_slots.append({"icon": "", "key": str(i + 1), "cd": 0.0, "secs": 0.0})
+	_item_slots.clear()
+	for i in ITEM_SLOTS:
+		_item_slots.append({"icon": "", "count": 0})
 
 	_combo_root = Control.new()
 	_combo_root.position = Vector2(PAD, 140.0)
@@ -354,18 +369,32 @@ func _paint(ci: CanvasItem) -> void:
 	_text_centered(ci, xs, xpx + xpw * 0.5, xpy + xph * 0.5, 2, COL_NUM)
 	_badge(ci, x0 + br, xpy + xph * 0.5, br, _level)
 
-	# Sekcja SKILLI (5 slotów).
+	# Sekcja SKILLI (5 slotów): ramka + ikona + cooldown (ciemna zasłona od góry + sekundy) + klawisz.
 	for i in SKILL_SLOTS:
 		var sx := x0 + i * (slot + gap)
+		var sd: Dictionary = _skill_slots[i] if i < _skill_slots.size() else {}
 		_ornate_slot(ci, sx, sy, slot, i == _skill_sel, C_INNER_SKILL)
-		_text(ci, str(i + 1), sx + 3.0, sy + slot - 13.0, 2, Color8(150, 180, 220))
+		_draw_slot_icon(ci, sx, sy, slot, String(sd.get("icon", "")))
+		var cd: float = float(sd.get("cd", 0.0))
+		if cd > 0.01:
+			# Zasłona maleje z wysokości slotu (cd=1 pełna -> cd=0 brak) = klasyczny sweep cooldownu.
+			_px(ci, sx, sy, slot, slot * clampf(cd, 0.0, 1.0), Color(0.0, 0.0, 0.0, 0.55))
+			var secs: float = float(sd.get("secs", 0.0))
+			if secs >= 0.1:
+				_text_centered(ci, str(int(ceil(secs))), sx + slot * 0.5, sy + slot * 0.5, 3, COL_NUM)
+		_text(ci, String(sd.get("key", str(i + 1))), sx + 3.0, sy + slot - 13.0, 2, Color8(150, 180, 220))
 	# Separator.
 	_divider(ci, x0 + skills_w + divider * 0.5 - 2.0, sy - 2.0, slot + 4.0)
-	# Sekcja PRZEDMIOTÓW użytkowych (miksturki/jednorazówki).
+	# Sekcja PRZEDMIOTÓW użytkowych (miksturki/jednorazówki): ramka + ikona + licznik sztuk.
 	var ix0 := x0 + skills_w + divider
 	for i in ITEM_SLOTS:
 		var ix := ix0 + i * (slot + gap)
+		var it: Dictionary = _item_slots[i] if i < _item_slots.size() else {}
 		_ornate_slot(ci, ix, sy, slot, false, C_INNER_ITEM)
+		_draw_slot_icon(ci, ix, sy, slot, String(it.get("icon", "")))
+		var cnt: int = int(it.get("count", 0))
+		if cnt > 0:
+			_text(ci, str(cnt), ix + slot - _text_w(str(cnt), 2) - 5.0, sy + slot - 13.0, 2, COL_NUM)
 
 	# --- CELOWNIK (środek ekranu) — system kamery TPS ---
 	if _show_crosshair:
@@ -473,6 +502,49 @@ func select_hotbar_slot(i: int) -> void:
 # Pokaż/ukryj celownik TPS (np. ukryj w menu/ekwipunku).
 func set_crosshair_visible(on: bool) -> void:
 	_show_crosshair = on
+
+# ============================================================================
+#  HOTBAR API (woła Main: ikony+klawisze raz, cooldowny co klatkę)
+# ============================================================================
+# Definicja ikony hotbara: bitmapa + tint. Pusta nazwa / nieznana -> brak ikony.
+func _hotbar_icon(name: String) -> Dictionary:
+	match name:
+		"whirl": return {"bmp": IC_WHIRL, "col": Color8(150, 210, 255)}   # Wir Ostrzy (finisher)
+		"dash": return {"bmp": IC_DASH, "col": Color8(255, 220, 120)}     # unik
+		"bolt": return {"bmp": IC_BOLT, "col": Color8(150, 200, 250)}     # skill błyskawiczny
+		"flame": return {"bmp": IC_FLAME, "col": Color8(240, 140, 70)}    # skill ognisty
+		"potion": return {"bmp": IC_POTION, "col": Color8(220, 90, 90)}   # mikstura
+		_: return {}
+
+func _draw_slot_icon(ci: CanvasItem, x: float, y: float, s: float, name: String) -> void:
+	if name == "":
+		return
+	var d := _hotbar_icon(name)
+	if d.is_empty():
+		return
+	var bmp: Array = d["bmp"]
+	var u := 3
+	var w := float(String(bmp[0]).length() * u)
+	var h := float(bmp.size() * u)
+	_blit(ci, bmp, x + (s - w) * 0.5, y + (s - h) * 0.5, u, d["col"])
+
+## Ustawia ikonę i etykietę klawisza slotu skilla (i=0..SKILL_SLOTS-1).
+func set_skill_slot(i: int, icon: String, key: String) -> void:
+	if i >= 0 and i < _skill_slots.size():
+		_skill_slots[i]["icon"] = icon
+		_skill_slots[i]["key"] = key
+
+## Ustawia cooldown slotu skilla: frac 0..1 (1=pełny CD) + sekundy do gotowości (do napisu).
+func set_skill_cooldown(i: int, frac: float, secs: float) -> void:
+	if i >= 0 and i < _skill_slots.size():
+		_skill_slots[i]["cd"] = clampf(frac, 0.0, 1.0)
+		_skill_slots[i]["secs"] = maxf(0.0, secs)
+
+## Ustawia ikonę i licznik sztuk slotu przedmiotu (i=0..ITEM_SLOTS-1).
+func set_item_slot(i: int, icon: String, count: int) -> void:
+	if i >= 0 and i < _item_slots.size():
+		_item_slots[i]["icon"] = icon
+		_item_slots[i]["count"] = maxi(0, count)
 
 # ============================================================================
 #  ETAP 3 — ZASÓB KLASY + POZIOM/XP

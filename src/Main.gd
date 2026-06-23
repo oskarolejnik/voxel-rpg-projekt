@@ -522,6 +522,12 @@ func _process(_delta: float) -> void:
 		if n != _enemies_alive:
 			_enemies_alive = n
 			_hud.set_enemy_count(n)
+	# KROK 2: HOTBAR — live cooldowny skilli na sloty (slot0=finisher, slot1=dash).
+	if _player_ref != null and _hud != null and _hud.has_method("set_skill_cooldown") and _player_ref.has_method("skill_cd"):
+		var fcd: Vector2 = _player_ref.skill_cd(&"finisher")
+		_hud.set_skill_cooldown(0, fcd.x, fcd.y)
+		var dcd: Vector2 = _player_ref.skill_cd(&"dash")
+		_hud.set_skill_cooldown(1, dcd.x, dcd.y)
 	if _player_ref == null or _fireflies == null:
 		return
 	var pos := _player_ref.global_position
@@ -963,6 +969,18 @@ func _setup_hud() -> void:
 				LevelComponent.xp_to_next(_player_ref.get_level()))
 		if _hud.has_method("on_leveled_up"):
 			_player_ref.leveled_up.connect(_hud.on_leveled_up)
+
+		# KROK 2: HOTBAR — ikony + etykiety klawiszy slotów (cooldowny aktualizowane w _process).
+		# Slot 0 = Wir Ostrzy (finisher, R/1), slot 1 = Unik (Q). Sloty 2-4 rezerwa na skille klasy (krok 3).
+		if _hud.has_method("set_skill_slot"):
+			_hud.set_skill_slot(0, "whirl", "1")
+			_hud.set_skill_slot(1, "dash", "Q")
+			_hud.set_skill_slot(2, "", "3")
+			_hud.set_skill_slot(3, "", "4")
+			_hud.set_skill_slot(4, "", "5")
+		# Slot przedmiotu 0 = mikstura (placeholder do czasu spięcia ekwipunku w kroku dalszym).
+		if _hud.has_method("set_item_slot"):
+			_hud.set_item_slot(0, "potion", 3)
 
 		# ETAP 8: SFX awansu poziomu (no-op gdy brak pliku).
 		_player_ref.leveled_up.connect(func(_lv: int, _pts: int) -> void: _play_sfx(&"levelup"))

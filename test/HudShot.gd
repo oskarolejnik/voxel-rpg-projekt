@@ -37,7 +37,15 @@ func _ready() -> void:
 	hud.on_level_changed(7, 320, 800)
 	hud.set_enemy_count(4)
 	if hud.has_method("select_hotbar_slot"):
-		hud.select_hotbar_slot(3)   # zaznacz slot 4 (jak na referencji)
+		hud.select_hotbar_slot(0)   # aktywny slot skilla
+	# Hotbar: ikony skilli + cooldown + przedmiot (jak ustawia Main).
+	if hud.has_method("set_skill_slot"):
+		hud.set_skill_slot(0, "whirl", "1")
+		hud.set_skill_slot(1, "dash", "Q")
+		hud.set_skill_slot(2, "bolt", "3")
+		hud.set_skill_cooldown(1, 0.45, 3.0)   # unik chwilowo na cooldownie (zasłona + "3")
+	if hud.has_method("set_item_slot"):
+		hud.set_item_slot(0, "potion", 3)
 	await _wait(0.55)
 
 	# Trafienie: HP spada (pokaże ghost-trail), zasób/stamina częściowe, combo.

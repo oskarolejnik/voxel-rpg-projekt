@@ -1371,8 +1371,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	# ETAP 3: R = finisher zasobu klasy (Wojownik: Wir Ostrzy, 30 Furii). AbilityComponent pilnuje
 	# kosztu/CD; brak Furii -> try_use po prostu nie odpali (bufor wygasa). Nie psuje LMB/RMB.
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
-			and not event.echo and event.physical_keycode == KEY_R:
-		_try_finisher()
+			and not event.echo and (event.physical_keycode == KEY_R or event.physical_keycode == KEY_1):
+		_try_finisher()   # finisher: klawisz R lub slot hotbara "1"
 
 	# ETAP 6: T = oswajanie najblizszej bestii (gate lvl 5 + cel <35% HP + item-oswajacz). TameSystem
 	# pilnuje warunkow i 1-aktywnego-peta; brak warunkow -> tame_failed (no-op dla rozgrywki).
@@ -2324,6 +2324,19 @@ func _can_dodge() -> bool:
 
 # ETAP 3: finisher zasobu klasy (Wojownik: Wir Ostrzy). AbilityComponent sprawdza koszt (Furia) i CD;
 # gdy brak Furii -> nie odpali. perform_skill (_perform_skill) otwiera szerokie okno hitboxa (AoE).
+# HOTBAR: frakcja cooldownu (0..1; 1=pełny CD) + sekundy do gotowości dla skilla po nazwie.
+# which: &"finisher" / &"dash" / &"attack". Zwraca Vector2(frac, secs). Źródło: AbilityComponent.
+func skill_cd(which: StringName) -> Vector2:
+	var sk: SkillResource = null
+	match which:
+		&"finisher": sk = _skill_finisher
+		&"dash": sk = _skill_dash
+		&"attack": sk = _skill_attack
+	if _ability == null or sk == null or sk.cooldown <= 0.0:
+		return Vector2.ZERO
+	var left := _ability.cooldown_left(sk.id)
+	return Vector2(clampf(left / sk.cooldown, 0.0, 1.0), maxf(0.0, left))
+
 func _try_finisher() -> void:
 	if is_dead or _ability == null or _skill_finisher == null:
 		return
