@@ -1,281 +1,140 @@
 extends CanvasLayer
-## HUD.gd — stylizowany HUD action-RPG, budowany W KODZIE (Control + StyleBoxFlat, bez tekstur).
+## HUD.gd — OZDOBNY pixel-art HUD (voxel/fantasy-RPG), w pełni rysowany w kodzie (draw_rect, pixel-perfect).
+## Styl: drewniano-złote ramki, szklane „tubki" pasków z połyskiem + klejnoty na końcach.
+## LEWY-GÓRNY: MEDALION z TWARZĄ postaci + paski HP(ghost-trail) / Stamina / Furia.
+## DÓŁ-ŚRODEK: pasek XP z poziomem (medalik) i progresem, pod nim HOTBAR rozdzielony na
+##   5 slotów SKILLI  ||  sekcję PRZEDMIOTÓW użytkowych (miksturki/jednorazówki).
+## ZERO tekstur z zewnątrz — wszystko autorskie (czyste prawa do gry). Własne pixel-cyfry + ikony + twarz.
+##
 ## Aktualizacja przez sygnały gracza (hp_changed/stamina_changed/combo_changed/died/respawned/
 ## level_changed/leveled_up/class_*), podłączane w Main. Bez class_name — Main instancjonuje przez preload.
 ##
-## REDESIGN (HUD „ładny"):
-##  * paski = StyleBoxFlat (zaokrąglone, obramowane, ciemny track + nasycone wypełnienie),
-##  * PŁYNNE wypełnienia (lerp w _process, frame-rate independent) zamiast skoków,
-##  * HP ma GHOST-TRAIL: jasny ślad chwilowo zostaje po obrażeniach i dogania (jak w bijatykach),
-##  * typografia z OUTLINE+cieniem (czytelna nad jasnym światem), liczby na pasku HP,
-##  * panel statystyk (lewy-górny) spina HP/Stamina/Zasób + Poziom/XP w jedną ramkę,
-##  * subtelny CELOWNIK na środku (action-RPG),
-##  * zachowane: screen-flash (impakt/krytyk), ekran śmierci, pipsy COMBO (Ranger), AWANS.
-##
-## KONTRAKT (testy E3/E7/Feel4 zależą): metody-sloty (niżej), screen-flash (flash/_flash_*),
-## pipsy combo (_combo_pips jako ColorRect.color == COMBO_PIP_ON/OFF, _combo_root, setup_combo,
-## on_class_combo_changed, set_combo). NIE zmieniać tych nazw/typów.
+## KONTRAKT (testy E3/E7/Feel4): metody-sloty (niżej), screen-flash (flash/_flash_*), pipsy COMBO
+## (_combo_pips jako ColorRect.color == COMBO_PIP_ON/OFF, _combo_root, setup_combo, on_class_combo_changed,
+## set_combo). NIE zmieniać tych nazw/typów.
 
-const PAD: float = 18.0       # margines od krawędzi ekranu
-const BAR_W: float = 280.0    # szerokość paska HP/Stamina/Zasób
-const HP_H: float = 22.0      # wysokość paska HP (główny)
-const SUB_H: float = 14.0     # wysokość pasków stamina/zasób (drugorzędne)
-const GAP: float = 7.0        # odstęp pionowy między paskami
-const RADIUS: float = 6.0     # promień zaokrąglenia rogów pasków
+const PAD: float = 16.0
+const SKILL_SLOTS: int = 5
+const ITEM_SLOTS: int = 3
 
-# Kolory motywu.
-const COL_PANEL: Color = Color(0.05, 0.06, 0.08, 0.50)   # tło panelu statystyk
-const COL_PANEL_BORDER: Color = Color(1.0, 1.0, 1.0, 0.09)
-const COL_TRACK: Color = Color(0.03, 0.03, 0.04, 0.72)   # rowek paska (pod wypełnieniem)
-const COL_TRACK_BORDER: Color = Color(0.0, 0.0, 0.0, 0.55)
-const COL_HP: Color = Color(0.84, 0.20, 0.22)            # wypełnienie HP (krwista czerwień)
-const COL_HP_TRAIL: Color = Color(1.0, 0.80, 0.46, 0.92) # ghost-trail HP (ciepły bursztyn = świeże obrażenia)
-const COL_STAM: Color = Color(0.28, 0.74, 0.92)          # stamina (chłodny błękit)
-const COL_RES_DEFAULT: Color = Color(0.92, 0.42, 0.16)   # zasób klasy (domyślnie Furia)
-const COL_TEXT: Color = Color(0.95, 0.96, 0.98)
-const COL_TEXT_DIM: Color = Color(0.74, 0.80, 0.90)
+# Paleta ramki (drewno + złoto) + wnętrza.
+const C_OUTLINE: Color = Color8(34, 22, 14)
+const C_WOOD_D: Color = Color8(92, 56, 28)
+const C_WOOD: Color = Color8(132, 84, 42)
+const C_WOOD_L: Color = Color8(176, 122, 64)
+const C_GOLD: Color = Color8(214, 162, 70)
+const C_GOLD_L: Color = Color8(246, 216, 132)
+const C_INNER: Color = Color8(26, 22, 30)
+const C_INNER_HI: Color = Color8(44, 38, 50)
+const C_INNER_SKILL: Color = Color8(26, 30, 48)    # wnętrze slotu skilla (chłodne)
+const C_INNER_ITEM: Color = Color8(26, 38, 30)     # wnętrze slotu przedmiotu (zielonkawe)
 
-# --- Paski HP (3 warstwy: track + ghost-trail + wypełnienie) + liczba ---
-var _hp_track: Panel
-var _hp_ghost: ProgressBar
-var _hp_bar: ProgressBar
-var _hp_text: Label
-var _hp_cur: int = 100
-var _hp_max: int = 100
-var _hp_t: float = 1.0        # docelowy ułamek HP (0..1); _hp_bar.value dąży do niego
-# --- Stamina + Zasób klasy ---
-var _stam_bar: ProgressBar
-var _stam_t: float = 1.0
-var _res_group: Control       # cała grupa zasobu (do show/hide)
-var _res_bar: ProgressBar
-var _res_label: Label
-var _res_max: float = 100.0
-var _res_t: float = 0.0
-# --- Poziom / XP ---
-var _level_label: Label
-var _xp_label: Label
-var _levelup_label: Label
-# --- Panel statystyk (rodzic lewego stosu) ---
-var _stat_panel: Panel
-# --- Licznik wrogów / combo melee (prawy-górny) ---
-var _enemy_label: Label
-var _combo_label: Label
+# Kolory pasków.
+const COL_HP: Color = Color8(202, 48, 54)
+const COL_HP_TRAIL: Color = Color8(246, 212, 120)
+const COL_STAM: Color = Color8(62, 150, 222)
+const COL_RES_DEFAULT: Color = Color8(230, 108, 40)
+const COL_XP: Color = Color8(112, 200, 72)
+const COL_NUM: Color = Color8(248, 250, 255)
+const COL_NUM_EDGE: Color = Color(0.04, 0.04, 0.06, 0.96)
 
-# ETAP 3 (Ranger): pipsy COMBO (0..combo_max) — OSOBNY widget od melee "Combo xN" (_combo_label/
-# set_combo). Zasób builder/finisher klasy (GDD 4.3). Budowane przez setup_combo() z Main TYLKO dla
-# Rangera (kind COMBO_FOCUS). Kolory jako const, by test mógł policzyć zapalone pipsy.
-const COMBO_PIP_ON: Color = Color(1.0, 0.78, 0.25, 0.98)    # zapalony pip (ciepły złoty akcent)
-const COMBO_PIP_OFF: Color = Color(0.18, 0.20, 0.22, 0.70)  # pusty slot combo
-const COMBO_PIP_SIZE: float = 16.0
-const COMBO_PIP_GAP: float = 6.0
-var _combo_root: Control          # kontener pipsów (obok panelu; ukryty do setup_combo)
-var _combo_caption: Label
+# Pixel-font 3x5.
+const GLYPHS: Dictionary = {
+	"0": ["###", "# #", "# #", "# #", "###"],
+	"1": [" # ", "## ", " # ", " # ", "###"],
+	"2": ["###", "  #", "###", "#  ", "###"],
+	"3": ["###", "  #", "###", "  #", "###"],
+	"4": ["# #", "# #", "###", "  #", "  #"],
+	"5": ["###", "#  ", "###", "  #", "###"],
+	"6": ["###", "#  ", "###", "# #", "###"],
+	"7": ["###", "  #", "  #", "  #", "  #"],
+	"8": ["###", "# #", "###", "# #", "###"],
+	"9": ["###", "# #", "###", "  #", "###"],
+	"/": ["  #", "  #", " # ", "#  ", "#  "],
+	"x": ["   ", "# #", " # ", "# #", "   "],
+}
+
+# Ikony pasków (#=jasny, o=ciemny akcent).
+const IC_HEART: Array = [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."]
+const IC_BOLT: Array = ["..##.", ".##..", "####.", "..##.", ".##..", "##..."]
+const IC_FLAME: Array = ["..#..", ".###.", ".###.", "#####", "#####", ".###."]
+const IC_SKULL: Array = [".#####.", "#######", "#o###o#", "#######", ".#####.", ".#.#.#."]
+# Twarz postaci do medalionu (h=włosy, s=skóra, e=oko, m=usta, .=puste).
+const IC_FACE: Array = [
+	"..hhhhh..", ".hhhhhhh.", "hhhhhhhhh", "hsssssssh",
+	"hsesssesh", "hsssssssh", "hssmmmssh", ".hsssssh.", "..sssss..",
+]
+
+# --- Warstwy ---
+var _painter: Control
+var _combo_root: Control
 var _combo_pips: Array[ColorRect] = []
-
-# Ekran śmierci.
+var _levelup_label: Label
+var _flash_overlay: ColorRect
 var _death_overlay: ColorRect
 var _death_label: Label
 
-# Celownik (środek ekranu).
-var _crosshair: Panel
+# --- Stan animowany ---
+var _hp_f: float = 1.0;    var _hp_t: float = 1.0;    var _hp_ghost: float = 1.0
+var _hp_cur: int = 100;    var _hp_max: int = 100
+var _stam_f: float = 1.0;  var _stam_t: float = 1.0
+var _stam_cur: int = 100;  var _stam_max: int = 100
+var _res_on: bool = false; var _res_f: float = 0.0;   var _res_t: float = 0.0
+var _res_cur: int = 0;     var _res_max: float = 100.0; var _res_col: Color = COL_RES_DEFAULT
+var _xp_f: float = 0.0;    var _xp_t: float = 0.0
+var _level: int = 1;       var _xp: int = 0;          var _xp_next: int = 50
+var _enemies: int = 0;     var _combo: int = 1
+var _skill_sel: int = 0    # podświetlony slot skilla (aktywny)
+var _show_crosshair: bool = true   # celownik TPS (środek ekranu)
 
-# FAZA 4 (2): SCREEN-FLASH na impakcie/krytyku — pełnoekranowy ColorRect, krótki rozbłysk.
-# Krytyk = złotawy/mocniejszy, zwykły mocny cios = lekki biały. Własny licznik w _process.
-var _flash_overlay: ColorRect
+# Screen-flash.
 var _flash_t: float = 0.0
 var _flash_dur: float = 0.0
 var _flash_peak: float = 0.0
-const FLASH_COL_CRIT: Color = Color(1.0, 0.86, 0.45)   # złotawy krytyk
-const FLASH_COL_HIT: Color = Color(1.0, 1.0, 1.0)      # biały mocny cios
+const FLASH_COL_CRIT: Color = Color(1.0, 0.86, 0.45)
+const FLASH_COL_HIT: Color = Color(1.0, 1.0, 1.0)
+
+# Pipsy COMBO (Ranger) — ColorRect, kontrakt E3.
+const COMBO_PIP_ON: Color = Color(1.0, 0.78, 0.25, 0.98)
+const COMBO_PIP_OFF: Color = Color(0.18, 0.20, 0.22, 0.70)
+const COMBO_PIP_SIZE: float = 16.0
+const COMBO_PIP_GAP: float = 6.0
+
+
+class _Painter extends Control:
+	var hud
+	func _draw() -> void:
+		if hud != null:
+			hud._paint(self)
+
 
 func _ready() -> void:
-	_build_stat_panel()
-	_build_top_right()
-	_build_crosshair()
-	_build_overlays()
+	_painter = _Painter.new()
+	_painter.hud = self
+	_painter.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_painter.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_painter)
 
-# ============================================================================
-#  HELPERY STYLU (StyleBoxFlat + outline label) — zero zależności od plików theme
-# ============================================================================
-func _sb(fill: Color, radius: float, border_col: Color, border_w: int) -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = fill
-	sb.corner_radius_top_left = int(radius)
-	sb.corner_radius_top_right = int(radius)
-	sb.corner_radius_bottom_left = int(radius)
-	sb.corner_radius_bottom_right = int(radius)
-	if border_w > 0:
-		sb.border_color = border_col
-		sb.set_border_width_all(border_w)
-	return sb
-
-# Pasek postępu w stylu HUD: ciemny track + zaokrąglone, nasycone wypełnienie. value/max w 0..1.
-func _make_bar(w: float, h: float, fill_col: Color, with_track: bool) -> ProgressBar:
-	var bar := ProgressBar.new()
-	bar.show_percentage = false
-	bar.min_value = 0.0
-	bar.max_value = 1.0
-	bar.value = 1.0
-	bar.custom_minimum_size = Vector2(w, h)
-	bar.size = Vector2(w, h)
-	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if with_track:
-		bar.add_theme_stylebox_override("background", _sb(COL_TRACK, RADIUS, COL_TRACK_BORDER, 1))
-	else:
-		bar.add_theme_stylebox_override("background", _sb(Color(0, 0, 0, 0), RADIUS, Color(0, 0, 0, 0), 0))
-	bar.add_theme_stylebox_override("fill", _sb(fill_col, RADIUS, Color(0, 0, 0, 0), 0))
-	return bar
-
-# Etykieta z czytelnym konturem + lekkim cieniem (nad jasnym światem).
-func _make_label(text: String, size: int, col: Color, bold: bool = false) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", col)
-	l.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.92))
-	l.add_theme_constant_override("outline_size", 6 if bold else 5)
-	l.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.45))
-	l.add_theme_constant_override("shadow_offset_y", 1)
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return l
-
-# Zachowane z poprzedniej wersji — pipsy COMBO budowane jako ColorRect (kontrakt testu E3).
-func _make_rect(color: Color, size: Vector2) -> ColorRect:
-	var r := ColorRect.new()
-	r.color = color
-	r.size = size
-	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return r
-
-# ============================================================================
-#  PANEL STATYSTYK (lewy-górny): HP (track+ghost+fill+liczba), Stamina, Zasób, Poziom/XP
-# ============================================================================
-func _build_stat_panel() -> void:
-	var inner := 11.0
-	var x := inner
-	var w := BAR_W
-	# Wysokość panelu: HP + Stamina + Zasób + 2 linie tekstu.
-	var panel_h := inner * 2.0 + HP_H + GAP + SUB_H + GAP + SUB_H + GAP + 22.0 + 18.0
-
-	_stat_panel = Panel.new()
-	_stat_panel.position = Vector2(PAD, PAD)
-	_stat_panel.custom_minimum_size = Vector2(w + inner * 2.0, panel_h)
-	_stat_panel.size = _stat_panel.custom_minimum_size
-	_stat_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_stat_panel.add_theme_stylebox_override("panel", _sb(COL_PANEL, 10.0, COL_PANEL_BORDER, 1))
-	add_child(_stat_panel)
-
-	# --- HP: track + ghost-trail (za wypełnieniem) + wypełnienie + liczba ---
-	var hp_y := inner
-	_hp_track = Panel.new()
-	_hp_track.position = Vector2(x, hp_y)
-	_hp_track.size = Vector2(w, HP_H)
-	_hp_track.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_hp_track.add_theme_stylebox_override("panel", _sb(COL_TRACK, RADIUS, COL_TRACK_BORDER, 1))
-	_stat_panel.add_child(_hp_track)
-
-	_hp_ghost = _make_bar(w, HP_H, COL_HP_TRAIL, false)   # ślad obrażeń — POD wypełnieniem
-	_hp_ghost.position = Vector2(x, hp_y)
-	_stat_panel.add_child(_hp_ghost)
-
-	_hp_bar = _make_bar(w, HP_H, COL_HP, false)           # właściwe HP — na wierzchu śladu
-	_hp_bar.position = Vector2(x, hp_y)
-	_stat_panel.add_child(_hp_bar)
-
-	_hp_text = _make_label("100 / 100", 13, COL_TEXT, true)
-	_hp_text.position = Vector2(x, hp_y - 1.0)
-	_hp_text.size = Vector2(w, HP_H)
-	_hp_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_hp_text.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_stat_panel.add_child(_hp_text)
-
-	# --- Stamina (pod HP) ---
-	var st_y := hp_y + HP_H + GAP
-	_stam_bar = _make_bar(w, SUB_H, COL_STAM, true)
-	_stam_bar.position = Vector2(x, st_y)
-	_stat_panel.add_child(_stam_bar)
-	var st_cap := _make_label("STAMINA", 9, COL_TEXT_DIM)
-	st_cap.position = Vector2(x + 7.0, st_y - 2.0)
-	_stat_panel.add_child(st_cap)
-
-	# --- Zasób klasy (pod staminą; ukryty do setup_class_resource) ---
-	var rs_y := st_y + SUB_H + GAP
-	_res_group = Control.new()
-	_res_group.position = Vector2.ZERO
-	_res_group.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_res_group.visible = false
-	_stat_panel.add_child(_res_group)
-	_res_bar = _make_bar(w, SUB_H, COL_RES_DEFAULT, true)
-	_res_bar.position = Vector2(x, rs_y)
-	_res_bar.value = 0.0
-	_res_group.add_child(_res_bar)
-	_res_label = _make_label("", 9, COL_TEXT_DIM)
-	_res_label.position = Vector2(x + 7.0, rs_y - 2.0)
-	_res_group.add_child(_res_label)
-
-	# --- Poziom + XP (na dole panelu) ---
-	var lv_y := rs_y + SUB_H + GAP + 2.0
-	_level_label = _make_label("Poziom 1", 15, COL_TEXT, true)
-	_level_label.position = Vector2(x, lv_y)
-	_stat_panel.add_child(_level_label)
-	_xp_label = _make_label("XP 0 / 50", 11, COL_TEXT_DIM)
-	_xp_label.position = Vector2(x, lv_y + 19.0)
-	_stat_panel.add_child(_xp_label)
-
-	# --- Chwilowy napis awansu (środek-góra ekranu) ---
-	_levelup_label = _make_label("", 30, Color(1.0, 0.9, 0.35), true)
-	_levelup_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_levelup_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_levelup_label.offset_top = 120.0
-	_levelup_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_levelup_label.modulate.a = 0.0
-	add_child(_levelup_label)
-
-	# --- Pipsy COMBO (Ranger) — obok panelu, na wysokości zasobu; ukryte do setup_combo ---
 	_combo_root = Control.new()
-	_combo_root.position = Vector2(PAD + w + inner * 2.0 + 12.0, PAD + rs_y)
+	_combo_root.position = Vector2(PAD, 140.0)
 	_combo_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_combo_root.visible = false
 	add_child(_combo_root)
-	_combo_caption = _make_label("COMBO", 10, Color(1.0, 0.85, 0.4))
-	_combo_caption.position = Vector2(0.0, 0.0)
-	_combo_root.add_child(_combo_caption)
 
-func _build_top_right() -> void:
-	# Licznik wrogów (prawy-górny róg) — zakotwiczony do prawej, wyrównanie do prawej.
-	_enemy_label = _make_label("", 15, COL_TEXT, true)
-	_enemy_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_enemy_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_enemy_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	_enemy_label.offset_right = -PAD
-	_enemy_label.offset_top = PAD
-	add_child(_enemy_label)
+	_levelup_label = Label.new()
+	_levelup_label.text = ""
+	_levelup_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_levelup_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_levelup_label.offset_top = 140.0
+	_levelup_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_levelup_label.add_theme_font_size_override("font_size", 28)
+	_levelup_label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.35))
+	_levelup_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_levelup_label.add_theme_constant_override("outline_size", 8)
+	_levelup_label.modulate.a = 0.0
+	_levelup_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_levelup_label)
 
-	# Combo melee "Combo xN" (pod licznikiem wrogów; OSOBNA etykieta od pipsów Rangera).
-	_combo_label = _make_label("", 17, Color(1.0, 0.82, 0.3), true)
-	_combo_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_combo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_combo_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	_combo_label.offset_right = -PAD
-	_combo_label.offset_top = PAD + 26.0
-	add_child(_combo_label)
-
-func _build_crosshair() -> void:
-	# Subtelna kropka na środku — pomoc w celowaniu (action-RPG), nie przeszkadza.
-	_crosshair = Panel.new()
-	_crosshair.custom_minimum_size = Vector2(5.0, 5.0)
-	_crosshair.size = Vector2(5.0, 5.0)
-	_crosshair.set_anchors_preset(Control.PRESET_CENTER)
-	_crosshair.offset_left = -2.5
-	_crosshair.offset_top = -2.5
-	_crosshair.offset_right = 2.5
-	_crosshair.offset_bottom = 2.5
-	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_crosshair.add_theme_stylebox_override("panel", _sb(Color(1.0, 1.0, 1.0, 0.45), 3.0, Color(0, 0, 0, 0.5), 1))
-	add_child(_crosshair)
-
-func _build_overlays() -> void:
-	# Pełnoekranowy SCREEN-FLASH (nad światem, POD ekranem śmierci).
 	_flash_overlay = ColorRect.new()
 	_flash_overlay.color = Color(FLASH_COL_HIT.r, FLASH_COL_HIT.g, FLASH_COL_HIT.b, 0.0)
 	_flash_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -283,38 +142,271 @@ func _build_overlays() -> void:
 	_flash_overlay.visible = false
 	add_child(_flash_overlay)
 
-	# Ekran śmierci (na samej górze).
 	_death_overlay = ColorRect.new()
-	_death_overlay.color = Color(0.0, 0.0, 0.0, 0.0)
+	_death_overlay.color = Color(0, 0, 0, 0)
 	_death_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_death_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_death_overlay.visible = false
 	add_child(_death_overlay)
-	_death_label = _make_label("Zginąłeś\nRespawn...", 40, COL_TEXT, true)
+	_death_label = Label.new()
+	_death_label.text = "Zginąłeś\nRespawn..."
 	_death_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_death_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_death_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_death_label.add_theme_font_size_override("font_size", 40)
+	_death_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_death_label.add_theme_constant_override("outline_size", 8)
+	_death_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_death_overlay.add_child(_death_label)
 
 # ============================================================================
-#  ANIMACJA W _process — płynne wypełnienia + ghost-trail HP + zanik flasha
+#  PRYMITYWY RYSOWANIA (pixel-perfect)
+# ============================================================================
+func _lighten(c: Color, a: float) -> Color:
+	return Color(minf(c.r + a, 1.0), minf(c.g + a, 1.0), minf(c.b + a, 1.0), c.a)
+
+func _darken(c: Color, a: float) -> Color:
+	return Color(maxf(c.r - a, 0.0), maxf(c.g - a, 0.0), maxf(c.b - a, 0.0), c.a)
+
+func _px(ci: CanvasItem, x: float, y: float, w: float, h: float, col: Color) -> void:
+	ci.draw_rect(Rect2(roundf(x), roundf(y), maxf(roundf(w), 0.0), maxf(roundf(h), 0.0)), col)
+
+func _disc(ci: CanvasItem, cx: float, cy: float, r: float, col: Color) -> void:
+	var yy := -r
+	while yy <= r:
+		var hw := sqrt(maxf(0.0, r * r - yy * yy))
+		if hw > 0.5:
+			_px(ci, cx - hw, cy + yy, hw * 2.0, 2.0, col)
+		yy += 2.0
+
+func _gem(ci: CanvasItem, cx: float, cy: float, r: float, col: Color) -> void:
+	_disc(ci, cx, cy, r + 1.5, C_OUTLINE)
+	_disc(ci, cx, cy, r, _darken(col, 0.10))
+	_disc(ci, cx, cy, r * 0.78, col)
+	_disc(ci, cx - r * 0.32, cy - r * 0.32, r * 0.34, _lighten(col, 0.50))
+
+func _blit(ci: CanvasItem, bmp: Array, x: float, y: float, u: int, col: Color) -> void:
+	var dark := _darken(col, 0.45)
+	for r in bmp.size():
+		var row: String = bmp[r]
+		for cidx in row.length():
+			var ch := row[cidx]
+			if ch == "#":
+				_px(ci, x + cidx * u, y + r * u, u, u, col)
+			elif ch == "o":
+				_px(ci, x + cidx * u, y + r * u, u, u, dark)
+
+# Wielokolorowa bitmapa (np. twarz) — mapowanie znak->kolor.
+func _blit_pal(ci: CanvasItem, bmp: Array, x: float, y: float, u: int, pal: Dictionary) -> void:
+	for r in bmp.size():
+		var row: String = bmp[r]
+		for cidx in row.length():
+			var ch := row[cidx]
+			if pal.has(ch):
+				_px(ci, x + cidx * u, y + r * u, u, u, pal[ch])
+
+func _text_w(s: String, u: int) -> float:
+	return s.length() * 4 * u - u
+
+func _text(ci: CanvasItem, s: String, x: float, y: float, u: int, col: Color) -> void:
+	var ox := x
+	for i in s.length():
+		var g = GLYPHS.get(s[i], null)
+		if g != null:
+			for d in [Vector2(-1, 0), Vector2(1, 0), Vector2(0, -1), Vector2(0, 1)]:
+				_blit(ci, g, ox + d.x, y + d.y, u, COL_NUM_EDGE)
+			_blit(ci, g, ox, y, u, col)
+		ox += 4 * u
+
+func _text_centered(ci: CanvasItem, s: String, cx: float, cy: float, u: int, col: Color) -> void:
+	_text(ci, s, cx - _text_w(s, u) * 0.5, cy - 2.5 * u, u, col)
+
+# ============================================================================
+#  OZDOBNE ELEMENTY
+# ============================================================================
+func _ornate_bar(ci: CanvasItem, x: float, y: float, w: float, h: float, frac: float, ghost: float, base: Color, trail: Color) -> void:
+	var t := 3.0
+	_px(ci, x - t - 1.0, y - t - 1.0, w + 2.0 * t + 2.0, h + 2.0 * t + 2.0, C_OUTLINE)
+	_px(ci, x - t, y - t, w + 2.0 * t, h + 2.0 * t, C_WOOD)
+	_px(ci, x - t, y - t, w + 2.0 * t, 1.0, C_WOOD_L)
+	_px(ci, x - t, y - t, 1.0, h + 2.0 * t, C_WOOD_L)
+	_px(ci, x - t, y + h + t - 1.0, w + 2.0 * t, 1.0, C_WOOD_D)
+	_px(ci, x + w + t - 1.0, y - t, 1.0, h + 2.0 * t, C_WOOD_D)
+	_px(ci, x - 1.0, y - 1.0, w + 2.0, h + 2.0, C_GOLD)
+	_px(ci, x - 1.0, y - 1.0, w + 2.0, 1.0, C_GOLD_L)
+	_px(ci, x, y, w, h, C_INNER)
+	var gw := roundf(w * clampf(ghost, 0.0, 1.0) / 2.0) * 2.0
+	var fw := roundf(w * clampf(frac, 0.0, 1.0) / 2.0) * 2.0
+	if gw > fw:
+		_px(ci, x, y, gw, h, trail)
+	if fw > 0.0:
+		_px(ci, x, y, fw, h, base)
+		_px(ci, x, y, fw, 2.0, _lighten(base, 0.22))
+		_px(ci, x, y + 1.0, fw, 1.0, _lighten(base, 0.42))
+		_px(ci, x, y + h - 2.0, fw, 2.0, _darken(base, 0.26))
+	_gem(ci, x + w + t + 3.0, y + h * 0.5, h * 0.62, base)
+
+# Medalion z TWARZĄ postaci (drewno+złoto, nity).
+func _medallion(ci: CanvasItem, cx: float, cy: float, r: float) -> void:
+	_disc(ci, cx, cy, r + 2.0, C_OUTLINE)
+	_disc(ci, cx, cy, r, C_WOOD)
+	_disc(ci, cx - 1.0, cy - 1.0, r - 1.0, C_WOOD_L)
+	_disc(ci, cx, cy, r - 4.0, C_GOLD)
+	_disc(ci, cx - 1.0, cy - 1.0, r - 5.0, C_GOLD_L)
+	_disc(ci, cx, cy, r - 6.0, C_OUTLINE)
+	_disc(ci, cx, cy, r - 8.0, C_INNER)
+	_disc(ci, cx, cy, r - 9.0, Color8(40, 44, 60))   # tło portretu
+	# Twarz.
+	var pal := {"h": Color8(96, 60, 34), "s": Color8(235, 194, 150), "e": Color8(42, 40, 58), "m": Color8(156, 82, 82)}
+	var fu := 3
+	_blit_pal(ci, IC_FACE, cx - IC_FACE[0].length() * fu * 0.5, cy - IC_FACE.size() * fu * 0.5, fu, pal)
+	# Nity (złote studsy) co 45°.
+	for k in 8:
+		var ang := float(k) * PI / 4.0
+		_disc(ci, cx + cos(ang) * (r - 1.5), cy + sin(ang) * (r - 1.5), 2.6, C_GOLD_L)
+
+# Mały medalik z numerem poziomu (na lewym końcu paska XP).
+func _badge(ci: CanvasItem, cx: float, cy: float, r: float, level: int) -> void:
+	_disc(ci, cx, cy, r + 2.0, C_OUTLINE)
+	_disc(ci, cx, cy, r, C_GOLD)
+	_disc(ci, cx - 1.0, cy - 1.0, r - 1.0, C_GOLD_L)
+	_disc(ci, cx, cy, r - 3.0, C_OUTLINE)
+	_disc(ci, cx, cy, r - 4.0, C_INNER)
+	_text_centered(ci, str(level), cx, cy, 2, C_GOLD_L)
+
+func _ornate_slot(ci: CanvasItem, x: float, y: float, s: float, selected: bool, inner: Color) -> void:
+	var frame := C_GOLD_L if selected else C_WOOD
+	_px(ci, x - 3.0, y - 3.0, s + 6.0, s + 6.0, C_OUTLINE)
+	_px(ci, x - 2.0, y - 2.0, s + 4.0, s + 4.0, frame)
+	_px(ci, x - 2.0, y - 2.0, s + 4.0, 1.0, _lighten(frame, 0.18))
+	_px(ci, x - 2.0, y + s + 1.0, s + 4.0, 1.0, _darken(frame, 0.22))
+	_px(ci, x - 1.0, y - 1.0, s + 2.0, s + 2.0, C_GOLD_L if selected else C_GOLD)
+	_px(ci, x, y, s, s, inner)
+	_px(ci, x, y, s, 2.0, _lighten(inner, 0.06))
+	_disc(ci, x - 2.0, y + s * 0.5, 2.4, C_GOLD_L)
+	_disc(ci, x + s + 2.0, y + s * 0.5, 2.4, C_GOLD_L)
+
+# Ozdobny pionowy separator między sekcjami hotbara.
+func _divider(ci: CanvasItem, x: float, y: float, h: float) -> void:
+	_px(ci, x - 1.0, y - 1.0, 6.0, h + 2.0, C_OUTLINE)
+	_px(ci, x, y, 4.0, h, C_WOOD)
+	_px(ci, x, y, 4.0, 2.0, C_WOOD_L)
+	_disc(ci, x + 2.0, y + h * 0.5, 3.0, C_GOLD_L)
+
+# ============================================================================
+#  GŁÓWNE RYSOWANIE HUD
+# ============================================================================
+func _paint(ci: CanvasItem) -> void:
+	var vp: Vector2 = ci.size
+
+	# --- LEWY-GÓRNY: medalion (twarz) + paski HP / Stamina / [Furia] ---
+	var r := 30.0
+	var bx := PAD + 2.0 * r + 6.0
+	var bw := 196.0
+	var bh := 14.0
+	var step := bh + 8.0
+
+	var rows: Array = []
+	rows.append({"f": _hp_f, "g": _hp_ghost, "c": COL_HP, "tr": COL_HP_TRAIL, "ic": IC_HEART, "ict": Color8(240, 80, 86), "num": "%d/%d" % [_hp_cur, _hp_max]})
+	rows.append({"f": _stam_f, "g": _stam_f, "c": COL_STAM, "tr": COL_STAM, "ic": IC_BOLT, "ict": Color8(140, 200, 250), "num": "%d/%d" % [_stam_cur, _stam_max]})
+	if _res_on:
+		rows.append({"f": _res_f, "g": _res_f, "c": _res_col, "tr": _res_col, "ic": IC_FLAME, "ict": _lighten(_res_col, 0.20), "num": "%d/%d" % [_res_cur, int(_res_max)]})
+
+	var stack_h := rows.size() * step - 8.0
+	var y0 := PAD + 6.0
+	var cy := y0 + stack_h * 0.5
+	for i in rows.size():
+		var rdef = rows[i]
+		var y := y0 + i * step
+		_ornate_bar(ci, bx, y, bw, bh, rdef["f"], rdef["g"], rdef["c"], rdef["tr"])
+		_blit(ci, rdef["ic"], bx + 4.0, y + bh * 0.5 - 9.0, 3, rdef["ict"])
+		_text_centered(ci, rdef["num"], bx + bw * 0.5, y + bh * 0.5, 2, COL_NUM)
+	_medallion(ci, PAD + r, cy, r)
+
+	# --- Licznik wrogów + combo (prawy-górny) ---
+	if _enemies > 0:
+		var es := str(_enemies)
+		var ex := vp.x - PAD - (_text_w(es, 2) + 27.0)
+		_blit(ci, IC_SKULL, ex, PAD, 3, Color8(220, 224, 232))
+		_text(ci, es, ex + 27.0, PAD + 4.0, 2, COL_NUM)
+	if _combo > 1:
+		var cs := "x%d" % _combo
+		_text(ci, cs, vp.x - PAD - _text_w(cs, 3), PAD + 28.0, 3, Color8(255, 210, 80))
+
+	# --- DÓŁ-ŚRODEK: pasek XP (medalik z poziomem + progres), pod nim HOTBAR (skille | przedmioty) ---
+	var slot := 44.0
+	var gap := 8.0
+	var skills_w := SKILL_SLOTS * slot + (SKILL_SLOTS - 1) * gap
+	var items_w := ITEM_SLOTS * slot + (ITEM_SLOTS - 1) * gap
+	var divider := 26.0
+	var total := skills_w + divider + items_w
+	var x0 := (vp.x - total) * 0.5
+	var sy := vp.y - PAD - slot - 4.0
+
+	# Pasek XP nad hotbarem: medalik poziomu po lewej + tubka progresu + liczby.
+	var xph := 14.0
+	var xpy := sy - 12.0 - xph - 6.0
+	var br := xph * 0.95
+	var xpx := x0 + br * 2.0
+	var xpw := total - br * 2.0
+	_ornate_bar(ci, xpx, xpy, xpw, xph, _xp_f, _xp_f, COL_XP, COL_XP)
+	var xs := "%d/%d" % [_xp, _xp_next] if _xp_next > 0 else "MAX"
+	_text_centered(ci, xs, xpx + xpw * 0.5, xpy + xph * 0.5, 2, COL_NUM)
+	_badge(ci, x0 + br, xpy + xph * 0.5, br, _level)
+
+	# Sekcja SKILLI (5 slotów).
+	for i in SKILL_SLOTS:
+		var sx := x0 + i * (slot + gap)
+		_ornate_slot(ci, sx, sy, slot, i == _skill_sel, C_INNER_SKILL)
+		_text(ci, str(i + 1), sx + 3.0, sy + slot - 13.0, 2, Color8(150, 180, 220))
+	# Separator.
+	_divider(ci, x0 + skills_w + divider * 0.5 - 2.0, sy - 2.0, slot + 4.0)
+	# Sekcja PRZEDMIOTÓW użytkowych (miksturki/jednorazówki).
+	var ix0 := x0 + skills_w + divider
+	for i in ITEM_SLOTS:
+		var ix := ix0 + i * (slot + gap)
+		_ornate_slot(ci, ix, sy, slot, false, C_INNER_ITEM)
+
+	# --- CELOWNIK (środek ekranu) — system kamery TPS ---
+	if _show_crosshair:
+		_crosshair(ci, roundf(vp.x * 0.5), roundf(vp.y * 0.5))
+
+# Celownik TPS: 4 ząbki + środkowa kropka, z ciemnym konturem (czytelny nad każdym tłem).
+func _crosshair(ci: CanvasItem, cx: float, cy: float) -> void:
+	var col := Color(1.0, 1.0, 1.0, 0.88)
+	var edge := Color(0.0, 0.0, 0.0, 0.55)
+	var gap := 5.0
+	var ln := 7.0
+	var th := 2.0
+	# Ząbki: (x, y, w, h) — góra, dół, lewo, prawo.
+	var arms := [
+		Vector4(cx - th * 0.5, cy - gap - ln, th, ln),
+		Vector4(cx - th * 0.5, cy + gap, th, ln),
+		Vector4(cx - gap - ln, cy - th * 0.5, ln, th),
+		Vector4(cx + gap, cy - th * 0.5, ln, th),
+	]
+	for a in arms:
+		_px(ci, a.x - 1.0, a.y - 1.0, a.z + 2.0, a.w + 2.0, edge)
+	_px(ci, cx - th * 0.5 - 1.0, cy - th * 0.5 - 1.0, th + 2.0, th + 2.0, edge)
+	for a in arms:
+		_px(ci, a.x, a.y, a.z, a.w, col)
+	_px(ci, cx - th * 0.5, cy - th * 0.5, th, th, col)
+
+# ============================================================================
+#  ANIMACJA + FLASH
 # ============================================================================
 func _process(delta: float) -> void:
-	# Paski dążą PŁYNNIE do wartości docelowych (frame-rate independent).
-	if _hp_bar != null:
-		_hp_bar.value = lerpf(_hp_bar.value, _hp_t, _sm(15.0, delta))
-		# Ghost-trail: przy LECZENIU dogania natychmiast (snap w górę), przy OBRAŻENIACH zostaje
-		# z tyłu i powoli dogania (jasny ślad = świeżo utracone HP).
-		if _hp_bar.value >= _hp_ghost.value:
-			_hp_ghost.value = _hp_bar.value
-		else:
-			_hp_ghost.value = lerpf(_hp_ghost.value, _hp_bar.value, _sm(3.5, delta))
-	if _stam_bar != null:
-		_stam_bar.value = lerpf(_stam_bar.value, _stam_t, _sm(18.0, delta))
-	if _res_bar != null:
-		_res_bar.value = lerpf(_res_bar.value, _res_t, _sm(15.0, delta))
+	_hp_f = lerpf(_hp_f, _hp_t, _sm(15.0, delta))
+	if _hp_f >= _hp_ghost:
+		_hp_ghost = _hp_f
+	else:
+		_hp_ghost = lerpf(_hp_ghost, _hp_f, _sm(3.5, delta))
+	_stam_f = lerpf(_stam_f, _stam_t, _sm(18.0, delta))
+	_res_f = lerpf(_res_f, _res_t, _sm(15.0, delta))
+	_xp_f = lerpf(_xp_f, _xp_t, _sm(10.0, delta))
+	if _painter != null:
+		_painter.queue_redraw()
 
-	# Screen-flash zanik.
 	if _flash_t > 0.0:
 		_flash_t = maxf(0.0, _flash_t - delta)
 		var a := _flash_peak * (_flash_t / _flash_dur) if _flash_dur > 0.0 else 0.0
@@ -322,15 +414,9 @@ func _process(delta: float) -> void:
 		if _flash_t == 0.0:
 			_flash_overlay.visible = false
 
-# Wygładzanie wykładnicze (frame-rate independent): alpha do lerp(a,b,alpha).
 func _sm(k: float, delta: float) -> float:
 	return 1.0 - exp(-k * delta)
 
-# ============================================================================
-#  SCREEN-FLASH (impakt/krytyk) — woła Main z hit_resolved gdy bije GRACZ
-# ============================================================================
-## is_crit -> złotawy, mocniejszy (peak 0.30, 0.18 s); inaczej lekki biały (peak 0.14, 0.10 s).
-## Mocniejszy flash NADPISUJE słabszy (max), słabszy nie przerywa silniejszego.
 func flash(is_crit: bool) -> void:
 	if _flash_overlay == null:
 		return
@@ -344,77 +430,76 @@ func flash(is_crit: bool) -> void:
 		_flash_overlay.color = Color(col.r, col.g, col.b, peak)
 	_flash_overlay.visible = true
 
+func _make_rect(color: Color, size: Vector2) -> ColorRect:
+	var rr := ColorRect.new()
+	rr.color = color
+	rr.size = size
+	rr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return rr
+
 # ============================================================================
-#  SLOTY SYGNAŁÓW GRACZA (podłączane w Main)
+#  SLOTY SYGNAŁÓW GRACZA
 # ============================================================================
 func on_hp_changed(current: float, maximum: float) -> void:
 	_hp_max = int(round(maximum))
 	_hp_cur = int(round(clampf(current, 0.0, maximum)))
 	_hp_t = 0.0 if maximum <= 0.0 else clampf(current / maximum, 0.0, 1.0)
-	if _hp_text != null:
-		_hp_text.text = "%d / %d" % [_hp_cur, _hp_max]
 
 func on_stamina_changed(current: float, maximum: float) -> void:
+	_stam_max = int(round(maximum))
+	_stam_cur = int(round(clampf(current, 0.0, maximum)))
 	_stam_t = 0.0 if maximum <= 0.0 else clampf(current / maximum, 0.0, 1.0)
 
-# Animowane przyciemnienie przy śmierci.
 func on_player_died() -> void:
 	_death_overlay.visible = true
 	var tw := create_tween()
 	tw.tween_property(_death_overlay, "color:a", 0.65, 0.4)
 
-# Wyczyszczenie nakładki po respawnie.
 func on_player_respawned() -> void:
 	var tw := create_tween()
 	tw.tween_property(_death_overlay, "color:a", 0.0, 0.4)
 	tw.tween_callback(func(): _death_overlay.visible = false)
 
-# ============================================================================
-#  LICZNIK WROGÓW / COMBO MELEE
-# ============================================================================
 func set_enemy_count(n: int) -> void:
-	_enemy_label.text = "Wrogowie: %d" % n
+	_enemies = maxi(0, n)
 
-# Combo melee pokazujemy dopiero od x2 (x1 = pojedynczy cios). Osobna etykieta od pipsów Rangera.
 func set_combo(n: int) -> void:
-	if n > 1:
-		_combo_label.text = "Combo x%d" % n
-	else:
-		_combo_label.text = ""
+	_combo = n
+
+# Podświetla aktywny slot SKILLA (0..SKILL_SLOTS-1). Do wpięcia z inputu gracza.
+func select_hotbar_slot(i: int) -> void:
+	_skill_sel = clampi(i, 0, SKILL_SLOTS - 1)
+
+# Pokaż/ukryj celownik TPS (np. ukryj w menu/ekwipunku).
+func set_crosshair_visible(on: bool) -> void:
+	_show_crosshair = on
 
 # ============================================================================
 #  ETAP 3 — ZASÓB KLASY + POZIOM/XP
 # ============================================================================
-## Konfiguruje pasek zasobu: etykieta (MANA/FURIA/FOCUS), kolor wypełnienia, maksimum. Pokazuje grupę.
 func setup_class_resource(label: String, color: Color, maximum: float) -> void:
 	_res_max = maxf(1.0, maximum)
-	_res_label.text = label
-	_res_bar.add_theme_stylebox_override("fill", _sb(color, RADIUS, Color(0, 0, 0, 0), 0))
-	_res_group.visible = true
+	_res_col = color
+	_res_on = true
 
-## Aktualizacja wypełnienia paska zasobu (płynnie w _process). Maksimum aktualizujemy gdy rośnie z loota.
 func on_class_resource_changed(_name: StringName, current: float, maximum: float) -> void:
 	if maximum > 0.0:
 		_res_max = maximum
+	_res_cur = int(round(clampf(current, 0.0, _res_max)))
 	_res_t = 0.0 if _res_max <= 0.0 else clampf(current / _res_max, 0.0, 1.0)
 
-## ETAP 3 (Ranger): buduje N pipsów COMBO (0..maximum) obok panelu. Woła Main TYLKO dla Rangera
-## (kind COMBO_FOCUS). To NIE jest melee "Combo xN" (set_combo). Ponowne wywołanie przebudowuje pipsy.
 func setup_combo(maximum: int) -> void:
 	var n := maxi(0, maximum)
 	for pip in _combo_pips:
 		pip.queue_free()
 	_combo_pips.clear()
-	var x0 := 62.0   # tuż za etykietą "COMBO"
 	for i in n:
 		var pip := _make_rect(COMBO_PIP_OFF, Vector2(COMBO_PIP_SIZE, COMBO_PIP_SIZE))
-		pip.position = Vector2(x0 + float(i) * (COMBO_PIP_SIZE + COMBO_PIP_GAP), 0.0)
+		pip.position = Vector2(float(i) * (COMBO_PIP_SIZE + COMBO_PIP_GAP), 0.0)
 		_combo_root.add_child(pip)
 		_combo_pips.append(pip)
 	_combo_root.visible = n > 0
 
-## ETAP 3 (Ranger): zapala `count` pierwszych pipsów (reszta pusta). Gdy maximum != liczbie pipsów,
-## najpierw przebudowuje widget. count clamp do [0, liczba pipsów].
 func on_class_combo_changed(count: int, maximum: int) -> void:
 	if maximum != _combo_pips.size():
 		setup_combo(maximum)
@@ -422,15 +507,12 @@ func on_class_combo_changed(count: int, maximum: int) -> void:
 	for i in _combo_pips.size():
 		_combo_pips[i].color = COMBO_PIP_ON if i < lit else COMBO_PIP_OFF
 
-## Poziom + XP. xp_to_next=0 oznacza MAX (poziom 99).
 func on_level_changed(level: int, xp: int, xp_to_next: int) -> void:
-	_level_label.text = "Poziom %d" % level
-	if xp_to_next <= 0:
-		_xp_label.text = "XP — MAX"
-	else:
-		_xp_label.text = "XP %d / %d" % [xp, xp_to_next]
+	_level = level
+	_xp = xp
+	_xp_next = xp_to_next
+	_xp_t = 1.0 if xp_to_next <= 0 else clampf(float(xp) / float(xp_to_next), 0.0, 1.0)
 
-## Krótki błysk "AWANS!" przy zdobyciu poziomu (FX bez audio).
 func on_leveled_up(new_level: int, points_gained: int) -> void:
 	_levelup_label.text = "AWANS!  Poziom %d   (+%d pkt)" % [new_level, points_gained]
 	var tw := create_tween()

@@ -1529,9 +1529,15 @@ func _process(delta: float) -> void:
 		tl2.y = 0.0
 		if tl2.length() > 0.05:
 			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-tl2.x, -tl2.z), _sm(14.0, delta))
-	elif hspeed > 0.5:
-		var target_yaw := atan2(-velocity.x, -velocity.z)
-		_model.rotation.y = lerp_angle(_model.rotation.y, target_yaw, _sm(12.0, delta))
+	else:
+		# TPS: LOKALNY gracz zawsze patrzy w stronę kamery/celownika (obrót kamery obraca postać,
+		# A/D = strafe, S = cofanie, ataki lecą w celownik). ZDALNI gracze (co-op) nie mają lokalnej
+		# kamery -> twarz wg kierunku ruchu (jak dotąd), żeby replikacja wyglądała poprawnie.
+		var is_local := _net_sync == null or _net_sync.should_read_local_input()
+		if is_local:
+			_model.rotation.y = lerp_angle(_model.rotation.y, _pivot.rotation.y, _sm(14.0, delta))
+		elif hspeed > 0.5:
+			_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-velocity.x, -velocity.z), _sm(12.0, delta))
 
 	# FAZA 1: LEAN WIZUALNY proporcjonalny do PRZYSPIESZENIA poziomego (waga ruchu). Liczymy zmiane
 	# predkosci miedzy klatkami i rzutujemy ja na os PRZOD/BOK MODELU: przyspieszanie -> tulow do

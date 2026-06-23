@@ -36,6 +36,8 @@ func _ready() -> void:
 	hud.on_class_resource_changed(&"furia", 100, 100)
 	hud.on_level_changed(7, 320, 800)
 	hud.set_enemy_count(4)
+	if hud.has_method("select_hotbar_slot"):
+		hud.select_hotbar_slot(3)   # zaznacz slot 4 (jak na referencji)
 	await _wait(0.55)
 
 	# Trafienie: HP spada (pokaże ghost-trail), zasób/stamina częściowe, combo.

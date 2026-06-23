@@ -23,6 +23,7 @@ func _ready() -> void:
 	await _test_structure()
 	_test_boom_asymmetry()
 	await _test_no_jitter_standing()
+	await _test_tps_facing()
 
 	if _failures == 0:
 		print("[CAMERA] ALL OK")
@@ -118,5 +119,29 @@ func _test_no_jitter_standing() -> void:
 	_check(off_max < 1.0e-3, "stojąc występuje offset x/y %.5f (powinien być ~0, brak walk-bobu)" % off_max)
 	print("[CAMERA] (3) brak drgań stojąc: z stałe (Δ=%.6f m, z=%.2f), offset x/y=%.6f OK" \
 		% [z_max - z_min, z_max, off_max])
+	p.queue_free()
+	await get_tree().process_frame
+
+
+# ============================================================================
+#  (4) TPS FACING — postać obraca się do yaw kamery (nie do kierunku ruchu)
+# ============================================================================
+func _test_tps_facing() -> void:
+	var p = await _make_player()
+	p.velocity = Vector3.ZERO              # stoi: w starym modelu NIE obracałby się; w TPS — obraca do kamery
+	p._set_lock_target(null)               # bez locka (inaczej patrzyłby na cel)
+	p._pivot.rotation.y = 1.0              # „obróć kamerę" o 1 rad
+	for i in 150:
+		p._process(1.0 / 60.0)
+	var diff := absf(wrapf(p._model.rotation.y - 1.0, -PI, PI))
+	_check(diff < 0.05, "TPS: model nie patrzy w yaw kamery stojąc (Δ=%.3f rad)" % diff)
+
+	# Obrót kamery w drugą stronę — model nadąża (twarz zawsze ku kamerze/celownikowi).
+	p._pivot.rotation.y = -0.8
+	for i in 150:
+		p._process(1.0 / 60.0)
+	var diff2 := absf(wrapf(p._model.rotation.y - (-0.8), -PI, PI))
+	_check(diff2 < 0.05, "TPS: model nie nadążył za obrotem kamery (Δ=%.3f rad)" % diff2)
+	print("[CAMERA] (4) TPS facing: model śledzi yaw kamery stojąc (Δ=%.3f / %.3f rad) OK" % [diff, diff2])
 	p.queue_free()
 	await get_tree().process_frame
