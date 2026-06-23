@@ -834,6 +834,10 @@ func _build_voxel_character() -> void:
 	var head := VoxelModel.VoxelDef.new()
 	_sculpt_head(head)
 	_add_model_mesh(_head, head, mat, Vector3i(0, _SHOULDER_Y, 0))
+	# FEEL 3: EMISYJNY AKCENT OCZU — dwa malutkie świecące voxele na tęczówkach (osobne meshe, bo
+	# głowa to jeden vertex-color mesh bez emisji per-voxel). Subtelny "żywy" błysk spojrzenia,
+	# czytelny w cieniu/mgle, ale niski energetycznie (glow_hdr_threshold=1.0 nie zrobi z tego flara).
+	_add_eye_glints(head)
 
 	# FAZA 2 (secondary motion): GRZYWKA na osobnym pivocie u czoła (dziecko _head, dziedziczy ruch
 	# glowy a dokłada wlasny lag). Pivot u gory czaszki z przodu; grzywka zwisa od niego (wycieta z glowy).
@@ -913,6 +917,38 @@ func _make_char_material() -> StandardMaterial3D:
 	mat.roughness = 1.0
 	mat.metallic = 0.0
 	return mat
+
+# FEEL 3: dokłada dwa malutkie EMISYJNE voxele na tęczówkach gracza (dzieci _head). Głowa to jeden
+# vertex-color mesh bez emisji per-voxel, więc świecący akcent oka dajemy osobnymi mini-meshami.
+# Pozycje liczone IDENTYCZNIE jak w _sculpt_head (eye_y/ex/fz), przeliczone do lokalnych _head
+# (pivot głowy = Vector3i(0,_SHOULDER_Y,0), geometria = (voxel-pivot)*VS). Tuż przed licem (-Z),
+# by błysk nie z-fightował ze skórą. Energia niska — czytelny "żywy" wzrok, bez flara pod glow.
+const _C_EYE_GLINT: Color = Color(0.55, 0.80, 1.00)   # chłodny błękit tęczówki (spójny z _C_IRIS)
+func _add_eye_glints(_head_def: VoxelModel.VoxelDef) -> void:
+	var hw := P_HEAD_W / 2
+	var hd := P_HEAD_D / 2
+	var eye_y := _NECK_TOP + (P_HEAD_H * 11) / 20
+	var ex := maxi(1, hw - 1)
+	var fz := -hd - 1
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _C_EYE_GLINT
+	mat.emission_enabled = true
+	mat.emission = _C_EYE_GLINT
+	mat.emission_energy_multiplier = 1.8   # subtelny błysk spojrzenia (AGX/glow-safe)
+	mat.roughness = 1.0
+	for sx in [-ex, ex]:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3.ONE * (VS * 0.7)   # mniejszy niż voxel oka => błysk w środku tęczówki
+		mi.mesh = bm
+		mi.material_override = mat   # współdzielony (oba oczy identyczne; nie modyfikujemy per-mesh)
+		# Lokalna pozycja względem _head: (voxel - pivot)*VS; pivot.y = _SHOULDER_Y. Lekko przed licem.
+		mi.position = Vector3(
+			float(sx) * VS,
+			float(eye_y - _SHOULDER_Y) * VS,
+			float(fz) * VS - VS * 0.4
+		)
+		_head.add_child(mi)
 
 # Tworzy węzeł-zawias (pivot) kończyny w danym punkcie modelu.
 func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:

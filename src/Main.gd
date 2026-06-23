@@ -53,6 +53,18 @@ var _feel_fx: FeelFX
 var _biome_fx: GPUParticles3D
 var _biome_fx_current: StringName = &""
 
+# FEEL 3: PER-BIOM POST — barwny grade Environment wg biomu POD GRACZEM. Cała scena zmienia nastrój
+# (Emberwaste = ciepły, wysoki kontrast/nasycenie; Frosthelm = chłodny, wyblakły; Verdant = soczysty
+# neutral), więc biom czyta się jako MIEJSCE także w atmosferze, nie tylko w teksturze terenu.
+# PŁYNNIE lerpowane do celu (brak skokowej zmiany na granicy biomu). DayNight nadpisuje adjustment_
+# saturation per pora — mnożymy nasycenie biomu PRZEZ porę (oba żyją: biom barwi, doba moduluje).
+var _biome_post_target: StringName = &""           # docelowy biom postu (do którego lerpujemy)
+var _biome_post_temp: float = 0.0                  # temperatura grade'u [-1..1]: + ciepło, - chłód
+var _biome_post_sat_mul: float = 1.0               # mnożnik nasycenia biomu (na bazowy z DayNight)
+var _biome_post_contrast: float = 1.05             # kontrast biomu (Ember wysoki, Frost niski)
+# Bazowe nasycenie z _setup_environment (1.12) — DayNight zapisuje swoje per pora; my mnożymy biomem.
+var _base_post_saturation: float = 1.12
+
 # HUD walki + licznik żywych wrogów.
 var _hud: CanvasLayer
 var _enemies_alive: int = 0
@@ -310,6 +322,46 @@ func _apply_biome_fx(biome: StringName) -> void:
 			pm.initial_velocity_max = 0.9
 	_biome_fx.restart()
 
+
+# FEEL 3: ustawia DOCELOWY grade postu wg biomu (lerpowany w _update_biome_post co klatkę). Trzymane
+# umiarkowanie — pod AGX+glow mocny grade zlewa kadr. sat_mul: mnożnik na bazowe nasycenie doby;
+# contrast: lokalny kontrast biomu. Wartości spójne z paletą terenu (Blocks.biome_modulate).
+func _set_biome_post_target(biome: StringName) -> void:
+	if biome == _biome_post_target:
+		return
+	_biome_post_target = biome
+	match biome:
+		&"emberwaste":
+			_biome_post_sat_mul = 1.10      # soczysty spiek
+			_biome_post_contrast = 1.14     # wysoki kontrast (spalona ziemia)
+		&"frosthelm":
+			_biome_post_sat_mul = 0.82      # wyblakły mrozem
+			_biome_post_contrast = 0.98     # niższy kontrast (zimna mgła)
+		_:
+			_biome_post_sat_mul = 1.04      # Verdant: soczysty neutral
+			_biome_post_contrast = 1.05
+
+
+# FEEL 3: PŁYNNA aplikacja grade'u biomu na Environment — lerp MNOŻNIKÓW do celu (brak skoku na
+# granicy biomu). Nasycenie: biom MNOŻY bazowe z DayNight (adjustment_saturation per pora) => oba żyją
+# (doba moduluje, biom barwi). Lerpujemy SAM mnożnik/kontrast (stan trwały), więc po każdej klatce
+# nasycenie = świeże day_sat * wygładzony_mnożnik (nie kumuluje się, a przejście jest płynne w czasie).
+# Tanie (bez LUT) => działa na LOW (4GB). Ciepło/chłód niesie _apply_biome_fx + fog/ambient biomu.
+var _post_sat_mul_cur: float = 1.04
+var _post_con_cur: float = 1.05
+func _update_biome_post(delta: float) -> void:
+	if _environment == null:
+		return
+	var k: float = clampf(delta * 1.5, 0.0, 1.0)   # ~0.66 s stała czasowa przejścia biomu
+	_post_sat_mul_cur = lerpf(_post_sat_mul_cur, _biome_post_sat_mul, k)
+	_post_con_cur = lerpf(_post_con_cur, _biome_post_contrast, k)
+	# BAZA nasycenia = base_saturation z DayNight (NIE _environment.adjustment_saturation, które samo
+	# nadpisujemy — czytanie wyniku spod siebie KUMULOWAŁOBY się przy zatrzymanym DayNight: probe/menu
+	# => oversaturacja do czystych prymarów). Finalne = base * wygładzony_mnożnik => idempotentne.
+	var base_sat: float = _day_night.base_saturation if _day_night != null else _base_post_saturation
+	_environment.adjustment_saturation = base_sat * _post_sat_mul_cur
+	_environment.adjustment_contrast = _post_con_cur
+
 func _make_particles(amount: int, box: Vector3, msize: float, col: Color, emis: float, vmin: float, vmax: float, life: float) -> GPUParticles3D:
 	var p := GPUParticles3D.new()
 	p.amount = amount
@@ -368,6 +420,10 @@ func _process(_delta: float) -> void:
 		_biome_fx.global_position = pos + Vector3(0.0, 6.0, 0.0)
 		var biome := _world.get_biome(int(floor(pos.x)), int(floor(pos.z)))
 		_apply_biome_fx(biome)
+		# FEEL 3: PER-BIOM POST — ustaw cel grade'u wg biomu, potem płynnie do niego lerpuj. Cała scena
+		# zmienia nastrój (Ember ciepły/kontrastowy, Frost chłodny/wyblakły) => biom czyta się jako MIEJSCE.
+		_set_biome_post_target(biome)
+		_update_biome_post(_delta)
 		# Bramkujemy emitting (tylko gdy sie zmienia, jak firefly/ambient wyzej) i GASIMY na pauzie —
 		# snieg Frosthelm (amount 60) nie rysuje sie w menu pauzy (oszczednosc na celu 4GB).
 		var want_biome_fx := not get_tree().paused

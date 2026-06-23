@@ -307,9 +307,42 @@ func _build_body() -> void:
 	shape.position = Vector3(0.0, 0.65, 0.0)
 	add_child(shape)
 
-	_build_voxel_goblin()
+	_build_voxel_enemy()
 
-func _build_voxel_goblin() -> void:
+## FEEL 3: ROZRÓŻNIONE SYLWETKI — Goblin/Brute/Slinger czytają się Z DALEKA jako inne archetypy
+## (readability hordy), nie ten sam model w 3 rozmiarach. Wspólna paleta + reskin biomowy; różni się
+## PROPORCJA/SYLWETKA/AKCENT. Wszystkie tworzą TE SAME pivoty (_arm_l/_arm_r/_leg_l/_leg_r + _model),
+## więc rig/animacja (_animate_legs, swing ramion, flinch) działa bez zmian. Kind z variant_id:
+##   goblin  — krępy, duża głowa, długie szpony, żółte oczy (trash, szybki).
+##   brute   — masywny, zgarbiony, ogromne bary, mała głowa, ŚWIECĄCY rdzeń na piersi + maczuga (elite).
+##   slinger — smukły, wysoki, kaptur, świecąca KULA pocisku w dłoni (ranged, czytelny "rzucacz").
+func _enemy_kind() -> StringName:
+	var v := String(variant_id)
+	if v.ends_with("brute"):
+		return &"brute"
+	if v.ends_with("slinger"):
+		return &"slinger"
+	return &"goblin"
+
+# Wspólna paleta wariantu (z reskinem biomowym). Zwraca [skin, skin_d, eyes, mouth, loin, accent].
+func _variant_palette() -> Array:
+	var skin := Color(0.30, 0.55, 0.22)    # zielona skóra
+	var skin_d := Color(0.22, 0.42, 0.16)  # ciemniejsza (kończyny/uszy)
+	var eyes := Color(1.00, 0.85, 0.10)    # świecące żółte oczy
+	var mouth := Color(0.10, 0.06, 0.05)   # paszcza
+	var loin := Color(0.35, 0.24, 0.14)    # przepaska brązowa
+	# Akcent emisyjny (rdzeń bruta / kula slingera) — domyślnie pochodna oczu, by element pasował.
+	var accent := Color(1.00, 0.70, 0.15)
+	# ETAP 4: reskin biomowy (ognisty/lodowy). a>0 => nadpisz paletę; skin_d = przyciemniona skóra.
+	if skin_tint.a > 0.0:
+		skin = Color(skin_tint.r, skin_tint.g, skin_tint.b)
+		skin_d = skin.darkened(0.28)
+	if eye_tint.a > 0.0:
+		eyes = Color(eye_tint.r, eye_tint.g, eye_tint.b)
+		accent = eyes
+	return [skin, skin_d, eyes, mouth, loin, accent]
+
+func _build_voxel_enemy() -> void:
 	_model = Node3D.new()
 	_model.name = "Model"
 	add_child(_model)
@@ -317,19 +350,19 @@ func _build_voxel_goblin() -> void:
 	# (dziedziczą skalę), kapsuła kolizji zostaje — większy model nie psuje chodu po terenie.
 	if body_scale != 1.0:
 		_model.scale = Vector3.ONE * body_scale
+	match _enemy_kind():
+		&"brute":
+			_build_silhouette_brute()
+		&"slinger":
+			_build_silhouette_slinger()
+		_:
+			_build_silhouette_goblin()
 
-	# Paleta goblina (albedo sRGB — kolory normalnie).
-	var skin := Color(0.30, 0.55, 0.22)    # zielona skóra
-	var skin_d := Color(0.22, 0.42, 0.16)  # ciemniejsza (kończyny/uszy)
-	var eyes := Color(1.00, 0.85, 0.10)    # świecące żółte oczy
-	var mouth := Color(0.10, 0.06, 0.05)   # paszcza
-	var loin := Color(0.35, 0.24, 0.14)    # przepaska brązowa
-	# ETAP 4: reskin biomowy (ognisty/lodowy). a>0 => nadpisz paletę; skin_d = przyciemniona skóra.
-	if skin_tint.a > 0.0:
-		skin = Color(skin_tint.r, skin_tint.g, skin_tint.b)
-		skin_d = skin.darkened(0.28)
-	if eye_tint.a > 0.0:
-		eyes = Color(eye_tint.r, eye_tint.g, eye_tint.b)
+# --- GOBLIN — krępy, duża głowa, długie szpony (sylwetka bazowa, szybki trash) ---
+func _build_silhouette_goblin() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var loin: Color = pal[4]
 
 	# --- Tułów (krępy) + przepaska — statyczne ---
 	_cube(_model, Vector3(0.56, 0.46, 0.36), Vector3(0.0, 0.78, 0.0), skin)
@@ -356,6 +389,77 @@ func _build_voxel_goblin() -> void:
 		_cube(arm, Vector3(0.18, 0.50, 0.20), Vector3(0.0, -0.25, 0.0), skin)     # ramię
 		_cube(arm, Vector3(0.20, 0.14, 0.22), Vector3(0.0, -0.55, 0.0), skin_d)   # dłoń/szpon
 
+# --- BRUTE — masywny, zgarbiony, OGROMNE bary, mała głowa wciśnięta w kark, świecący rdzeń + maczuga.
+# Sylwetka "ściana mięśni" czytelna z daleka: szeroki górny trójkąt, krótkie nogi, broń w prawej dłoni.
+func _build_silhouette_brute() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+
+	# Tułów SZEROKI i głęboki (beczka klatki) + masywne bary jako osobny blok (trójkątna sylwetka góry).
+	_cube(_model, Vector3(0.82, 0.52, 0.52), Vector3(0.0, 0.80, 0.0), skin)        # klatka
+	_cube(_model, Vector3(1.02, 0.26, 0.56), Vector3(0.0, 1.06, 0.0), skin_d)      # naramienny wał (bary)
+	# ŚWIECĄCY RDZEŃ na piersi (czytelny akcent elity z daleka — "serce mocy").
+	_cube(_model, Vector3(0.18, 0.18, 0.06), Vector3(0.0, 0.86, -0.27), accent, true)
+
+	# Głowa MAŁA, wciśnięta nisko między bary (brak szyi) — kontrast z goblinem (duża głowa).
+	_cube(_model, Vector3(0.40, 0.36, 0.40), Vector3(0.0, 1.34, 0.02), skin)
+	_cube(_model, Vector3(0.10, 0.07, 0.05), Vector3(-0.10, 1.36, -0.21), eyes, true)  # oko L
+	_cube(_model, Vector3(0.10, 0.07, 0.05), Vector3(0.10, 1.36, -0.21), eyes, true)   # oko R
+	_cube(_model, Vector3(0.26, 0.06, 0.05), Vector3(0.0, 1.22, -0.21), mouth)         # zacięty pysk
+
+	# Nogi KRÓTKIE i grube (przysadziste) — pivoty niżej, krok ciężki.
+	_leg_l = _make_pivot(_model, Vector3(-0.22, 0.50, 0.0))
+	_leg_r = _make_pivot(_model, Vector3(0.22, 0.50, 0.0))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.30, 0.46, 0.32), Vector3(0.0, -0.25, 0.0), skin_d)
+
+	# Ręce DŁUGIE i grube, zwisające nisko (postawa goryla) — pivoty szeroko na barach.
+	_arm_l = _make_pivot(_model, Vector3(-0.52, 1.02, 0.0))
+	_arm_r = _make_pivot(_model, Vector3(0.52, 1.02, 0.0))
+	for arm in [_arm_l, _arm_r]:
+		_cube(arm, Vector3(0.26, 0.60, 0.28), Vector3(0.0, -0.30, 0.0), skin)       # potężne ramię
+		_cube(arm, Vector3(0.30, 0.20, 0.32), Vector3(0.0, -0.66, 0.0), skin_d)     # wielka pięść
+	# MACZUGA w prawej dłoni (trzon + głowica z emisyjnym okuciem) — czytelna groźba melee z daleka.
+	_cube(_arm_r, Vector3(0.10, 0.46, 0.10), Vector3(0.0, -0.92, -0.04), Color(0.32, 0.22, 0.13))  # trzon
+	_cube(_arm_r, Vector3(0.26, 0.24, 0.26), Vector3(0.0, -1.18, -0.04), Color(0.40, 0.40, 0.44))  # głowica
+	_cube(_arm_r, Vector3(0.30, 0.06, 0.30), Vector3(0.0, -1.06, -0.04), accent, true)             # okucie świecące
+
+# --- SLINGER — smukły, WYSOKI, w kapturze, świecąca KULA pocisku w lewej dłoni. Sylwetka "rzucacza":
+# wąskie bary, długi tułów, broń-orb wyniesiona. Czytelny ranged-zagrożenie z daleka (inny niż melee).
+func _build_silhouette_slinger() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var accent: Color = pal[5]
+	var hood := skin_d.darkened(0.18)   # kaptur ciemniejszy niż skóra (czytelna szata)
+
+	# Tułów SMUKŁY i WYSOKI (wydłużony) + szata/peleryna kaptura.
+	_cube(_model, Vector3(0.42, 0.62, 0.34), Vector3(0.0, 0.86, 0.0), skin)        # wąski długi tułów
+	_cube(_model, Vector3(0.50, 0.30, 0.40), Vector3(0.0, 1.06, 0.04), hood)       # kołnierz szaty
+	_cube(_model, Vector3(0.36, 0.10, 0.30), Vector3(0.0, 0.60, 0.0), hood)        # rąbek szaty
+
+	# Głowa w KAPTURZE — czaszka + okap kaptura nad oczami; oczy świecą z cienia kaptura.
+	_cube(_model, Vector3(0.40, 0.42, 0.40), Vector3(0.0, 1.42, 0.0), skin)        # głowa
+	_cube(_model, Vector3(0.46, 0.20, 0.46), Vector3(0.0, 1.60, 0.0), hood)        # czubek kaptura
+	_cube(_model, Vector3(0.46, 0.10, 0.10), Vector3(0.0, 1.46, -0.20), hood)      # okap nad oczami
+	_cube(_model, Vector3(0.09, 0.06, 0.05), Vector3(-0.10, 1.40, -0.21), eyes, true)  # oko L (świeci z cienia)
+	_cube(_model, Vector3(0.09, 0.06, 0.05), Vector3(0.10, 1.40, -0.21), eyes, true)   # oko R
+
+	# Nogi DŁUGIE i smukłe (wysoka postawa) — pivoty wyżej, wąski rozstaw.
+	_leg_l = _make_pivot(_model, Vector3(-0.12, 0.60, 0.0))
+	_leg_r = _make_pivot(_model, Vector3(0.12, 0.60, 0.0))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.16, 0.58, 0.20), Vector3(0.0, -0.30, 0.0), skin_d)
+
+	# Ręce smukłe — pivoty wąsko. Prawa "rzucająca" w przód.
+	_arm_l = _make_pivot(_model, Vector3(-0.28, 1.04, 0.0))
+	_arm_r = _make_pivot(_model, Vector3(0.28, 1.04, 0.0))
+	for arm in [_arm_l, _arm_r]:
+		_cube(arm, Vector3(0.14, 0.52, 0.16), Vector3(0.0, -0.26, 0.0), skin)       # chude ramię
+		_cube(arm, Vector3(0.16, 0.12, 0.18), Vector3(0.0, -0.54, 0.0), skin_d)     # dłoń
+	# ŚWIECĄCA KULA POCISKU w lewej dłoni (uniesiona, gotowa do rzutu) — emisyjny akcent ranged.
+	_cube(_arm_l, Vector3(0.22, 0.22, 0.22), Vector3(0.0, -0.64, -0.06), accent, true)
+
 func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:
 	var p := Node3D.new()
 	p.position = pos
@@ -376,7 +480,9 @@ func _cube(parent: Node3D, size: Vector3, pos: Vector3, color: Color, emit: bool
 	if emit:
 		mat.emission_enabled = true
 		mat.emission = color
-		mat.emission_energy_multiplier = 1.5   # delikatna poświata oczu
+		# FEEL 3: poświata akcentów (oczy/rdzeń/maczuga/kula) podbita 1.5->2.2 — czytelne emisyjne
+		# akcenty z daleka i w cieniu/mgle, BEZ przepału (glow_hdr_threshold=1.0 trzyma bloom w ryzach).
+		mat.emission_energy_multiplier = 2.2
 	mi.material_override = mat
 	mi.position = pos
 	parent.add_child(mi)

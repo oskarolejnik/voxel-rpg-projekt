@@ -193,6 +193,14 @@ var _voxels: PackedByteArray = PackedByteArray()
 # i ponownie w _place_features — po 4 oktawy FBM na próbkę). Indeks: x + CHUNK_SIZE*z.
 var _heightmap: PackedInt32Array = PackedInt32Array()
 
+# FEEL 3 (review #minor): cache BIOMU per kolumna (CHUNK_SIZE×CHUNK_SIZE), liczony RAZ w
+# _generate_data. get_biome() próbkuje DWA FastNoiseLite (temp+humidity), a _solid_color jest
+# wołane PER ŚCIANA (do 6× na voxel) => bez cache to do 12 zbędnych próbek szumu na voxel na
+# wątku roboczym. Biom jest stały per (wx,wz), więc próbkujemy go raz na kolumnę i odczytujemy
+# z tablicy w _solid_color. 0 = jeszcze nie policzony (lazy fill); realne id mapujemy 1..N.
+# Indeks: x + CHUNK_SIZE*z. Zwalniany razem z _heightmap w finalize() (oszczędność RAM).
+var _biomemap: PackedByteArray = PackedByteArray()
+
 # Współrzędne chunku (w jednostkach chunków, nie metrów).
 var _coord: Vector2i = Vector2i.ZERO
 
@@ -325,6 +333,7 @@ func finalize(world: VoxelWorld) -> void:
 	# Zwolnij surowe dane voxeli — niepotrzebne po zbudowaniu (oszczędność RAM przy wielu chunkach).
 	_voxels = PackedByteArray()
 	_heightmap = PackedInt32Array()
+	_biomemap = PackedByteArray()   # FEEL 3: cache biomu też niepotrzebny po zbudowaniu mesha
 	_finalized = true
 
 
@@ -344,6 +353,10 @@ func _generate_data(world: VoxelWorld) -> void:
 
 	# Cache heightmapy: liczymy surface_height RAZ na kolumnę i zapisujemy do _heightmap.
 	_heightmap.resize(CHUNK_SIZE * CHUNK_SIZE)
+	# FEEL 3 (review #minor): cache biomu per kolumna — get_biome (2× szum) liczony RAZ tu, nie
+	# per ściana w _solid_color. Bajt: 1=verdant, 2=emberwaste, 3=frosthelm (0 = nigdy, kolumna
+	# zawsze ma biom). Off-thread, czysty odczyt niemutowanego szumu (jak surface_height).
+	_biomemap.resize(CHUNK_SIZE * CHUNK_SIZE)
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
@@ -351,6 +364,7 @@ func _generate_data(world: VoxelWorld) -> void:
 			var wz := _coord.y * CHUNK_SIZE + z
 			var sy := world.surface_height(wx, wz)
 			_heightmap[x + CHUNK_SIZE * z] = sy
+			_biomemap[x + CHUNK_SIZE * z] = _biome_to_byte(world.get_biome(wx, wz))
 
 			# Kolumna stałych bloków od 0 do sy włącznie.
 			for y in range(0, sy + 1):
@@ -368,6 +382,30 @@ func _generate_data(world: VoxelWorld) -> void:
 ## Odczyt zcache'owanej wysokości kolumny (tylko dla x,z W OBRĘBIE chunku).
 func _surface_at(x: int, z: int) -> int:
 	return _heightmap[x + CHUNK_SIZE * z]
+
+
+## FEEL 3: mapowanie StringName biomu -> bajt cache (1..3). Nieznany -> verdant (1, bezpieczny
+## default, spójny z Blocks.biome_modulate). Trzymane lokalnie (cache to detal Chunk, nie API świata).
+func _biome_to_byte(biome: StringName) -> int:
+	if biome == &"emberwaste":
+		return 2
+	if biome == &"frosthelm":
+		return 3
+	return 1   # verdant / fallback
+
+
+## FEEL 3: biom kolumny dla Blocks.biome_modulate. Ścieżka NEAR (_build_mesh) ma policzony cache
+## _biomemap (raz w _generate_data) => czyta z tablicy bez próbkowania szumu. Ścieżka FAR (_build_coarse)
+## NIE woła _generate_data, więc _biomemap jest pusty — wtedy fallback do żywego world.get_biome (FAR
+## emituje znacznie mniej ścian, więc koszt nieistotny). Guard `x,z w zakresie` chroni też przed
+## skirtami z lx+step/2 wychodzącymi na granicę chunku. (world/wx/wz potrzebne tylko do fallbacku.)
+func _biome_at(world: VoxelWorld, x: int, z: int, wx: int, wz: int) -> StringName:
+	if not _biomemap.is_empty() and x >= 0 and x < CHUNK_SIZE and z >= 0 and z < CHUNK_SIZE:
+		match int(_biomemap[x + CHUNK_SIZE * z]):
+			2: return &"emberwaste"
+			3: return &"frosthelm"
+			_: return &"verdant"
+	return world.get_biome(wx, wz)
 
 
 ## Przydział typu bloku w zależności od wysokości warstwy względem powierzchni.
@@ -843,10 +881,16 @@ func _build_mesh(world: VoxelWorld) -> void:
 					# Budżet wyczerpany => fallback do zwykłej kostki (degradacja, NIE continue).
 
 				# Blok stały: dla każdej z 6 ścian sprawdzamy sąsiada.
+				# review #minor: _solid_color HOISTOWANE poza pętlę 6 ścian — kolor zależy tylko od
+				# (t,x,y,z), a nie od ściany, więc liczenie go per-ściana powielało całą pracę (gradient
+				# trawy + biome_modulate + tint) do 6× na voxel. Liczymy LENIWIE: dopiero gdy pierwsza
+				# ściana jest widoczna (voxel całkiem schowany => 0 wywołań, jak dotąd). col<0 = sentinel.
+				var col := Color(0, 0, 0, -1.0)
 				for fi in 6:
 					var n := NEIGHBORS[fi]
 					if _is_face_visible(world, x, y, z, n):
-						var col := _solid_color(world, t, x, y, z)
+						if col.a < 0.0:
+							col = _solid_color(world, t, x, y, z)
 						_emit_face(st_solid, Vector3i(x, y, z), fi, col, false)
 						solid_count += 1
 
@@ -1240,6 +1284,14 @@ func _solid_color(world: VoxelWorld, t: int, x: int, y: int, z: int) -> Color:
 			base = base.lerp(Blocks.GRASS_DRY, minf(1.0, -bf * 0.7))
 		else:
 			base = base.lerp(Blocks.GRASS_COOL, minf(1.0, bf * 0.55))
+
+	# FEEL 3: PER-BIOM PALETA — modulacja całego koloru terenu wg biomu kolumny (Verdant/Emberwaste/
+	# Frosthelm). Liczone na bazie PRZED mikro-tintem (modulacja barwy biomu, potem lokalny rozsyp na
+	# wierzchu => spójna tożsamość MIEJSCA z daleka, drobny szum z bliska). Biom czytany z CACHE kolumny
+	# (_biomemap, policzonego raz w _generate_data) zamiast ponownego próbkowania DWÓCH szumów per ŚCIANA
+	# (review #minor: _solid_color jest wołane do 6× na voxel — cache eliminuje do 12 zbędnych próbek/voxel
+	# na wątku roboczym). _biomemap jest jeszcze żywy podczas _build_mesh (zwalniany dopiero w finalize).
+	base = Blocks.biome_modulate(base, _biome_at(world, x, z, wx, wz))
 
 	var v := world.tint_at(wx, y, wz)   # ~[-0.055, 0.055]
 

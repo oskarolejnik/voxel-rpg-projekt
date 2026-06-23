@@ -64,6 +64,52 @@ const MUSHROOM_SPOT: Color = Color(0.94, 0.92, 0.86)   # białe kropki muchomora
 # --- Detaliczne mikro-voxelowe propy (Cube World) ---
 const FLOWER_CORE: Color = Color(0.90, 0.78, 0.20)     # żółty środek kwiatu (przygaszony anty-bloom)
 
+# ============================================================================
+#  FEEL 3 — PER-BIOM PALETA (Verdant / Emberwaste / Frosthelm jako MIEJSCA)
+# ============================================================================
+# Problem: get_biome rozróżnia 3 biomy, ale _solid_color malował teren niemal identycznie wszędzie
+# (tylko gradient trawy z biome_factor). Biom NIE czytał się z daleka jako inne MIEJSCE.
+#
+# Rozwiązanie (tanie, deterministyczne, spójne z generacją 2C/Etap4): modulacja KOŻDEGO koloru
+# terenu mnożnikiem RGB + przesunięciem nasycenia per biom. Wołane z _solid_color (NEAR: raz na
+# widoczny voxel — kolor hoistowany poza pętlę 6 ścian; FAR: per komórka skirta). ID biomu czytane
+# z cache kolumny (_biomemap), nie z ponownego próbkowania szumu. Trzymane UMIARKOWANIE — pod
+# AGX+glow mocne tinty zlewają się w monochrom; chcemy CZYTELNĄ tożsamość, nie filtr instagramowy.
+#
+#   Verdant   — neutral/lekko soczysty (baza). Mnożnik ~1, nasycenie +.
+#   Emberwaste— ciepły rdzawo-pomarańczowy przesyp + WYSOKI kontrast (sucha, spalona ziemia).
+#   Frosthelm — chłodny błękitny przesyp + DESATURACJA (zimna, wyblakła mrozem skała/śnieg).
+#
+# tint_mul    : mnożnik RGB albedo (barwi cały teren w temat biomu).
+# saturate    : >1 podbija nasycenie (Verdant/Ember soczyste), <1 wypłukuje (Frosthelm wyblakły).
+const BIOME_VERDANT_TINT: Color = Color(1.00, 1.02, 0.96)   # neutral, ciut cieplejsza zieleń
+const BIOME_VERDANT_SAT: float = 1.06
+const BIOME_EMBER_TINT: Color = Color(1.16, 0.92, 0.70)     # rdzawo-pomarańczowy przesyp
+const BIOME_EMBER_SAT: float = 1.18                          # wysoki kontrast/nasycenie (spiek)
+const BIOME_FROST_TINT: Color = Color(0.88, 0.94, 1.05)     # chłodny błękitny przesyp (B zbity 1.10->1.05: review #minor — SNOW.b 0.99 ze starym 1.10 przebijał próg glow w południe na płaskich szczytach śniegu, gdzie biome-tint + value_peak + key light się sumują; 1.05 wciąż czyta zimno, B>R zachowane, margines pod AGX+glow)
+const BIOME_FROST_SAT: float = 0.78                          # desaturacja (wyblakły mróz)
+
+## Moduluje kolor terenu wg ID biomu (StringName z VoxelWorld.get_biome). Zwraca NOWY Color.
+## Tint = mnożnik RGB; nasycenie liniowo wokół luminancji (sat>1 podbija, <1 wypłukuje). Mnożniki
+## clampowane do [0,1] (vertex color sRGB). Nieznany biom -> Verdant (bezpieczny default).
+static func biome_modulate(c: Color, biome: StringName) -> Color:
+	var tint: Color = BIOME_VERDANT_TINT
+	var sat: float = BIOME_VERDANT_SAT
+	if biome == &"emberwaste":
+		tint = BIOME_EMBER_TINT; sat = BIOME_EMBER_SAT
+	elif biome == &"frosthelm":
+		tint = BIOME_FROST_TINT; sat = BIOME_FROST_SAT
+	var r := c.r * tint.r
+	var g := c.g * tint.g
+	var b := c.b * tint.b
+	# Nasycenie wokół luminancji Rec.601 (sat>1 oddala od szarości, <1 zbliża).
+	var luma := r * 0.299 + g * 0.587 + b * 0.114
+	r = luma + (r - luma) * sat
+	g = luma + (g - luma) * sat
+	b = luma + (b - luma) * sat
+	return Color(clampf(r, 0.0, 1.0), clampf(g, 0.0, 1.0), clampf(b, 0.0, 1.0), c.a)
+
+
 ## Czy blok jest „stały” (pełny) z punktu widzenia face cullingu i kolizji.
 ## WATER traktujemy jak przezroczysty/niestały — nie zasłania ścian i nie ma kolizji.
 ## Nowe warianty (LEAVES_AUTUMN, ROCK_MOSSY) automatycznie zwracają true.

@@ -31,6 +31,11 @@ var _sky: ProceduralSkyMaterial
 # zamiast pisać tę samą wartość co klatkę. (-1 = nieznane, wymusza pierwsze ustawienie.)
 var _shadow_state: int = -1
 
+# FEEL 3: ostatnio policzone BAZOWE nasycenie pory doby (przed modulacją biomu w Main). Main MNOŻY
+# tę bazę przez mnożnik biomu — czyta JĄ (a nie _env.adjustment_saturation, które samo nadpisuje),
+# więc per-biom post jest IDEMPOTENTNY (nie kumuluje się, gdy DayNight jest zatrzymany — np. probe/menu).
+var base_saturation: float = 1.12
+
 # --- Keyframe'y pór doby (const => bez alokacji co klatkę) ---
 # Progi faz. Ostatni (1.00) == pierwszy (0.00), żeby pętla doby była ciągła.
 const _KEY_T: Array[float] = [0.00, 0.22, 0.50, 0.78, 1.00]  # NOC, ŚWIT, DZIEŃ, ZACHÓD, NOC
@@ -204,5 +209,9 @@ func _apply(t: float) -> void:
 	_env.fog_light_color = _FOG_LIGHT[i].lerp(_FOG_LIGHT[j], f)
 	_env.fog_density = lerpf(_FOG_DENSITY_DEPTH[i], _FOG_DENSITY_DEPTH[j], f)
 
-	# (g) color grade — nasycenie zależne od pory doby (Faza 1D).
-	_env.adjustment_saturation = lerpf(_SATURATION[i], _SATURATION[j], f)
+	# (g) color grade — nasycenie zależne od pory doby (Faza 1D). FEEL 3: zapisz BAZĘ do pola, a
+	# samego _env.adjustment_saturation NIE pisz tu na sztywno — Main._update_biome_post liczy finalną
+	# wartość = base_saturation * mnożnik_biomu (idempotentnie). Gdy Main nie istnieje (test/headless
+	# bez Main), nikt nie ustawi nasycenia — więc dla bezpieczeństwa ustawiamy też bazę bezpośrednio.
+	base_saturation = lerpf(_SATURATION[i], _SATURATION[j], f)
+	_env.adjustment_saturation = base_saturation

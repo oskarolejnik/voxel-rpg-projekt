@@ -175,7 +175,13 @@ func _apply_low(world: Node, environment: Environment) -> void:
 		environment.ssr_max_steps = 64                 # silnikowy baseline (HIGH ustawia 32)
 		# Tanie efekty zostaja WLACZONE (glebia/look bez kosztu froxeli):
 		environment.ssao_enabled = true               # AO w stykach (tani, duza wartosc wizualna)
+		# FEEL 3: przywroc baseline SSAO/glow z Main._setup_environment (HIGH je podbija — przy
+		# przelaczeniu HIGH->LOW w runtime LOW MUSI je sciagnac, inaczej zostaje premium AO/bloom).
+		environment.ssao_radius = 0.8                 # == baseline LOW (HIGH ustawia 1.1)
+		environment.ssao_intensity = 1.4              # == baseline LOW (HIGH ustawia 2.0)
 		environment.glow_enabled = true               # bloom na jasnych powierzchniach (tani)
+		environment.glow_intensity = 0.2              # == baseline LOW (HIGH ustawia 0.3)
+		environment.glow_bloom = 0.1                  # == baseline LOW (HIGH ustawia 0.15)
 		# Mgla dystansowa (depth fog) — GLOWNE narzedzie atmosfery dali na LOW (patrz Main).
 		environment.fog_enabled = true
 	_apply_dof(false)                                 # DoF OFF (DoF zyje na kamerze, nie Environment)
@@ -202,7 +208,13 @@ func _apply_high(world: Node, environment: Environment) -> void:
 		environment.ssr_max_steps = 32
 		environment.ssil_enabled = true               # screen-space indirect light (SSIL)
 		environment.ssao_enabled = true
+		# FEEL 3: premium AO na HIGH — wiekszy promien/moc (gestszy detal styku voxeli) niz LOW.
+		environment.ssao_radius = 1.1
+		environment.ssao_intensity = 2.0
 		environment.glow_enabled = true
+		# FEEL 3: bogatszy bloom na HIGH (emisyjne akcenty/loot/lawa mocniej "oddychaja" swiatlem).
+		environment.glow_intensity = 0.3
+		environment.glow_bloom = 0.15
 		environment.fog_enabled = true
 	_apply_dof(true, 120.0, 40.0)                     # DoF ON (dal) — na CameraAttributes aktywnej kamery
 	_apply_shadow_distance(160.0)

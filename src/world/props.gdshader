@@ -19,8 +19,22 @@ uniform float gust_speed = 0.35;    // tempo przesuwania się porywów przez ter
 uniform float gust_scale = 0.04;    // przestrzenna częstotliwość porywów (małe = szerokie strefy)
 uniform vec2 wind_dir = vec2(1.0, 0.3);   // kierunek wiania (porywy biegną wzdłuż niego)
 
+// FEEL 3: spójność z terenem — propy też dostają value-contrast (czubki jaśniejsze = łapią światło,
+// podstawa ciemniejsza = okluzja runa) + delikatny rim od słońca, by trawa/kwiaty nie były "płaską
+// nalepką" na rzeźbionym terenie. Waga (sway w COLOR.a) służy też jako oś góra/dół rośliny.
+uniform float tip_bright : hint_range(0.0, 0.5) = 0.16;   // rozjaśnienie czubków (sway~1)
+uniform float root_dim : hint_range(0.0, 0.5) = 0.18;     // przyciemnienie podstawy (sway~0)
+uniform vec3 rim_color : source_color = vec3(1.0, 0.97, 0.85);
+uniform float rim_strength : hint_range(0.0, 1.0) = 0.18;
+uniform float rim_power : hint_range(1.0, 8.0) = 2.6;
+
+varying vec3 v_wn;        // world-normal (do rim w light())
+varying float v_sway;     // waga góra/dół rośliny (z COLOR.a) — oś value-contrast
+
 void vertex() {
 	float sway = COLOR.a;
+	v_sway = sway;
+	v_wn = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	// Pozycja świata wierzchołka — wspólna faza dla sąsiednich propów (fala biegnie przez łąkę).
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
@@ -45,7 +59,25 @@ void vertex() {
 }
 
 void fragment() {
-	ALBEDO = pow(max(COLOR.rgb, vec3(0.0)), vec3(2.2));  // sRGB→lin (jak vertex_color_is_srgb)
+	vec3 base = pow(max(COLOR.rgb, vec3(0.0)), vec3(2.2));  // sRGB→lin (jak vertex_color_is_srgb)
+
+	// FEEL 3: value contrast wzdłuż rośliny (waga z sway): czubek jaśniejszy (światło góry), podstawa
+	// ciemniejsza (cień runa). Spójne z value_peak/value_dim terenu => trawa "siedzi" w scenie.
+	base *= (1.0 + v_sway * tip_bright);
+	base *= (1.0 - (1.0 - v_sway) * root_dim);
+
+	ALBEDO = max(base, vec3(0.0));
 	ROUGHNESS = 1.0;
 	METALLIC = 0.0;
+}
+
+// FEEL 3: rim od słońca — czytelność źdźbeł/kwiatów na tle terenu (cienka roślina łapie kontur
+// światła). Mnożone przez ndotl + ATTENUATION (tylko oświetlona strona, gaśnie w cieniu) => bez flara.
+void light() {
+	float ndotl = max(dot(NORMAL, LIGHT), 0.0);
+	DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * ndotl * ATTENUATION;
+	float fres = pow(1.0 - clamp(dot(normalize(VIEW), NORMAL), 0.0, 1.0), rim_power);
+	float sun_facing = clamp(ndotl * 1.8, 0.0, 1.0);
+	vec3 rim_lin = pow(max(rim_color, vec3(0.0)), vec3(2.2));
+	SPECULAR_LIGHT += rim_lin * LIGHT_COLOR * fres * sun_facing * rim_strength * ATTENUATION;
 }

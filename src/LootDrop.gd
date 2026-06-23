@@ -93,8 +93,26 @@ func _process(delta: float) -> void:
 #  WIZUAL: voxelowy szescian + halo w kolorze rzadkosci
 # ============================================================================
 
+# FEEL 3: GLOW lootu skaluje sie z RZADKOSCIA — wyzsza rzadkosc => mocniejsza emisja, wieksze halo,
+# a od RARE w gore PIONOWY BEAM (slup swiatla) widoczny z daleka w hordzie/mgle. Czytelnosc "co warto
+# podniesc" bez UI. Indeks rzadkosci 0..5 (COMMON..SET); zloto traktujemy jak UNCOMMON-tier blask.
+const _LOOT_BEAM_FROM_RARITY: int = 2     # RARE i wyzej dostaja pionowy slup swiatla
+var _beam: MeshInstance3D = null
+
+## Indeks rzadkosci dropu (0..5). Zloto bez itemu -> 1 (lekki, zauwazalny blask, nie szary common).
+func _rarity_index() -> int:
+	if item != null:
+		return clampi(item.rarity, 0, 5)
+	return 1   # zloto ~ UNCOMMON-tier blask
+
 func _build_visual() -> void:
 	var col := _drop_color()
+	var r := _rarity_index()
+	# Skala glow rosnie z rzadkoscia (COMMON niski, SET mocny). Trzymane pod glow_hdr_threshold=1.0
+	# (energia ~1.2..3.0) => legenda swieci wyraznie, common nie robi flara.
+	var emis_core := 1.2 + float(r) * 0.38       # 1.20 (common) .. 3.10 (set)
+	var halo_scale := 0.85 + float(r) * 0.14     # 0.85 .. 1.55 m
+	var emis_halo := 0.6 + float(r) * 0.22       # 0.60 .. 1.70
 
 	# Rdzen — maly szescian z emisja koloru rzadkosci (swieci, czytelny w mgle/nocy).
 	_mesh = MeshInstance3D.new()
@@ -105,15 +123,15 @@ func _build_visual() -> void:
 	mat.albedo_color = col
 	mat.emission_enabled = true
 	mat.emission = col
-	mat.emission_energy_multiplier = 1.4
+	mat.emission_energy_multiplier = emis_core
 	_mesh.material_override = mat
 	_mesh.position.y = 0.45
 	add_child(_mesh)
 
-	# Halo — plaski, polprzezroczysty kwadrat pod itemem (slup swiatla "tanio").
+	# Halo — plaski, polprzezroczysty kwadrat pod itemem (slup swiatla "tanio"). Rozmiar ~ rzadkosc.
 	_halo = MeshInstance3D.new()
 	var qm := QuadMesh.new()
-	qm.size = Vector2(0.9, 0.9)
+	qm.size = Vector2(halo_scale, halo_scale)
 	_halo.mesh = qm
 	_halo.rotation_degrees.x = -90.0
 	_halo.position.y = 0.05
@@ -122,11 +140,34 @@ func _build_visual() -> void:
 	hmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	hmat.emission_enabled = true
 	hmat.emission = col
-	hmat.emission_energy_multiplier = 0.8
+	hmat.emission_energy_multiplier = emis_halo
 	hmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	hmat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_halo.material_override = hmat
 	add_child(_halo)
+
+	# FEEL 3: PIONOWY BEAM od RARE w gore — wysoki, waski, additywny slup w kolorze rzadkosci.
+	# Billboard-y wokol osi Y (QuadMesh w 2 skrzyzowanych plaszczyznach) => widoczny z kazdego kata.
+	# Tani (2 quady, unshaded, additive, bez cieni). Anti-bloat: tylko dla wartosciowego lootu.
+	if r >= _LOOT_BEAM_FROM_RARITY:
+		_beam = MeshInstance3D.new()
+		var beam_h := 2.2 + float(r - _LOOT_BEAM_FROM_RARITY) * 0.5   # RARE 2.2 .. SET 3.7 m
+		var bmesh := BoxMesh.new()
+		bmesh.size = Vector3(0.10, beam_h, 0.10)
+		_beam.mesh = bmesh
+		_beam.position.y = beam_h * 0.5
+		var bmat := StandardMaterial3D.new()
+		bmat.albedo_color = Color(col.r, col.g, col.b, 0.5)
+		bmat.emission_enabled = true
+		bmat.emission = col
+		bmat.emission_energy_multiplier = 1.6 + float(r) * 0.2
+		bmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		bmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		bmat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		bmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		bmat.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y   # zawsze zwrocony do kamery (oś Y)
+		_beam.material_override = bmat
+		add_child(_beam)
 
 
 ## Kolor dropu: zloto -> zloty; item -> kolor rzadkosci (LootService).
