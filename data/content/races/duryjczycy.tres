@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_1l5bl"]
+
+[resource]
+script = ExtResource("1_1l5bl")
+id = &"duryjczycy"
+display_name = "Duryjczycy"
+lore = "Ludzie z centralnych królestw Duralanii; wszechstronni."
+stat_bonus = {
+"all": 1
+}
+passive = "Adaptacja: szybszy przyrost biegłości."
+preferred_roles = PackedStringArray("tank", "melee_dps", "support")
+name_prefix = PackedStringArray("Dur", "Ald", "Ren", "Mar", "Hel")
+name_suffix = PackedStringArray("an", "ric", "win", "ek", "ia")

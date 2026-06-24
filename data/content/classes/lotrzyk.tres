@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_jb25q"]
+
+[resource]
+script = ExtResource("1_jb25q")
+id = &"lotrzyk"
+display_name = "Łotrzyk"
+role = &"melee_dps"
+resource_kind = &"combo"
+primary_stat = &"dex"
+armor_weight = &"light"
+weapons = PackedStringArray("sztylety")
+base_stats = {
+"armor": 0.05,
+"dmg": 17,
+"hp": 90
+}
+skill_hints = PackedStringArray("Pchnięcie", "Cienie", "Trucizna")

@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_ex62n"]
+
+[resource]
+script = ExtResource("1_ex62n")
+id = &"wojownik"
+display_name = "Wojownik"
+role = &"tank"
+resource_kind = &"rage"
+primary_stat = &"str"
+armor_weight = &"heavy"
+weapons = PackedStringArray("miecz", "tarcza")
+base_stats = {
+"armor": 0.25,
+"dmg": 16,
+"hp": 140
+}
+skill_hints = PackedStringArray("Tarcza", "Prowokacja", "Roztrzaskanie")

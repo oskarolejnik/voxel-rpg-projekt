@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_tyfjn"]
+
+[resource]
+script = ExtResource("1_tyfjn")
+id = &"nekromanta"
+display_name = "Nekromanta"
+role = &"ranged_dps"
+resource_kind = &"essence"
+primary_stat = &"int"
+armor_weight = &"light"
+weapons = PackedStringArray("kostur")
+base_stats = {
+"armor": 0.0,
+"dmg": 18,
+"hp": 85
+}
+skill_hints = PackedStringArray("Wskrzeszenie", "Klątwa", "Pocisk kości")

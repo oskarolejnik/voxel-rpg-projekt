@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_mnawy"]
+
+[resource]
+script = ExtResource("1_mnawy")
+id = &"kaplan"
+display_name = "Kapłan"
+role = &"healer"
+resource_kind = &"faith"
+primary_stat = &"wis"
+armor_weight = &"light"
+weapons = PackedStringArray("buława")
+base_stats = {
+"armor": 0.05,
+"dmg": 12,
+"hp": 95
+}
+skill_hints = PackedStringArray("Leczenie", "Modlitwa", "Kara")

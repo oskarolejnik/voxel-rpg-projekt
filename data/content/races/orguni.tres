@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_qhs28"]
+
+[resource]
+script = ExtResource("1_qhs28")
+id = &"orguni"
+display_name = "Orguni"
+lore = "Orkowie z koczowniczych klanów; potężni, waleczni, honorowi."
+stat_bonus = {
+"str": 2,
+"vit": 1
+}
+passive = "Krew wojownika: bonus do furii i siły uderzenia."
+preferred_roles = PackedStringArray("melee_dps", "tank")
+name_prefix = PackedStringArray("Gor", "Ruk", "Mok", "Tha", "Urz")
+name_suffix = PackedStringArray("nak", "gash", "mok", "ul", "ra")

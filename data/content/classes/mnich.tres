@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_y35rn"]
+
+[resource]
+script = ExtResource("1_y35rn")
+id = &"mnich"
+display_name = "Mnich"
+role = &"melee_dps"
+resource_kind = &"chi"
+primary_stat = &"dex"
+armor_weight = &"medium"
+weapons = PackedStringArray("pięści")
+base_stats = {
+"armor": 0.1,
+"dmg": 16,
+"hp": 105
+}
+skill_hints = PackedStringArray("Seria ciosów", "Fala chi", "Medytacja")

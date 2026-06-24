@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_2prxr"]
+
+[resource]
+script = ExtResource("1_2prxr")
+id = &"mag"
+display_name = "Mag"
+role = &"ranged_dps"
+resource_kind = &"mana"
+primary_stat = &"int"
+armor_weight = &"light"
+weapons = PackedStringArray("różdżka")
+base_stats = {
+"armor": 0.0,
+"dmg": 22,
+"hp": 80
+}
+skill_hints = PackedStringArray("Ognista kula", "Lodowy grot", "Mżenie")

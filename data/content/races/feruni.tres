@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_a0jf8"]
+
+[resource]
+script = ExtResource("1_a0jf8")
+id = &"feruni"
+display_name = "Feruni"
+lore = "Lud-zwierzę (beastkin); instynkt, szybkość, tropienie."
+stat_bonus = {
+"dex": 2,
+"move": 0.05
+}
+passive = "Instynkt łowcy: szybkość ruchu, tropienie."
+preferred_roles = PackedStringArray("ranged_dps", "melee_dps")
+name_prefix = PackedStringArray("Fen", "Kar", "Luw", "Rha", "Mio")
+name_suffix = PackedStringArray("fang", "paw", "ra", "wir", "ka")

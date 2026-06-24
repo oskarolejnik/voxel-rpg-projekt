@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_2afs4"]
+
+[resource]
+script = ExtResource("1_2afs4")
+id = &"druid"
+display_name = "Druid"
+role = &"healer"
+resource_kind = &"nature"
+primary_stat = &"wis"
+armor_weight = &"medium"
+weapons = PackedStringArray("kostur")
+base_stats = {
+"armor": 0.1,
+"dmg": 14,
+"hp": 100
+}
+skill_hints = PackedStringArray("Odrost", "Cierniste pnącze", "Postać zwierzęca")

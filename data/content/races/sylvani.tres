@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_32bxl"]
+
+[resource]
+script = ExtResource("1_32bxl")
+id = &"sylvani"
+display_name = "Sylvani"
+lore = "Leśny lud z Verdant Hollow; zwinni, długowieczni, więź z naturą."
+biome = &"verdant"
+stat_bonus = {
+"dex": 2,
+"int": 1
+}
+passive = "Lekkostopość: cisza ruchu, bonus do łuku/natury."
+preferred_roles = PackedStringArray("ranged_dps", "healer")
+name_prefix = PackedStringArray("Syl", "Ael", "Thi", "Lor", "Nae")
+name_suffix = PackedStringArray("wen", "riel", "las", "thil", "a")

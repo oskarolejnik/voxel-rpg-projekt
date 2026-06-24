@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_b675e"]
+
+[resource]
+script = ExtResource("1_b675e")
+id = &"berserker"
+display_name = "Berserker"
+role = &"melee_dps"
+resource_kind = &"rage"
+primary_stat = &"str"
+armor_weight = &"medium"
+weapons = PackedStringArray("topór dwuręczny")
+base_stats = {
+"armor": 0.1,
+"dmg": 20,
+"hp": 120
+}
+skill_hints = PackedStringArray("Szał", "Wir Ostrzy", "Rozłup")

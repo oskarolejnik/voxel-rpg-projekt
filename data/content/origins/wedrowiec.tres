@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="OriginResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/OriginResource.gd" id="1_k11q7"]
+
+[resource]
+script = ExtResource("1_k11q7")
+id = &"wedrowiec"
+display_name = "Wędrowiec"
+lore = "Wieczny podróżnik; zna szlaki."
+stat_bonus = {
+"move": 0.03
+}
+start_items = PackedStringArray()

@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_7p77f"]
+
+[resource]
+script = ExtResource("1_7p77f")
+id = &"grimhold"
+display_name = "Karłowie z Grimholdu"
+lore = "Krasnoludy z Frosthelm Peaks; wytrzymali kowale i górnicy."
+biome = &"frosthelm"
+stat_bonus = {
+"armor": 0.05,
+"str": 1,
+"vit": 2
+}
+passive = "Twardziel: odporność, bonus do pancerza."
+preferred_roles = PackedStringArray("tank", "melee_dps")
+name_prefix = PackedStringArray("Bro", "Dur", "Thra", "Gri", "Kazd")
+name_suffix = PackedStringArray("din", "grim", "bek", "nor", "il")

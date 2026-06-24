@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_80c8v"]
+
+[resource]
+script = ExtResource("1_80c8v")
+id = &"paladyn"
+display_name = "Paladyn"
+role = &"support"
+resource_kind = &"faith"
+primary_stat = &"str"
+armor_weight = &"heavy"
+weapons = PackedStringArray("młot", "tarcza")
+base_stats = {
+"armor": 0.22,
+"dmg": 15,
+"hp": 130
+}
+skill_hints = PackedStringArray("Święte światło", "Aura", "Pieczęć")

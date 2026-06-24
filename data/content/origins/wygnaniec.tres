@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="OriginResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/OriginResource.gd" id="1_lcjvl"]
+
+[resource]
+script = ExtResource("1_lcjvl")
+id = &"wygnaniec"
+display_name = "Wygnaniec"
+lore = "Bez domu i pana; zahartowany."
+stat_bonus = {
+"move": 0.02,
+"vit": 1
+}
+start_biome = &"emberwaste"
+start_items = PackedStringArray()

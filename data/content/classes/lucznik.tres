@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_e63ur"]
+
+[resource]
+script = ExtResource("1_e63ur")
+id = &"lucznik"
+display_name = "Łucznik"
+role = &"ranged_dps"
+resource_kind = &"focus"
+primary_stat = &"dex"
+armor_weight = &"light"
+weapons = PackedStringArray("łuk")
+base_stats = {
+"armor": 0.05,
+"dmg": 18,
+"hp": 95
+}
+skill_hints = PackedStringArray("Celny strzał", "Deszcz strzał", "Pułapka")

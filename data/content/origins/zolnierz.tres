@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="OriginResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/OriginResource.gd" id="1_q622r"]
+
+[resource]
+script = ExtResource("1_q622r")
+id = &"zolnierz"
+display_name = "Żołnierz"
+lore = "Wyszkolony w boju z regularnych szeregów."
+stat_bonus = {
+"vit": 1
+}
+start_items = PackedStringArray("healing_potion")

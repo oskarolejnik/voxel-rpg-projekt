@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="RaceResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/RaceResource.gd" id="1_qwobb"]
+
+[resource]
+script = ExtResource("1_qwobb")
+id = &"embrani"
+display_name = "Embrani"
+lore = "Lud naznaczony ogniem z Emberwaste; ognista krew, temperament."
+biome = &"emberwaste"
+stat_bonus = {
+"fire_res": 0.1,
+"int": 2
+}
+passive = "Żar w żyłach: odporność na ogień, bonus do magii."
+preferred_roles = PackedStringArray("ranged_dps", "melee_dps")
+name_prefix = PackedStringArray("Pyr", "Em", "Cin", "Ash", "Vael")
+name_suffix = PackedStringArray("ros", "ka", "ith", "zar", "en")

@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="ClassResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ClassResource.gd" id="1_gcbyl"]
+
+[resource]
+script = ExtResource("1_gcbyl")
+id = &"zabojca"
+display_name = "Zabójca"
+role = &"melee_dps"
+resource_kind = &"combo"
+primary_stat = &"dex"
+armor_weight = &"light"
+weapons = PackedStringArray("sztylet")
+base_stats = {
+"armor": 0.05,
+"dmg": 19,
+"hp": 88
+}
+skill_hints = PackedStringArray("Skrytobójstwo", "Mgła", "Garota")

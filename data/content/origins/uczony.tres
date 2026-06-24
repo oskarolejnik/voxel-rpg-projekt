@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="OriginResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/OriginResource.gd" id="1_rnnbe"]
+
+[resource]
+script = ExtResource("1_rnnbe")
+id = &"uczony"
+display_name = "Uczony"
+lore = "Adept ksiąg i run."
+stat_bonus = {
+"int": 1
+}
+start_items = PackedStringArray()

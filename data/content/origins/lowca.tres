@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="OriginResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/OriginResource.gd" id="1_dftun"]
+
+[resource]
+script = ExtResource("1_dftun")
+id = &"lowca"
+display_name = "Łowca"
+lore = "Tropiciel z dzikich ostępów."
+stat_bonus = {
+"dex": 1
+}
+start_biome = &"verdant"
+start_items = PackedStringArray()
