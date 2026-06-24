@@ -801,6 +801,13 @@ func write_progression_to_save(sd: SaveData) -> void:
 	if GameState != null:
 		sd.gold = GameState.gold
 		sd.orbs = GameState.orbs
+	# AUDYT (save): ekwipunek + plecak (LOOT = filar progresji) MUSZĄ być zapisane w trakcie gry —
+	# inaczej gracz traci CAŁY loot przy wyjściu. Schema (SaveData) i serializacja (InventoryComponent)
+	# już istniały; brakowało TYLKO tego wpięcia (write nigdy nie wołał equipment_to_save/backpack_to_save).
+	var inv := _find_inventory()
+	if inv != null and inv.has_method("equipment_to_save"):
+		sd.equipment = inv.equipment_to_save()
+		sd.inventory = inv.backpack_to_save()
 	# ETAP 6 — pet (aktywny typ + stajnia) do save'a.
 	if _tame != null:
 		_tame.write_pet_to_save(sd)
@@ -815,6 +822,10 @@ func read_progression_from_save(sd: SaveData) -> void:
 		GameState.orbs = sd.orbs
 		GameState.gold_changed.emit(GameState.gold)
 		GameState.orbs_changed.emit(GameState.orbs)
+	# AUDYT (save): odtwórz ekwipunek + plecak z save'a (odwrotność write) — loot wraca po wczytaniu.
+	var inv := _find_inventory()
+	if inv != null and inv.has_method("load_from_save"):
+		inv.load_from_save(sd.equipment, sd.inventory)
 	# ETAP 6 — odtworz peta ze stanu save (typ -> ALLY przy graczu + stajnia).
 	if _tame != null:
 		_tame.load_pet_from_save(sd)

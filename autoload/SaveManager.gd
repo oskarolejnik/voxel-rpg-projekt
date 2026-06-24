@@ -37,9 +37,10 @@ func save_character(data: SaveData, path: String = CHAR_PATH) -> bool:
 	return _write_json(path, _character_dict(data))
 
 
-## Wczytuje POSTAC. Zwraca SaveData albo null gdy brak/blad pliku.
+## Wczytuje POSTAC. Zwraca SaveData albo null gdy brak pliku. Przy uszkodzeniu pliku próbuje .bak
+## (zamiast cichego startu nowej postaci) — patrz _read_json_or_backup.
 func load_character(path: String = CHAR_PATH) -> SaveData:
-	var d := _read_json(path)
+	var d := _read_json_or_backup(path)
 	if d.is_empty():
 		return null
 	d = _migrate(d)
@@ -58,7 +59,7 @@ func save_world(data: SaveData, path: String = WORLD_PATH) -> bool:
 
 
 func load_world(path: String = WORLD_PATH) -> SaveData:
-	var d := _read_json(path)
+	var d := _read_json_or_backup(path)
 	if d.is_empty():
 		return null
 	d = _migrate(d)
@@ -82,16 +83,47 @@ func _world_dict(data: SaveData) -> Dictionary:
 	return data.to_dict()
 
 
+## ATOMOWY zapis (audyt — durability): pisz do path+".tmp", zrób kopię .bak istniejącego pliku,
+## potem PODMIEŃ tmp -> path. Crash w trakcie zapisu NIE uszkadza wtedy prawdziwego pliku (zostaje
+## stary albo .bak), zamiast — jak dawniej — zostawić obciętą połówkę po truncate-in-place.
 func _write_json(path: String, dict: Dictionary) -> bool:
 	_ensure_dir()
-	var f := FileAccess.open(path, FileAccess.WRITE)
+	var tmp := path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
-		push_error("SaveManager: nie moge otworzyc do zapisu: %s (err %d)" % [path, FileAccess.get_open_error()])
+		push_error("SaveManager: nie moge otworzyc do zapisu: %s (err %d)" % [tmp, FileAccess.get_open_error()])
 		return false
 	f.store_string(JSON.stringify(dict, "\t"))
+	f.flush()
 	f.close()
+	# Kopia zapasowa poprzedniego WAŻNEGO pliku (recovery przy korupcji), potem atomowa podmiana.
+	if FileAccess.file_exists(path):
+		DirAccess.copy_absolute(path, path + ".bak")
+		DirAccess.remove_absolute(path)
+	var err := DirAccess.rename_absolute(tmp, path)
+	if err != OK:
+		push_error("SaveManager: podmiana %s -> %s blad %d" % [tmp, path, err])
+		return false
 	save_completed.emit(path)
 	return true
+
+
+## Czyta plik, a przy USZKODZENIU prawdziwego pliku (istnieje, ale nieczytelny JSON) próbuje kopii
+## .bak — zamiast traktować korupcję jak „brak pliku" i cicho startować nową postać (cichy wipe to
+## najgorszy przypadek dla filaru „nigdy nie tracisz mocy"). Brak pliku (legit pierwszy start) -> {}.
+func _read_json_or_backup(path: String) -> Dictionary:
+	if FileAccess.file_exists(path):
+		var d := _read_json(path)
+		if not d.is_empty():
+			return d
+		push_warning("SaveManager: %s uszkodzony lub pusty — probuje kopii .bak" % path)
+	var bak := path + ".bak"
+	if FileAccess.file_exists(bak):
+		var db := _read_json(bak)
+		if not db.is_empty():
+			push_warning("SaveManager: przywrocono zapis z kopii %s" % bak)
+			return db
+	return {}
 
 
 func _read_json(path: String) -> Dictionary:
