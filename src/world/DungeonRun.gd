@@ -31,6 +31,7 @@ const EnemyScript := preload("res://src/Enemy.gd")
 const SALT_ROOM_COUNT: int = 0x5101
 const SALT_ROOM_PICK: int = 0x5202
 const SALT_ROOM_POS: int = 0x5303
+const SALT_TREASURE: int = 0x5404      # loot skarbca/sekretu (audyt #4)
 
 ## ODSEPAROWANIE PRZESTRZENNE INSTANCJI OD SWIATA (review #BLOCKER): cala instancja dungeonu
 ## zyje w DALEKIM rejonie, ktorego strumieniowany teren swiata NIGDY nie dotyka. Teren swiata ma
@@ -330,6 +331,12 @@ func _spawn_enemies() -> void:
 		if rtype == RoomType_BOSS():
 			_spawn_boss(r)
 			continue
+		# AUDYT #4: TREASURE/SECRET = realna nagroda za eksplorację (wcześniej PUSTE — sprzeczne z
+		# "loot to główna progresja"). Loot leci tym samym pipeline'em co drop wroga (loot_dropped ->
+		# Main -> LootDrop, w tym replikacja co-op). SECRET = wyższa gwarantowana rzadkość niż TREASURE.
+		if rtype == RoomType_TREASURE() or rtype == RoomType_SECRET():
+			_spawn_treasure_loot(r)
+			continue
 		if rtype != RoomType_COMBAT() and rtype != RoomType_MINIBOSS():
 			continue
 		_spawn_room_enemies(r, table)
@@ -356,6 +363,50 @@ func _spawn_room_enemies(room: Dictionary, table: Array) -> void:
 		var off := _enemy_offset(room_id, i)
 		var pos := center + off
 		_spawn_one_enemy(enemy_id, pos, ilvl, false)
+
+
+## AUDYT #4 — LOOT skarbca/sekretu. TREASURE i SECRET byly PUSTE (sprzeczne z "loot to glowna
+## progresja"). Losujemy realna nagrode i emitujemy ja jak drop wroga (loot_dropped -> Main ->
+## LootDrop), wiec reuse calego pipeline'u (w tym replikacja co-op; host-gated wyzej w _spawn_enemies).
+## Deterministyczne: LOKALNY RNG(seed, room_id). SECRET = glebszy ilvl + lepsza gwarantowana rzadkosc.
+func _spawn_treasure_loot(room: Dictionary) -> void:
+	if LootService == null:
+		return
+	var room_id := int(room["id"])
+	var depth := int(room["depth"])
+	var is_secret := int(room["type"]) == RoomType_SECRET()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _content_seed(room_id, SALT_TREASURE)
+	# ilvl rosnie z glebia + tierem; SECRET dostaje bonus (trudniej dostepny = lepszy).
+	var ilvl := maxi(1, depth + _tier * 2 + (3 if is_secret else 0))
+	var count := (2 if is_secret else 3) + _tier   # SECRET mniej sztuk, ale wyzsza rzadkosc
+	var center := _room_floor_center(room)
+	var drops: Array = []
+	for i in count:
+		var item_seed := _content_seed(room_id * 131 + i, SALT_TREASURE)
+		var slot := _treasure_slot(rng)
+		var tier := _treasure_rarity(rng, is_secret)
+		var inst: ItemInstance = LootService.roll_item(item_seed, ilvl, _biome, tier, slot)
+		if inst != null:
+			drops.append({ "kind": "item", "instance": inst })
+	# Skarbiec sypie tez zlotem (skala z tierem).
+	drops.append({ "kind": "gold", "amount": rng.randi_range(25, 70) * maxi(1, _tier) })
+	if not drops.is_empty():
+		loot_dropped.emit(_world_point(center), drops)
+
+
+## Gwarantowana rzadkosc skarbca: TREASURE >= RARE (szansa EPIC), SECRET >= EPIC (szansa LEGENDARY).
+func _treasure_rarity(rng: RandomNumberGenerator, is_secret: bool) -> int:
+	if is_secret:
+		return ItemResource.Rarity.LEGENDARY if rng.randf() < 0.35 else ItemResource.Rarity.EPIC
+	return ItemResource.Rarity.EPIC if rng.randf() < 0.35 else ItemResource.Rarity.RARE
+
+
+## Losowy slot ekwipunku do dropu skarbca (bron/pancerz/trinket — bez consumable/material).
+func _treasure_slot(rng: RandomNumberGenerator) -> int:
+	var slots := [ItemResource.Slot.WEAPON, ItemResource.Slot.HELM, ItemResource.Slot.CHEST,
+		ItemResource.Slot.LEGS, ItemResource.Slot.BOOTS, ItemResource.Slot.TRINKET]
+	return int(slots[rng.randi_range(0, slots.size() - 1)])
 
 
 ## BOSS: mocny wariant Enemy (HP/dmg podbite, threat_tier boss). Stoi w srodku pokoju bossa. Jego
@@ -558,3 +609,5 @@ func _pick_boss_base(table: Array) -> StringName:
 func RoomType_COMBAT() -> int: return DungeonGen.RoomType.COMBAT
 func RoomType_MINIBOSS() -> int: return DungeonGen.RoomType.MINIBOSS
 func RoomType_BOSS() -> int: return DungeonGen.RoomType.BOSS
+func RoomType_TREASURE() -> int: return DungeonGen.RoomType.TREASURE
+func RoomType_SECRET() -> int: return DungeonGen.RoomType.SECRET
