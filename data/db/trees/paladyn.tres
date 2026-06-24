@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_devotion.tres" id="2_dv"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_iron_faith.tres" id="3_if"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_bulwark.tres" id="4_bul"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_unbreakable.tres" id="5_unb"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_holy_light.tres" id="6_hl"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_sacred_aura.tres" id="7_sa"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_zeal.tres" id="8_zl"]
+[ext_resource type="Resource" path="res://data/db/passives/pal_consecration.tres" id="9_con"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"paladyn"
+nodes = Array[ExtResource("2_dv")]([ExtResource("2_dv"), ExtResource("3_if"), ExtResource("4_bul"), ExtResource("5_unb"), ExtResource("6_hl"), ExtResource("7_sa"), ExtResource("8_zl"), ExtResource("9_con")])
+layout = {
+&"pal_devotion": Vector2(0, 0),
+&"pal_iron_faith": Vector2(-120, 110),
+&"pal_holy_light": Vector2(120, 110),
+&"pal_bulwark": Vector2(-120, 230),
+&"pal_sacred_aura": Vector2(120, 230),
+&"pal_consecration": Vector2(240, 230),
+&"pal_unbreakable": Vector2(-120, 350),
+&"pal_zeal": Vector2(120, 350)
+}

@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_rage.tres" id="2_rg"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_savage_blows.tres" id="3_sb"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_brutality.tres" id="4_br"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_frenzy.tres" id="5_fr"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_bloodlust.tres" id="6_bl"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_thick_hide.tres" id="7_th"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_warpath.tres" id="8_wp"]
+[ext_resource type="Resource" path="res://data/db/passives/ber_undying_rage.tres" id="9_ur"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"berserker"
+nodes = Array[ExtResource("2_rg")]([ExtResource("2_rg"), ExtResource("3_sb"), ExtResource("4_br"), ExtResource("5_fr"), ExtResource("6_bl"), ExtResource("7_th"), ExtResource("8_wp"), ExtResource("9_ur")])
+layout = {
+&"ber_rage": Vector2(0, 0),
+&"ber_savage_blows": Vector2(-120, 110),
+&"ber_bloodlust": Vector2(120, 110),
+&"ber_brutality": Vector2(-120, 230),
+&"ber_thick_hide": Vector2(120, 230),
+&"ber_frenzy": Vector2(-120, 350),
+&"ber_warpath": Vector2(120, 350),
+&"ber_undying_rage": Vector2(120, 470)
+}

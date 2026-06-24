@@ -1,0 +1,42 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_unb_armor"]
+script = ExtResource("1_sm")
+stat = &"armor"
+op = 2
+value = 0.3
+tags = Array[StringName]([&"paladyn", &"defense", &"keystone"])
+source = &"tree"
+source_id = &"pal_unbreakable"
+
+[sub_resource type="Resource" id="mod_unb_hp"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+op = 2
+value = 0.2
+tags = Array[StringName]([&"paladyn", &"defense", &"keystone"])
+source = &"tree"
+source_id = &"pal_unbreakable"
+
+[sub_resource type="Resource" id="mod_unb_ms"]
+script = ExtResource("1_sm")
+stat = &"move_speed"
+op = 1
+value = -0.1
+tags = Array[StringName]([&"paladyn", &"keystone"])
+source = &"tree"
+source_id = &"pal_unbreakable"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"pal_unbreakable"
+display_name = "Niezłomny"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_unb_armor"), SubResource("mod_unb_hp"), SubResource("mod_unb_ms")])
+cost_points = 1
+requires = Array[StringName]([&"pal_bulwark"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

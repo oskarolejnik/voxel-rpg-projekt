@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_warpath_ms"]
+script = ExtResource("1_sm")
+stat = &"move_speed"
+op = 1
+value = 0.1
+tags = Array[StringName]([&"berserker", &"rage"])
+source = &"tree"
+source_id = &"ber_warpath"
+
+[sub_resource type="Resource" id="mod_warpath_ls"]
+script = ExtResource("1_sm")
+stat = &"lifesteal"
+op = 0
+value = 0.05
+tags = Array[StringName]([&"phys", &"berserker"])
+source = &"tree"
+source_id = &"ber_warpath"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"ber_warpath"
+display_name = "Sciezka Wojny"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_warpath_ms"), SubResource("mod_warpath_ls")])
+cost_points = 1
+requires = Array[StringName]([&"ber_thick_hide"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

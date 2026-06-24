@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_killer_instinct.tres" id="2_ki"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_precision.tres" id="3_pr"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_lethality.tres" id="4_le"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_swiftness.tres" id="5_sw"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_shadowstep.tres" id="6_sh"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_venom.tres" id="7_vn"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_exploit.tres" id="8_ex"]
+[ext_resource type="Resource" path="res://data/db/passives/zab_assassinate.tres" id="9_as"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"zabojca"
+nodes = Array[ExtResource("2_ki")]([ExtResource("2_ki"), ExtResource("3_pr"), ExtResource("4_le"), ExtResource("5_sw"), ExtResource("6_sh"), ExtResource("7_vn"), ExtResource("8_ex"), ExtResource("9_as")])
+layout = {
+&"zab_killer_instinct": Vector2(0, 0),
+&"zab_precision": Vector2(-120, 110),
+&"zab_swiftness": Vector2(120, 110),
+&"zab_lethality": Vector2(-120, 230),
+&"zab_shadowstep": Vector2(120, 230),
+&"zab_exploit": Vector2(-40, 350),
+&"zab_venom": Vector2(120, 350),
+&"zab_assassinate": Vector2(-200, 350)
+}

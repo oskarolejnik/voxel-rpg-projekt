@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_inner_chi.tres" id="2_ic"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_swiftness.tres" id="3_sw"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_pressure_point.tres" id="4_pp"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_flurry.tres" id="5_fl"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_agility.tres" id="6_ag"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_chi_drain.tres" id="7_cd"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_momentum.tres" id="8_mo"]
+[ext_resource type="Resource" path="res://data/db/passives/mni_iron_body.tres" id="9_ib"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"mnich"
+nodes = Array[ExtResource("2_ic")]([ExtResource("2_ic"), ExtResource("3_sw"), ExtResource("4_pp"), ExtResource("5_fl"), ExtResource("6_ag"), ExtResource("7_cd"), ExtResource("8_mo"), ExtResource("9_ib")])
+layout = {
+&"mni_inner_chi": Vector2(0, 0),
+&"mni_swiftness": Vector2(-120, 110),
+&"mni_agility": Vector2(120, 110),
+&"mni_iron_body": Vector2(0, 110),
+&"mni_pressure_point": Vector2(-120, 230),
+&"mni_chi_drain": Vector2(120, 230),
+&"mni_flurry": Vector2(-120, 350),
+&"mni_momentum": Vector2(120, 350)
+}

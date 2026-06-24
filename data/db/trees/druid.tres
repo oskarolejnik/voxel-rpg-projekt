@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_natures_blessing.tres" id="2_nb"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_venom_1.tres" id="3_v1"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_thorns.tres" id="4_th"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_poison_2.tres" id="5_p2"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_wild_growth.tres" id="6_wg"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_swift_paws.tres" id="7_sp"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_rejuvenation.tres" id="8_rj"]
+[ext_resource type="Resource" path="res://data/db/passives/dru_natural_harmony.tres" id="9_nh"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"druid"
+nodes = Array[ExtResource("2_nb")]([ExtResource("2_nb"), ExtResource("3_v1"), ExtResource("4_th"), ExtResource("5_p2"), ExtResource("6_wg"), ExtResource("7_sp"), ExtResource("8_rj"), ExtResource("9_nh")])
+layout = {
+&"dru_natures_blessing": Vector2(0, 0),
+&"dru_venom_1": Vector2(-120, 110),
+&"dru_wild_growth": Vector2(120, 110),
+&"dru_thorns": Vector2(-120, 230),
+&"dru_swift_paws": Vector2(120, 230),
+&"dru_poison_2": Vector2(-120, 350),
+&"dru_rejuvenation": Vector2(120, 350),
+&"dru_natural_harmony": Vector2(-120, 470)
+}

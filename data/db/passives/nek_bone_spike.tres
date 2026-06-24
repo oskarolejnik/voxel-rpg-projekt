@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_bone_dmg"]
+script = ExtResource("1_sm")
+stat = &"damage"
+op = 1
+value = 0.1
+tags = Array[StringName]([&"necromancer", &"summon"])
+source = &"tree"
+source_id = &"nek_bone_spike"
+
+[sub_resource type="Resource" id="mod_bone_critdmg"]
+script = ExtResource("1_sm")
+stat = &"crit_damage"
+op = 1
+value = 0.15
+tags = Array[StringName]([&"necromancer", &"summon"])
+source = &"tree"
+source_id = &"nek_bone_spike"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"nek_bone_spike"
+display_name = "Kostny Kolec"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_bone_dmg"), SubResource("mod_bone_critdmg")])
+cost_points = 1
+requires = Array[StringName]([&"nek_poison_1"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

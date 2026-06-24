@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_harmony_poison"]
+script = ExtResource("1_sm")
+stat = &"poison_damage"
+op = 2
+value = 0.2
+tags = Array[StringName]([&"poison", &"nature", &"druid", &"keystone"])
+source = &"tree"
+source_id = &"dru_natural_harmony"
+
+[sub_resource type="Resource" id="mod_harmony_regen"]
+script = ExtResource("1_sm")
+stat = &"hp_regen"
+op = 2
+value = 0.2
+tags = Array[StringName]([&"nature", &"druid", &"keystone"])
+source = &"tree"
+source_id = &"dru_natural_harmony"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"dru_natural_harmony"
+display_name = "Harmonia Natury"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_harmony_poison"), SubResource("mod_harmony_regen")])
+cost_points = 1
+requires = Array[StringName]([&"dru_poison_2"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

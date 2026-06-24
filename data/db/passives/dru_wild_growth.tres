@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_wild_regen"]
+script = ExtResource("1_sm")
+stat = &"hp_regen"
+op = 0
+value = 2.0
+tags = Array[StringName]([&"nature", &"druid"])
+source = &"tree"
+source_id = &"dru_wild_growth"
+
+[sub_resource type="Resource" id="mod_wild_hp"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+op = 1
+value = 0.08
+tags = Array[StringName]([&"nature", &"druid"])
+source = &"tree"
+source_id = &"dru_wild_growth"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"dru_wild_growth"
+display_name = "Bujny Wzrost"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_wild_regen"), SubResource("mod_wild_hp")])
+cost_points = 1
+requires = Array[StringName]([&"dru_natures_blessing"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

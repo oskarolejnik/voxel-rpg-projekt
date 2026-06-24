@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_wrath_holy"]
+script = ExtResource("1_sm")
+stat = &"lightning_damage"
+op = 1
+value = 0.2
+tags = Array[StringName]([&"holy", &"lightning", &"kaplan"])
+source = &"tree"
+source_id = &"kap_holy_wrath"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"kap_holy_wrath"
+display_name = "Święty Gniew"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_wrath_holy")])
+cost_points = 1
+requires = Array[StringName]([&"kap_zeal"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_devotion.tres" id="2_dv"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_blessing_1.tres" id="3_bl"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_sanctuary.tres" id="4_sa"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_radiance.tres" id="5_rd"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_smite_1.tres" id="6_sm"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_zeal.tres" id="7_zl"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_holy_wrath.tres" id="8_hw"]
+[ext_resource type="Resource" path="res://data/db/passives/kap_divine_grace.tres" id="9_dg"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"kaplan"
+nodes = Array[ExtResource("2_dv")]([ExtResource("2_dv"), ExtResource("3_bl"), ExtResource("4_sa"), ExtResource("5_rd"), ExtResource("6_sm"), ExtResource("7_zl"), ExtResource("8_hw"), ExtResource("9_dg")])
+layout = {
+&"kap_devotion": Vector2(0, 0),
+&"kap_blessing_1": Vector2(-120, 110),
+&"kap_smite_1": Vector2(120, 110),
+&"kap_sanctuary": Vector2(-120, 230),
+&"kap_zeal": Vector2(120, 230),
+&"kap_radiance": Vector2(-120, 350),
+&"kap_holy_wrath": Vector2(120, 350),
+&"kap_divine_grace": Vector2(-120, 470)
+}

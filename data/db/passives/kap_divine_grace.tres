@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_grace_regen"]
+script = ExtResource("1_sm")
+stat = &"hp_regen"
+op = 2
+value = 0.5
+tags = Array[StringName]([&"holy", &"kaplan", &"support", &"keystone"])
+source = &"tree"
+source_id = &"kap_divine_grace"
+
+[sub_resource type="Resource" id="mod_grace_hp"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+op = 1
+value = 0.15
+tags = Array[StringName]([&"holy", &"kaplan", &"support", &"keystone"])
+source = &"tree"
+source_id = &"kap_divine_grace"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"kap_divine_grace"
+display_name = "Boska Łaska"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_grace_regen"), SubResource("mod_grace_hp")])
+cost_points = 1
+requires = Array[StringName]([&"kap_radiance"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

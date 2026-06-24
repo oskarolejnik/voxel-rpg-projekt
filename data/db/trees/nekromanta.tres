@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_dark_pact.tres" id="2_dp"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_poison_1.tres" id="3_p1"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_corruption.tres" id="4_co"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_plague.tres" id="5_pl"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_bone_spike.tres" id="6_bs"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_essence_flow.tres" id="7_ef"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_soul_harvest.tres" id="8_sh"]
+[ext_resource type="Resource" path="res://data/db/passives/nek_undying.tres" id="9_un"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"nekromanta"
+nodes = Array[ExtResource("2_dp")]([ExtResource("2_dp"), ExtResource("3_p1"), ExtResource("4_co"), ExtResource("5_pl"), ExtResource("6_bs"), ExtResource("7_ef"), ExtResource("8_sh"), ExtResource("9_un")])
+layout = {
+&"nek_dark_pact": Vector2(0, 0),
+&"nek_poison_1": Vector2(-120, 110),
+&"nek_essence_flow": Vector2(120, 110),
+&"nek_corruption": Vector2(-200, 230),
+&"nek_bone_spike": Vector2(-40, 230),
+&"nek_soul_harvest": Vector2(120, 230),
+&"nek_plague": Vector2(-200, 350),
+&"nek_undying": Vector2(120, 350)
+}
