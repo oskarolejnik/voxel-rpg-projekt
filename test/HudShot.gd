@@ -42,7 +42,9 @@ func _ready() -> void:
 	if hud.has_method("set_skill_slot"):
 		hud.set_skill_slot(0, "whirl", "1")
 		hud.set_skill_slot(1, "dash", "Q")
-		hud.set_skill_slot(2, "bolt", "3")
+		hud.set_skill_slot(2, "shield", "3")
+		hud.set_skill_slot(3, "ice", "4")
+		hud.set_skill_slot(4, "arrow", "5")
 		hud.set_skill_cooldown(1, 0.45, 3.0)   # unik chwilowo na cooldownie (zasłona + "3")
 	if hud.has_method("set_item_slot"):
 		hud.set_item_slot(0, "potion", 3)

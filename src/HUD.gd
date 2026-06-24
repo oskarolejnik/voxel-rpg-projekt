@@ -93,6 +93,10 @@ var _item_slots: Array = []    # [{icon:String, count:int}]
 const IC_WHIRL: Array = ["..#..", "#.#.#", ".###.", "#.#.#", "..#.."]
 const IC_DASH: Array = [".#...", "..#..", "...#.", "..#..", ".#..."]
 const IC_POTION: Array = ["..#..", ".###.", "..#..", ".###.", "#####", "#####", ".###."]
+const IC_SHIELD: Array = ["#####", "#####", "#####", "#####", ".###.", "..#.."]
+const IC_ARROW: Array = ["..#..", ".###.", "#####", "..#..", "..#.."]
+const IC_ICE: Array = ["#.#.#", ".###.", "#####", ".###.", "#.#.#"]
+const IC_AURA: Array = [".###.", "#...#", "#...#", "#...#", ".###."]
 
 # Screen-flash.
 var _flash_t: float = 0.0
@@ -514,6 +518,10 @@ func _hotbar_icon(name: String) -> Dictionary:
 		"bolt": return {"bmp": IC_BOLT, "col": Color8(150, 200, 250)}     # skill błyskawiczny
 		"flame": return {"bmp": IC_FLAME, "col": Color8(240, 140, 70)}    # skill ognisty
 		"potion": return {"bmp": IC_POTION, "col": Color8(220, 90, 90)}   # mikstura
+		"shield": return {"bmp": IC_SHIELD, "col": Color8(180, 190, 205)} # tank
+		"arrow": return {"bmp": IC_ARROW, "col": Color8(150, 210, 130)}   # łuk/strzał
+		"ice": return {"bmp": IC_ICE, "col": Color8(150, 220, 255)}       # mróz
+		"aura": return {"bmp": IC_AURA, "col": Color8(230, 200, 120)}     # aura/utility
 		_: return {}
 
 func _draw_slot_icon(ci: CanvasItem, x: float, y: float, s: float, name: String) -> void:

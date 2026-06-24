@@ -917,6 +917,18 @@ func _spawn_enemies() -> void:
 		Callable(self, "_on_enemy_loot_dropped"),
 		Callable(self, "_on_enemy_died"))
 
+# Heurystyka: nazwa skilla (ContentDB.skill_hints) -> klucz ikony hotbara (zob. HUD._hotbar_icon).
+func _icon_for_skill(nm: String) -> String:
+	var s := nm.to_lower()
+	if "tarcz" in s: return "shield"
+	if "ognist" in s or "płom" in s or "plom" in s: return "flame"
+	if "lod" in s or "mróz" in s or "mroz" in s or "lód" in s: return "ice"
+	if "strzał" in s or "strzal" in s or "łuk" in s or "luk" in s: return "arrow"
+	if "wir" in s or "roztrzas" in s or "rozłup" in s or "rozlup" in s or "szał" in s or "szal" in s: return "whirl"
+	if "mżen" in s or "mzen" in s or "piorun" in s or "błysk" in s or "blysk" in s: return "bolt"
+	return "aura"   # prowokacja/leczenie/pułapka/utility itp.
+
+
 func _setup_hud() -> void:
 	# --- Stara podpowiedź ze sterowaniem (przeniesiona na dół, by nie kryła pasków) ---
 	var layer := CanvasLayer.new()
@@ -975,9 +987,15 @@ func _setup_hud() -> void:
 		if _hud.has_method("set_skill_slot"):
 			_hud.set_skill_slot(0, "whirl", "1")
 			_hud.set_skill_slot(1, "dash", "Q")
-			_hud.set_skill_slot(2, "", "3")
-			_hud.set_skill_slot(3, "", "4")
-			_hud.set_skill_slot(4, "", "5")
+			# Sloty 2-4: skille KLASY gracza z ContentDB (ikony wg skill_hints). Klasa z GameState
+			# (warrior/mage/ranger) -> id ContentDB; heurystyka nazwa->ikona. Fallback: puste.
+			var pclass: StringName = GameState.class_id if (GameState != null and "class_id" in GameState) else &"warrior"
+			var cdb_id: StringName = {&"mage": &"mag", &"ranger": &"lucznik"}.get(pclass, &"wojownik")
+			var cdef = ContentDB.class_by_id(cdb_id) if (ContentDB != null) else null
+			var hints: PackedStringArray = cdef.skill_hints if cdef != null else PackedStringArray()
+			for i in range(3):
+				var ic := _icon_for_skill(String(hints[i])) if i < hints.size() else ""
+				_hud.set_skill_slot(2 + i, ic, str(3 + i))
 		# Slot przedmiotu 0 = mikstura (placeholder do czasu spięcia ekwipunku w kroku dalszym).
 		if _hud.has_method("set_item_slot"):
 			_hud.set_item_slot(0, "potion", 3)

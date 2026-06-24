@@ -53,6 +53,8 @@ func _test_hud_slots() -> void:
 	hud.set_skill_slot(99, "x", "x")      # poza zakresem = no-op (brak crasha)
 	hud.set_item_slot(-1, "x", 1)
 	_check(not _hotbar_icon_empty(hud, "whirl"), "ikona 'whirl' nieznana (powinna istnieć)")
+	for ic in ["dash", "bolt", "flame", "potion", "shield", "arrow", "ice", "aura"]:
+		_check(not _hotbar_icon_empty(hud, ic), "ikona '%s' powinna istnieć (loadouty klas)" % ic)
 	_check(_hotbar_icon_empty(hud, "nieistnieje"), "nieznana ikona powinna dać pusty dict")
 	print("[HOTBAR] (1) API slotów HUD: skille/cooldown/przedmioty zapisują, bounds-safe OK")
 	hud.queue_free()
