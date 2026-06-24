@@ -235,7 +235,12 @@ func _spawn_boss_door() -> void:
 	door.position = bc + Vector3(-float(DungeonGen.ROOM_W) * DungeonGen.VOXEL_SIZE * 0.5, 0.0, 0.0)
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.4, float(DungeonGen.ROOM_H) * DungeonGen.VOXEL_SIZE,
+	# QUICK-WIN (czytelnosc bramy): blokada wymiarowana na WYSOKOSC OTWORU drzwi, nie na pelne ROOM_H.
+	# DungeonGen wycina otwor o wysokosci door_h = ROOM_H/2 + 1 voxeli (build_room_mesh) — wczesniej
+	# blokada siegala sufitu, zostawiajac "skarbiec" nad otworem (czytala sie jak sciana, nie brama).
+	# Teraz wysokosc = door_h * VOXEL_SIZE i wycentrowana na luku otworu (od podlogi w gore).
+	var door_h := DungeonGen.ROOM_H / 2 + 1
+	bm.size = Vector3(0.4, float(door_h) * DungeonGen.VOXEL_SIZE,
 		float(DungeonGen.CORRIDOR_W) * DungeonGen.VOXEL_SIZE)
 	mi.mesh = bm
 	mi.position = Vector3(0.0, bm.size.y * 0.5, 0.0)

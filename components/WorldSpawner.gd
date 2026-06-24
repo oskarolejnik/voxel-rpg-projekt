@@ -36,6 +36,18 @@ const SPAWN_Y_OFFSET: float = 1.0
 ## Min. odległość spawnu od gracza (nie rodzić wroga na głowie).
 const MIN_SPAWN_DIST: float = 6.0
 
+## QUICK-WIN (walidacja spawnu): poziom morza w METRACH (SEA_LEVEL voxeli × VOXEL_SIZE). Grunt z
+## height_at <= tej wartości = pod/na wodzie (wróg nie ma na czym stać). Stała lokalna (nie zależy
+## od instancji VoxelWorld — czysta arytmetyka, by helper był testowalny headless bez świata).
+const SEA_LEVEL_METERS: float = float(VoxelWorld.SEA_LEVEL) * VoxelWorld.VOXEL_SIZE
+## Maks. dopuszczalna RÓŻNICA wysokości gruntu (m) między kandydatem a sąsiadem — powyżej = klif/skarpa
+## (wróg utknąłby w ścianie / spadł). 3 m ~ 6 voxeli pionowo na ~2 m poziomo to już strome zbocze.
+const MAX_SLOPE_DELTA: float = 3.0
+## Odległość (m) próbkowania sąsiadów przy detekcji klifu (sondujemy grunt wokół kandydata).
+const SLOPE_SAMPLE_DIST: float = 2.0
+## Ile razy próbujemy znaleźć POPRAWNĄ pozycję spawnu (woda/klif) zanim oddamy najlepszego kandydata.
+const SPAWN_VALIDATE_RETRIES: int = 5
+
 ## Salty strumienia regionu (rozłączne „rzuty”: ile wrogów, który wróg, gdzie).
 const SALT_COUNT: int = 0x51A1
 const SALT_PICK: int = 0x71B2
@@ -249,13 +261,44 @@ func _weighted_pick(rng: RandomNumberGenerator, table: Array) -> Dictionary:
 
 ## Deterministyczna pozycja spawnu w regionie (offset z RNG) z gruntem z height_at. Wołać tylko
 ## gdy _world != null (caller sprawdza) — zwraca konkretny Vector3 (typowany, brak Variant).
+##
+## QUICK-WIN (POPRAWNE pozycje spawnu): kandydat odrzucany, jeśli ląduje POD WODĄ (grunt <= poziom
+## morza) lub na ZBYT STROMYM zboczu/klifie (duża różnica height_at względem sąsiadów). Ponawiamy
+## kilka razy z innym offsetem (z TEGO SAMEGO region RNG — determinizm zachowany: ten sam seed daje
+## tę samą sekwencję prób, więc ten sam wynik). Gdy wszystkie próby zawiodą, oddajemy NAJLEPSZEGO
+## kandydata (najwyższy nad wodą / najmniejszy spadek) — spawn zawsze coś zwraca (brak regresji).
 func _spawn_pos(rng: RandomNumberGenerator, region: Vector2i) -> Vector3:
-	var ox := rng.randf() * REGION_SIZE
-	var oz := rng.randf() * REGION_SIZE
-	var wx := float(region.x) * REGION_SIZE + ox
-	var wz := float(region.y) * REGION_SIZE + oz
-	var wy := _world.height_at(wx, wz) + SPAWN_Y_OFFSET
-	return Vector3(wx, wy, wz)
+	var best := Vector3.ZERO
+	var best_score := -INF
+	var have_best := false
+	for _try in SPAWN_VALIDATE_RETRIES:
+		var ox := rng.randf() * REGION_SIZE
+		var oz := rng.randf() * REGION_SIZE
+		var wx := float(region.x) * REGION_SIZE + ox
+		var wz := float(region.y) * REGION_SIZE + oz
+		var gy := _world.height_at(wx, wz)
+		# Sąsiedzi (±X, ±Z) do detekcji klifu — największy spadek wysokości wokół kandydata.
+		var hxp := _world.height_at(wx + SLOPE_SAMPLE_DIST, wz)
+		var hxn := _world.height_at(wx - SLOPE_SAMPLE_DIST, wz)
+		var hzp := _world.height_at(wx, wz + SLOPE_SAMPLE_DIST)
+		var hzn := _world.height_at(wx, wz - SLOPE_SAMPLE_DIST)
+		var slope := maxf(maxf(absf(gy - hxp), absf(gy - hxn)), maxf(absf(gy - hzp), absf(gy - hzn)))
+		var pos := Vector3(wx, gy + SPAWN_Y_OFFSET, wz)
+		if is_valid_spawn_ground(gy, slope):
+			return pos
+		# Niepoprawny — zapamiętaj jako fallback wg jakości (wyżej nad wodą i mniejszy klif = lepiej).
+		var score := (gy - SEA_LEVEL_METERS) - slope
+		if not have_best or score > best_score:
+			best_score = score
+			best = pos
+			have_best = true
+	return best
+
+
+## Czysty (testowalny) predykat POPRAWNOŚCI gruntu pod spawn: ground_y NAD poziomem morza ORAZ
+## największy spadek do sąsiadów (slope_delta) poniżej progu klifu. Statyczny — bez instancji świata.
+static func is_valid_spawn_ground(ground_y: float, slope_delta: float) -> bool:
+	return ground_y > SEA_LEVEL_METERS and slope_delta <= MAX_SLOPE_DELTA
 
 
 ## Tworzy Enemy z EnemyResource (EnemyDB), konfiguruje PRZED add_child (staty wejdą do komponentów),
