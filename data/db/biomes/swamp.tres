@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="BiomeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/BiomeResource.gd" id="1_biome"]
+
+[resource]
+script = ExtResource("1_biome")
+id = &"swamp"
+display_name = "Mirefen Bog"
+loot_tier = 2
+enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"goblin",
+"weight": 5.0,
+"max_alive": 8
+}, {
+"enemy_id": &"slinger",
+"weight": 4.0,
+"max_alive": 5
+}, {
+"enemy_id": &"boar",
+"weight": 3.0,
+"max_alive": 4
+}, {
+"enemy_id": &"brute",
+"weight": 1.0,
+"max_alive": 1
+}])
+affix_themes = Array[StringName]([&"venomous", &"of_regen", &"of_shadow"])
+entrance_chance = 0.02
+fog_color = Color(0.42, 0.5, 0.4, 1.0)
+ambient_light = Color(0.46, 0.54, 0.44, 1.0)

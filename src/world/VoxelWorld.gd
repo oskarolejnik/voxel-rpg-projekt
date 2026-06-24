@@ -70,6 +70,29 @@ const MAX_FINALIZE_PER_FRAME: int = 1
 #   BEACH ≤ 26 (13 m), ROCK ≥ 56 (28 m), SNOW ≥ 68 (34 m) — wszystkie osiągalne.
 const BASE_HEIGHT: float = 14.0          # z kontrastem szumu daje jeziora (doliny) i szczyty (śnieg)
 const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m (szczyty ~44 m)
+
+# BIOME #8: per-biomowe PROFILE terenu (indeks == pasmo w BIOME_PROGRESSION). Profil nadpisuje
+# globalne BASE/AMP/freq tak, by każdy biom miał DISTINCT sylwetkę (płaskie równiny vs postrzępione
+# góry), a NIE jeden szum dla wszystkich. Pola:
+#   base    — bazowa wysokość kolumny (voxele) — przesunięcie pionowe terenu,
+#   amp     — amplituda szumu (voxele) — jak bardzo teren faluje (płaskie=małe, góry=duże),
+#   freq_mul— mnożnik częstotliwości szumu względem _noise.frequency (więcej => gęstsze, drobniejsze formy),
+#   contrast— mnożnik kontrastu FBM przed clampf (jak globalne raw*1.6) — większy => ostrzejsze doliny/szczyty,
+#   ridged  — true => transformacja "ridged" (1 - |n|) dające ostre granie (góry/wulkany), false => gładko.
+# Profil to czysta tabela danych (deterministyczna). Cross-fade między sąsiednimi pasmami robi
+# _height_profile_blend (szwy organiczne, bo dystans jest już warpowany szumem klimatu jak w _biome_band).
+const _HEIGHT_PROFILES: Array[Dictionary] = [
+	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 1.6, "ridged": false },  # 0 verdant/forest — pofalowane wzgórza (jak dawniej)
+	{ "base": 20.0, "amp": 18.0, "freq_mul": 0.8, "contrast": 1.2, "ridged": false },  # 1 plains — płaskie, niska amplituda
+	{ "base": 16.0, "amp": 12.0, "freq_mul": 1.1, "contrast": 1.1, "ridged": false },  # 2 swamp — nisko + płasko (przy poziomie morza)
+	{ "base": 22.0, "amp": 78.0, "freq_mul": 1.3, "contrast": 1.9, "ridged": true },   # 3 mountains — wysokie, postrzępione granie
+	{ "base": 18.0, "amp": 30.0, "freq_mul": 0.6, "contrast": 1.4, "ridged": false },  # 4 emberwaste/desert — gładkie wydmy
+	{ "base": 24.0, "amp": 70.0, "freq_mul": 1.2, "contrast": 1.8, "ridged": true },   # 5 frosthelm/snow — wysokie szczyty (śnieg)
+	{ "base": 26.0, "amp": 84.0, "freq_mul": 1.5, "contrast": 2.1, "ridged": true },   # 6 volcanic — najwyższe, najbardziej postrzępione
+]
+# Ułamek szerokości pasma (od JEGO końca), na którym profil cross-faduje do następnego pasma.
+# 0.18 => ostatnie ~18% pasma to płynne przejście sylwetki terenu (zero ostrego "muru" na szwie biomu).
+const _HEIGHT_BLEND_FRAC: float = 0.18
 # KILL_PLANE_Y jest w METRACH (dno świata to y=0 m niezależnie od VOXEL_SIZE) — NIE podwajać.
 const KILL_PLANE_Y: float = -8.0         # poniżej tego Y „ratujemy” gracza
 
@@ -83,6 +106,13 @@ const FEATURE_SEED: int = 0x9E37  # stały „ziarno” roślinności
 const BIOME_VERDANT: StringName = &"verdant"
 const BIOME_EMBERWASTE: StringName = &"emberwaste"
 const BIOME_FROSTHELM: StringName = &"frosthelm"
+# BIOME #9: 4 nowe biomy dosypane do progresji (pełne 7 wg trudności). REUSE istniejących
+# verdant/emberwaste/frosthelm jako forest/desert/snow (żeby NIE zepsuć EnemyDB.biome i
+# wariantów wrogów), DODANIE: plains/swamp/mountains/volcanic (każdy ma własny .tres + profil terenu).
+const BIOME_PLAINS: StringName = &"plains"
+const BIOME_SWAMP: StringName = &"swamp"
+const BIOME_MOUNTAINS: StringName = &"mountains"
+const BIOME_VOLCANIC: StringName = &"volcanic"
 
 # Szum wysokości terenu (deterministyczny seed).
 var _noise: FastNoiseLite
@@ -208,13 +238,56 @@ func get_loaded_count() -> int:
 ## surface_y ∈ [24, 88] voxeli × 0,5 m = 12..44 m. Dzięki temu ROCK (56=28 m) i
 ## SNOW (68=34 m) są realnie osiągalne (wcześniej max był 60 voxeli => brak śniegu).
 func surface_height(world_x: int, world_z: int) -> int:
-	# FBM ma realnie wąski zakres (~[-0.45,0.45]); mnożymy przez kontrast, by teren
-	# schodził pod poziom morza (jeziora) i wybijał w szczyty (śnieg), zamiast skupiać
-	# się wokół środka. clampf tworzy płaskie dna jezior i płaskowyże szczytów (OK stylistycznie).
-	var raw := _noise.get_noise_2d(float(world_x), float(world_z))
-	var n := clampf(raw * 1.6 + 0.5, 0.0, 1.0)
-	var h := int(round(BASE_HEIGHT + n * HEIGHT_AMPLITUDE))
+	# BIOME #8: heightmapa zależna od BIOMU/DYSTANSU (a nie jeden globalny szum). Każde pasmo ma własny
+	# profil (_HEIGHT_PROFILES): płaskie równiny vs postrzępione góry/wulkany. Profile cross-faudją na
+	# szwach pasm (_height_profile_blend), a sam dystans pasma jest WARPOWANY szumem klimatu (jak w
+	# _biome_band), więc granice sylwetki są organiczne i SPÓJNE z granicą biomu (zero szwu las|góry).
+	# Czysta funkcja (x,z): deterministyczna i co-op-safe (ten sam seed -> ten sam świat).
+	var prof := _height_profile_blend(float(world_x), float(world_z))
+	# FBM ma realnie wąski zakres (~[-0.45,0.45]); mnożymy przez kontrast, by teren schodził pod
+	# poziom morza (jeziora) i wybijał w szczyty, zamiast skupiać się wokół środka. Per-profil
+	# freq_mul zmienia REALNY rozmiar form (drobne wydmy vs szerokie wzgórza), bez mutacji _noise.
+	var fm: float = prof["freq_mul"]
+	var raw := _noise.get_noise_2d(float(world_x) * fm, float(world_z) * fm)
+	var shaped: float
+	if bool(prof["ridged"]):
+		# RIDGED: 1 - |n| daje ostre granie (góry/wulkany) — szczyt tam, gdzie szum przecina 0.
+		# Mapujemy do ~[0,1] tak, by clampf nie ścinał całości w jeden płaskowyż.
+		shaped = clampf((1.0 - absf(raw)) * float(prof["contrast"]) - (float(prof["contrast"]) - 1.0), 0.0, 1.0)
+	else:
+		shaped = clampf(raw * float(prof["contrast"]) + 0.5, 0.0, 1.0)
+	var h := int(round(float(prof["base"]) + shaped * float(prof["amp"])))
 	return clampi(h, 1, WORLD_HEIGHT - 1)
+
+
+## BIOME #8: zwraca SCROSSFADOWANY profil terenu dla kolumny świata (czysta, deterministyczna funkcja).
+## Liczy CIĄGŁĄ pozycję pasma z WARPOWANEGO dystansu (ta sama formuła warpu co _biome_band => szwy
+## sylwetki pokrywają się z granicami biomów), po czym blenduje profil bieżącego pasma z następnym na
+## ostatnich _HEIGHT_BLEND_FRAC pasma. Dzięki temu las nie graniczy „murem” z górami — przejście jest płynne.
+func _height_profile_blend(world_x: float, world_z: float) -> Dictionary:
+	var d := Vector2(world_x, world_z).length()
+	# Identyczny warp jak w _biome_band (determinizm + spójność granicy biom<->teren).
+	var temp := _biome_noise.get_noise_2d(world_x, world_z)   # [-1,1]
+	var hum := _humid_noise.get_noise_2d(world_x, world_z)    # [-1,1]
+	var warp := (temp * 0.6 + hum * 0.4) * BIOME_BORDER_JITTER_M
+	var t := (d + warp) / BIOME_BAND_METERS                    # ciągła pozycja w pasmach
+	var last := _HEIGHT_PROFILES.size() - 1
+	var band := clampi(int(floor(t)), 0, last)
+	var frac: float = t - floorf(t)                            # [0,1) pozycja w obrębie pasma
+	var cur: Dictionary = _HEIGHT_PROFILES[band]
+	# Cross-fade tylko na ogonie pasma i tylko jeśli jest następne pasmo (ostatnie clampuje na sobie).
+	if band < last and frac > (1.0 - _HEIGHT_BLEND_FRAC):
+		var nxt: Dictionary = _HEIGHT_PROFILES[band + 1]
+		var w: float = (frac - (1.0 - _HEIGHT_BLEND_FRAC)) / _HEIGHT_BLEND_FRAC   # 0..1 waga następnego
+		return {
+			"base": lerpf(float(cur["base"]), float(nxt["base"]), w),
+			"amp": lerpf(float(cur["amp"]), float(nxt["amp"]), w),
+			"freq_mul": lerpf(float(cur["freq_mul"]), float(nxt["freq_mul"]), w),
+			"contrast": lerpf(float(cur["contrast"]), float(nxt["contrast"]), w),
+			# ridged: przełączamy w połowie przejścia (bool nie da się lerpować) — krótki ogon, niewidoczny szew.
+			"ridged": (bool(nxt["ridged"]) if w >= 0.5 else bool(cur["ridged"])),
+		}
+	return cur
 
 
 ## Drobna wariacja koloru (tint) per blok — deterministyczna z pozycji.
@@ -267,10 +340,18 @@ func biome_factor(world_x: int, world_z: int) -> float:
 ##   ROZSZERZENIE do pełnych 7 biomów (forest/plains/swamp/mountains/desert/snow/volcanic) to DODANIE
 ##   DANYCH: wydłuż BIOME_PROGRESSION + dodaj odpowiednie BiomeResource .tres — BEZ zmiany tej logiki.
 ## Uporządkowane wg trudności (indeks = jak daleko w podróży). Mapuje na ISTNIEJĄCE biome .tres.
+## BIOME #9: pełne 7 pasm (forest->plains->swamp->mountains->desert->snow->volcanic). REUSE
+## verdant/emberwaste/frosthelm pod forest/desert/snow (kompat. z EnemyDB i wariantami wrogów);
+## plains/swamp/mountains/volcanic to NOWE id z własnymi .tres. Każde pasmo dostaje DISTINCT
+## profil terenu z _HEIGHT_PROFILES (cross-fade #8) — kolejność tablicy == kolejność profili.
 const BIOME_PROGRESSION: Array[StringName] = [
-	BIOME_VERDANT,     # pasmo 0 — start (las), beginner-friendly, najbliżej spawnu
-	BIOME_EMBERWASTE,  # pasmo 1 — ember/pustynia (mid)
-	BIOME_FROSTHELM,   # pasmo 2 — frost/szczyty (hard; obecny koniec podróży, clamp w głąb)
+	BIOME_VERDANT,     # pasmo 0 — start (las), beginner-friendly, najbliżej spawnu — pofalowane wzgórza
+	BIOME_PLAINS,      # pasmo 1 — równiny (płaskie, niska amplituda)
+	BIOME_SWAMP,       # pasmo 2 — bagno (nisko, płasko, blisko poziomu morza)
+	BIOME_MOUNTAINS,   # pasmo 3 — góry (wysokie, postrzępione/ridged)
+	BIOME_EMBERWASTE,  # pasmo 4 — pustynia (wydmy: średnia amplituda, gładkie fale)
+	BIOME_FROSTHELM,   # pasmo 5 — śnieg/szczyty (wysokie, jak góry, ciut spokojniejsze)
+	BIOME_VOLCANIC,    # pasmo 6 — wulkaniczne (najwyższe, najbardziej postrzępione; koniec podróży, clamp)
 ]
 const BIOME_BAND_METERS: float = 700.0      # szerokość jednego pasma biomu (m) — wielkoskalowe przejścia
 const BIOME_BORDER_JITTER_M: float = 90.0   # warp granicy pasma z szumu klimatu (organiczne brzegi)

@@ -391,6 +391,17 @@ func _biome_to_byte(biome: StringName) -> int:
 		return 2
 	if biome == &"frosthelm":
 		return 3
+	# BIOME #9: nowe id (plains/swamp/mountains/volcanic). Blocks.biome_modulate zna tylko 3 stare
+	# id, więc te zwracają bajt > 3, a _biome_at mapuje je z powrotem na właściwe StringName — modulate
+	# i tak fallbackuje na verdant tint (bezpieczny default), co NIE psuje renderu istniejących biomów.
+	if biome == &"plains":
+		return 4
+	if biome == &"swamp":
+		return 5
+	if biome == &"mountains":
+		return 6
+	if biome == &"volcanic":
+		return 7
 	return 1   # verdant / fallback
 
 
@@ -404,6 +415,10 @@ func _biome_at(world: VoxelWorld, x: int, z: int, wx: int, wz: int) -> StringNam
 		match int(_biomemap[x + CHUNK_SIZE * z]):
 			2: return &"emberwaste"
 			3: return &"frosthelm"
+			4: return &"plains"      # BIOME #9 (nowe id; modulate fallbackuje na verdant tint)
+			5: return &"swamp"
+			6: return &"mountains"
+			7: return &"volcanic"
 			_: return &"verdant"
 	return world.get_biome(wx, wz)
 

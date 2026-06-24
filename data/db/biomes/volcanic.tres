@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="BiomeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/BiomeResource.gd" id="1_biome"]
+
+[resource]
+script = ExtResource("1_biome")
+id = &"volcanic"
+display_name = "Cinderscar Caldera"
+loot_tier = 4
+enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"ember_slinger",
+"weight": 4.0,
+"max_alive": 5
+}, {
+"enemy_id": &"ember_brute",
+"weight": 3.0,
+"max_alive": 2
+}, {
+"enemy_id": &"brute",
+"weight": 2.0,
+"max_alive": 2
+}, {
+"enemy_id": &"frost_brute",
+"weight": 1.0,
+"max_alive": 1
+}])
+affix_themes = Array[StringName]([&"flaming", &"stormy", &"of_shadow", &"of_mage"])
+entrance_chance = 0.035
+fog_color = Color(0.5, 0.28, 0.22, 1.0)
+ambient_light = Color(0.7, 0.4, 0.3, 1.0)

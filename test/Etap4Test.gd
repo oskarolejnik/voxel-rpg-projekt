@@ -4,8 +4,8 @@ extends Node
 ## NIE rusza działającej gry (Main.tscn). Uruchomienie: godot --headless res://test/Etap4Test.tscn
 ##
 ## Sprawdza DoD Etapu 4 (ROADMAP 5/6 / GDD 7 / TDD):
-##  (1) get_biome DETERMINISTYCZNY: ten sam (x,z) -> ten sam biom; 3 różne strefy dają 3 biomy.
-##  (2) get_biome zwraca tylko prawidłowe id (verdant/emberwaste/frosthelm); pokrycie 3 stref na mapie.
+##  (1) get_biome DETERMINISTYCZNY: ten sam (x,z) -> ten sam biom; wszystkie pasma osiągalne dystansem.
+##  (2) get_biome zwraca tylko prawidłowe id (pełne 7 biomów); pokrycie wszystkich pasm na mapie.
 ##  (3) BiomeResource (3 .tres) wczytane przez EnemyDB; loot_tier 1/2/3; spawn table niepusta.
 ##  (4) EnemyResource warianty (Goblin/Brute/Slinger) — staty zgodne z ROADMAP 6.
 ##  (5) Enemy.configure_from_resource mapuje staty zasobu na encję (HP/dmg/armor/profil/threat_tier).
@@ -90,24 +90,28 @@ func _test_get_biome_deterministic() -> void:
 
 
 # ---------------------------------------------------------------------------
-#  (2) 3 strefy dają 3 biomy — skan dużej mapy musi pokryć wszystkie 3
+#  (2) PEŁNE 7 biomów — skan dużej mapy musi pokryć WSZYSTKIE pasma progresji.
+#      Kontrakt po #9: get_biome zwraca tylko id z BIOME_PROGRESSION i każde pasmo jest osiągalne.
+#      Siatka rozszerzona, by sięgnąć ostatniego pasma (volcanic ~band 6 => d≥4200 m): krok 64 m,
+#      150×150 próbek => narożnik d≈6788 m (clamp do ostatniego pasma => volcanic obecny).
 # ---------------------------------------------------------------------------
 func _test_get_biome_three_zones() -> void:
 	var seen := {}
-	# Próbkuj rzadką siatkę dużej mapy (krok 64 m, 80×80 = 6400 próbek).
-	for ix in range(-40, 40):
-		for iz in range(-40, 40):
+	for ix in range(-75, 75):
+		for iz in range(-75, 75):
 			var b := _world.get_biome(ix * 64, iz * 64)
 			seen[b] = true
-	_check(seen.has(VoxelWorld.BIOME_VERDANT), "brak strefy Verdant na mapie")
-	_check(seen.has(VoxelWorld.BIOME_EMBERWASTE), "brak strefy Emberwaste na mapie")
-	_check(seen.has(VoxelWorld.BIOME_FROSTHELM), "brak strefy Frosthelm na mapie")
-	_check(seen.size() == 3, "get_biome zwraca inne biomy niz 3 zdefiniowane (znalezione: %d)" % seen.size())
-	print("[E4] (2) 3 strefy biomow obecne OK (znaleziono %d)" % seen.size())
+			_check(_is_valid_biome(b), "get_biome zwrocil id spoza progresji: %s" % b)
+	# Każde z 7 pasm progresji musi być pokryte na mapie (wszystkie osiągalne dystansem).
+	for expected in VoxelWorld.BIOME_PROGRESSION:
+		_check(seen.has(expected), "brak strefy %s na mapie" % expected)
+	_check(seen.size() == VoxelWorld.BIOME_PROGRESSION.size(),
+		"get_biome zwraca inne biomy niz %d zdefiniowanych (znalezione: %d)" % [VoxelWorld.BIOME_PROGRESSION.size(), seen.size()])
+	print("[E4] (2) wszystkie %d pasm biomow obecne OK" % seen.size())
 
 
 func _is_valid_biome(b: StringName) -> bool:
-	return b == VoxelWorld.BIOME_VERDANT or b == VoxelWorld.BIOME_EMBERWASTE or b == VoxelWorld.BIOME_FROSTHELM
+	return VoxelWorld.BIOME_PROGRESSION.has(b)
 
 
 ## Indeks biomu w progresji trudności (0=start/las .. N=najdalszy). -1 = nieznany.

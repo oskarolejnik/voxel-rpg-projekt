@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="BiomeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/BiomeResource.gd" id="1_biome"]
+
+[resource]
+script = ExtResource("1_biome")
+id = &"plains"
+display_name = "Sunlit Plains"
+loot_tier = 1
+enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"deer",
+"weight": 6.0,
+"max_alive": 8
+}, {
+"enemy_id": &"boar",
+"weight": 4.0,
+"max_alive": 5
+}, {
+"enemy_id": &"goblin",
+"weight": 4.0,
+"max_alive": 6
+}, {
+"enemy_id": &"slinger",
+"weight": 2.0,
+"max_alive": 3
+}])
+affix_themes = Array[StringName]([&"vital", &"of_cheetah", &"of_endurance"])
+entrance_chance = 0.012
+fog_color = Color(0.74, 0.8, 0.6, 1.0)
+ambient_light = Color(0.72, 0.78, 0.58, 1.0)
