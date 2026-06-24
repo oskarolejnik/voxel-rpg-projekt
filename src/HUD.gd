@@ -52,6 +52,11 @@ const GLYPHS: Dictionary = {
 	"9": ["###", "# #", "###", "  #", "###"],
 	"/": ["  #", "  #", " # ", "#  ", "#  "],
 	"x": ["   ", "# #", " # ", "# #", "   "],
+	# Litery kardynalne dla kompasu (N/E/S/W) — własny pixel-font 3x5.
+	"N": ["# #", "###", "###", "# #", "# #"],
+	"E": ["###", "#  ", "###", "#  ", "###"],
+	"S": ["###", "#  ", "###", "  #", "###"],
+	"W": ["# #", "# #", "# #", "###", "# #"],
 }
 
 # Ikony pasków (#=jasny, o=ciemny akcent).
@@ -97,6 +102,28 @@ const IC_SHIELD: Array = ["#####", "#####", "#####", "#####", ".###.", "..#.."]
 const IC_ARROW: Array = ["..#..", ".###.", "#####", "..#..", "..#.."]
 const IC_ICE: Array = ["#.#.#", ".###.", "#####", ".###.", "#.#.#"]
 const IC_AURA: Array = [".###.", "#...#", "#...#", "#...#", ".###."]
+
+# --- KOMPAS + RADAR (nawigacja eksploracji) ---
+# Kompas: pasek kierunków świata (N/E/S/W) na górze-środku, tintowany biomem gracza
+# (telegraf kierunku progresji). Radar: małe kółko nad medalionem z blipami wrogów (grupa "enemies")
+# względem gracza. Wszystko null-safe — HUD budowany zanim istnieją referencje gracza/świata.
+var _player_ref: Node3D = null          # gracz (pozycja+yaw); może być null
+var _world_ref: Node = null             # VoxelWorld (get_biome); może być null
+var _compass_yaw: float = 0.0           # bieżący yaw gracza (rad), aktualizowany w _process
+const COMPASS_W: float = 220.0          # szerokość paska kompasu
+const COMPASS_H: float = 16.0           # wysokość paska kompasu
+const COMPASS_FOV: float = PI           # kąt widoczny na pasku (180°: ±90° od kursu)
+const RADAR_R: float = 30.0             # promień radaru (px)
+const RADAR_RANGE: float = 40.0         # zasięg radaru w metrach (świat -> px)
+# Tint pasma kompasu wg biomu (kierunek progresji): zieleń/ember/mróz.
+const COMPASS_BIOME_TINT: Dictionary = {
+	&"verdant": Color8(96, 168, 88),
+	&"emberwaste": Color8(214, 120, 56),
+	&"frosthelm": Color8(150, 200, 236),
+}
+const COMPASS_TINT_DEFAULT: Color = Color8(120, 132, 150)
+# Kardynalne kierunki (8 rumbów) — kolejność zgodna z yaw rosnącym (0=N, CW).
+const COMPASS_DIRS: Array = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 
 # Screen-flash.
 var _flash_t: float = 0.0
@@ -400,6 +427,11 @@ func _paint(ci: CanvasItem) -> void:
 		if cnt > 0:
 			_text(ci, str(cnt), ix + slot - _text_w(str(cnt), 2) - 5.0, sy + slot - 13.0, 2, COL_NUM)
 
+	# --- KOMPAS (góra-środek) — kurs + tint biomu gracza (kierunek progresji) ---
+	_compass(ci, roundf(vp.x * 0.5), PAD, _compass_yaw, _biome_tint())
+	# --- RADAR (nad medalionem, lewy-górny) — blipy wrogów względem gracza ---
+	_radar(ci, PAD + r, cy + stack_h * 0.5 + RADAR_R + 14.0, _gather_enemy_blips())
+
 	# --- CELOWNIK (środek ekranu) — system kamery TPS ---
 	if _show_crosshair:
 		_crosshair(ci, roundf(vp.x * 0.5), roundf(vp.y * 0.5))
@@ -426,6 +458,102 @@ func _crosshair(ci: CanvasItem, cx: float, cy: float) -> void:
 	_px(ci, cx - th * 0.5, cy - th * 0.5, th, th, col)
 
 # ============================================================================
+#  KOMPAS + RADAR (nawigacja)
+# ============================================================================
+## Kardynalny kierunek (rumb) z yaw (rad). yaw=0 -> "N", rośnie zgodnie z ruchem
+## wskazówek (N->E->S->W). Czysta funkcja (testowalna bez sceny).
+func heading_label(yaw: float) -> String:
+	var deg := fposmod(rad_to_deg(yaw) + 22.5, 360.0)
+	var idx := int(deg / 45.0) % COMPASS_DIRS.size()
+	return COMPASS_DIRS[idx]
+
+## Tint kompasu wg biomu pod graczem (VoxelWorld.get_biome). Null-safe: brak gracza/świata
+## lub brak metody => kolor domyślny. NIE rzuca, gdy referencje jeszcze nie istnieją.
+func _biome_tint() -> Color:
+	if _world_ref == null or not is_instance_valid(_world_ref):
+		return COMPASS_TINT_DEFAULT
+	if _player_ref == null or not is_instance_valid(_player_ref):
+		return COMPASS_TINT_DEFAULT
+	if not _world_ref.has_method("get_biome"):
+		return COMPASS_TINT_DEFAULT
+	var p := _player_ref.global_position
+	var biome: StringName = _world_ref.get_biome(int(floor(p.x)), int(floor(p.z)))
+	return COMPASS_BIOME_TINT.get(biome, COMPASS_TINT_DEFAULT)
+
+## Pasek kompasu (góra-środek): tło-tubka tintowana biomem gracza + znaczniki N/E/S/W
+## przesuwające się wraz z yaw. Kreska kursu w środku. Null-safe (yaw przekazany).
+func _compass(ci: CanvasItem, cx: float, top: float, yaw: float, tint: Color) -> void:
+	var x := cx - COMPASS_W * 0.5
+	var y := top
+	var t := 3.0
+	# Ramka drewno+złoto (jak _ornate_bar, uproszczona).
+	_px(ci, x - t - 1.0, y - t - 1.0, COMPASS_W + 2.0 * t + 2.0, COMPASS_H + 2.0 * t + 2.0, C_OUTLINE)
+	_px(ci, x - t, y - t, COMPASS_W + 2.0 * t, COMPASS_H + 2.0 * t, C_WOOD)
+	_px(ci, x - t, y - t, COMPASS_W + 2.0 * t, 1.0, C_WOOD_L)
+	_px(ci, x - 1.0, y - 1.0, COMPASS_W + 2.0, COMPASS_H + 2.0, C_GOLD)
+	# Wnętrze tintowane biomem (telegraf kierunku progresji).
+	_px(ci, x, y, COMPASS_W, COMPASS_H, _darken(tint, 0.30))
+	_px(ci, x, y, COMPASS_W, 2.0, _lighten(tint, 0.10))
+	# Znaczniki kardynalne — mapowanie kąta względnego (-FOV/2..+FOV/2) na px paska.
+	var half := COMPASS_FOV * 0.5
+	var marks := {"N": 0.0, "E": PI * 0.5, "S": PI, "W": PI * 1.5}
+	for label in marks.keys():
+		var rel := wrapf(marks[label] - yaw, -PI, PI)
+		if absf(rel) <= half:
+			var mx := cx + (rel / half) * (COMPASS_W * 0.5 - 8.0)
+			_text_centered(ci, label, mx, y + COMPASS_H * 0.5, 2, COL_NUM)
+	# Kreska kursu (środek) — aktualny kierunek patrzenia.
+	_px(ci, cx - 1.0, y - 4.0, 2.0, COMPASS_H + 8.0, C_GOLD_L)
+
+## Mały radar (kółko) z blipami bytów względem gracza. blips: Array[Vector2] (offset świata x,z
+## w metrach, względem gracza, już obrócony do lokalnego układu). Null-safe na pustej liście.
+func _radar(ci: CanvasItem, cx: float, cy: float, blips: Array) -> void:
+	# Tło-tarcza.
+	_disc(ci, cx, cy, RADAR_R + 3.0, C_OUTLINE)
+	_disc(ci, cx, cy, RADAR_R + 1.5, C_GOLD)
+	_disc(ci, cx, cy, RADAR_R, C_INNER)
+	# Krzyż osi.
+	_px(ci, cx - RADAR_R, cy - 0.5, RADAR_R * 2.0, 1.0, C_INNER_HI)
+	_px(ci, cx - 0.5, cy - RADAR_R, 1.0, RADAR_R * 2.0, C_INNER_HI)
+	# Gracz (środek).
+	_disc(ci, cx, cy, 2.5, C_GOLD_L)
+	# Blipy wrogów (czerwone), clamp do tarczy.
+	for b in blips:
+		var off: Vector2 = b
+		var d := off.length()
+		if d > RADAR_RANGE:
+			continue
+		var px := (off / RADAR_RANGE) * RADAR_R
+		_disc(ci, cx + px.x, cy + px.y, 2.0, Color8(232, 72, 72))
+
+## Zbiera blipy z grupy "enemies" względem gracza (świat -> lokalny, obrót o yaw -> góra=przód).
+## Zwraca Array[Vector2] (px-offsety w metrach). Null-safe: brak gracza/drzewa => [].
+func _gather_enemy_blips() -> Array:
+	var out: Array = []
+	if _player_ref == null or not is_instance_valid(_player_ref):
+		return out
+	var tree := get_tree()
+	if tree == null:
+		return out
+	var ppos := _player_ref.global_position
+	var yaw := _compass_yaw
+	var cs := cos(-yaw)
+	var sn := sin(-yaw)
+	for e in tree.get_nodes_in_group("enemies"):
+		if e == null or not (e is Node3D) or not is_instance_valid(e):
+			continue
+		var ep: Vector3 = (e as Node3D).global_position
+		var dx := ep.x - ppos.x
+		var dz := ep.z - ppos.z
+		# Obrót do lokalnego układu gracza: oś Y radaru = przód (mapujemy -z na +y "do góry").
+		var lx := dx * cs - dz * sn
+		var lz := dx * sn + dz * cs
+		out.append(Vector2(lx, lz))
+		if out.size() >= 24:
+			break
+	return out
+
+# ============================================================================
 #  ANIMACJA + FLASH
 # ============================================================================
 func _process(delta: float) -> void:
@@ -437,6 +565,9 @@ func _process(delta: float) -> void:
 	_stam_f = lerpf(_stam_f, _stam_t, _sm(18.0, delta))
 	_res_f = lerpf(_res_f, _res_t, _sm(15.0, delta))
 	_xp_f = lerpf(_xp_f, _xp_t, _sm(10.0, delta))
+	# Yaw kompasu z gracza (jeśli wpięty) — tanio, raz na klatkę. Null-safe.
+	if _player_ref != null and is_instance_valid(_player_ref):
+		_compass_yaw = _player_ref.global_rotation.y
 	if _painter != null:
 		_painter.queue_redraw()
 
@@ -506,6 +637,14 @@ func select_hotbar_slot(i: int) -> void:
 # Pokaż/ukryj celownik TPS (np. ukryj w menu/ekwipunku).
 func set_crosshair_visible(on: bool) -> void:
 	_show_crosshair = on
+
+# Wpina referencje nawigacji (kompas/radar). Woła Main, gdy gracz/świat już istnieją.
+# Oba parametry opcjonalne i null-safe — HUD działa bez nich (kierunek domyślny, brak blipów).
+func set_nav_refs(player: Node3D, world: Node) -> void:
+	_player_ref = player
+	_world_ref = world
+	if _player_ref != null and is_instance_valid(_player_ref):
+		_compass_yaw = _player_ref.global_rotation.y
 
 # ============================================================================
 #  HOTBAR API (woła Main: ikony+klawisze raz, cooldowny co klatkę)
