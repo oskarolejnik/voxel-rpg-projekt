@@ -63,6 +63,7 @@ func _ready() -> void:
 	_test_passive_flees_from_player()
 	_test_passive_provoked_flees()
 	_test_configure_reads_disposition()
+	_test_resource_wires_disposition()
 	if _failures == 0:
 		print("[ECO] ALL OK")
 	else:
@@ -176,3 +177,35 @@ func _test_configure_reads_disposition() -> void:
 		"configure bez klucza zmienil disposition (jest %d, oczekiwane HOSTILE)" % ai.disposition)
 	host.queue_free()
 	print("[ECO] (5) configure czyta disposition (enum/int/brak) OK")
+
+
+# ---------------------------------------------------------------------------
+#  (6) INTEGRACJA — EnemyResource.disposition (.tres) -> Enemy -> AIComponent.
+#      Weryfikuje, że dzika zwierzyna (deer=passive, boar=neutral) jest wczytana i zwiazana z AI.
+# ---------------------------------------------------------------------------
+func _test_resource_wires_disposition() -> void:
+	if EnemyDB == null:
+		_check(false, "brak EnemyDB do testu integracyjnego (6)")
+		return
+	EnemyDB.reload()
+	var deer_res: EnemyResource = EnemyDB.enemy(&"deer")
+	var boar_res: EnemyResource = EnemyDB.enemy(&"boar")
+	_check(deer_res != null, "EnemyDB nie zna 'deer' (deer.tres nie wczytany)")
+	_check(boar_res != null, "EnemyDB nie zna 'boar' (boar.tres nie wczytany)")
+	if deer_res == null or boar_res == null:
+		return
+	_check(deer_res.disposition == AIComponent.Disposition.PASSIVE,
+		"deer.tres disposition != PASSIVE (jest %d)" % deer_res.disposition)
+	_check(boar_res.disposition == AIComponent.Disposition.NEUTRAL,
+		"boar.tres disposition != NEUTRAL (jest %d)" % boar_res.disposition)
+	# Integracja: Enemy z deer.tres po _ready ma AIComponent.disposition == PASSIVE (configure_from_resource
+	# -> Enemy.disposition -> _build_components -> _ai.configure). configure WOLANE przed add_child.
+	var e := Enemy.new()
+	e.configure_from_resource(deer_res)
+	add_child(e)
+	_check(e._ai != null, "Enemy nie zbudowal AIComponent po _ready")
+	if e._ai != null:
+		_check(e._ai.disposition == AIComponent.Disposition.PASSIVE,
+			"AIComponent po wiringu z deer.tres != PASSIVE (jest %d)" % e._ai.disposition)
+	e.queue_free()
+	print("[ECO] (6) wiring EnemyResource.disposition -> Enemy -> AIComponent OK")

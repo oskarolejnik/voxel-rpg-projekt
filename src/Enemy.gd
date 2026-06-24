@@ -109,6 +109,7 @@ func configure_from_resource(res: EnemyResource) -> void:
 	variant_id = res.id if res.id != &"" else variant_id
 	ai_profile = res.ai_profile
 	threat_tier = res.threat_tier
+	disposition = res.disposition   # EKOSYSTEM: hostile/neutral/passive -> AIComponent (przez _build_components)
 	if res.loot_table != null:
 		loot_table = res.loot_table
 	var sb: StatBlock = res.stats
@@ -222,6 +223,9 @@ var _is_net_replica: bool = false
 # przez sojusznikow, JEST bity przez wrogow — GDD 9). Reuse calej maszyny Enemy/AIComponent.
 enum Allegiance { HOSTILE, ALLY }
 var allegiance: int = Allegiance.HOSTILE
+# EKOSYSTEM (GDD Świat §4): 0=hostile/1=neutral/2=passive. Ustawiane przez configure_from_resource
+# z EnemyResource.disposition; przekazywane do AIComponent w _build_components. Pet (ALLY) ignoruje.
+var disposition: int = 0
 var _pet_owner: Node3D = null                 # gracz-wlasciciel (anchor leasha + zrodlo skalowania)
 var _patrol_target: Vector3 = Vector3.ZERO
 var _face_dir: Vector3 = Vector3.ZERO         # kierunek do obrotu modelu w _process
@@ -339,6 +343,7 @@ func _build_components() -> void:
 		"patrol_radius": patrol_radius,
 		"attack_entry_delay": attack_entry_delay,
 		"allegiance_hostile": true,
+		"disposition": disposition,
 	})
 	_ai.set_home(_home)
 

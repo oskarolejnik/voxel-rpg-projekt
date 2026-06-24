@@ -8,6 +8,14 @@ id = &"verdant"
 display_name = "Verdant Hollow"
 loot_tier = 1
 enemy_spawn_table = Array[Dictionary]([{
+"enemy_id": &"deer",
+"weight": 5.0,
+"max_alive": 6
+}, {
+"enemy_id": &"boar",
+"weight": 3.0,
+"max_alive": 4
+}, {
 "enemy_id": &"goblin",
 "weight": 6.0,
 "max_alive": 8

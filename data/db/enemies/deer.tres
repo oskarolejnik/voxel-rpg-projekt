@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="EnemyResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatBlock.gd" id="1_stat"]
+[ext_resource type="Script" path="res://data/resources/EnemyResource.gd" id="2_enemy"]
+
+[sub_resource type="Resource" id="StatBlock_deer"]
+script = ExtResource("1_stat")
+max_hp = 40.0
+damage = 0.0
+attack_speed = 0.833
+armor = 0.0
+move_speed = 5.5
+
+[resource]
+script = ExtResource("2_enemy")
+id = &"deer"
+display_name = "Jeleń"
+stats = SubResource("StatBlock_deer")
+xp_reward = 6
+ai_profile = &"melee"
+threat_tier = &"trash"
+disposition = 2
+tameable = true
+tame_difficulty_mult = 0.8
+biomes = Array[StringName]([&"verdant"])
+variant_meta = {
+"skin_tint": Color(0.55, 0.4, 0.27, 1.0),
+"eye_tint": Color(0.1, 0.07, 0.05, 1.0),
+"body_scale": 0.95
+}
