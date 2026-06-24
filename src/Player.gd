@@ -188,6 +188,7 @@ var _cape: Node3D            # pivot peleryny (dziecko _torso)
 var _gait: float = 0.0        # 0=idle/stoi, 1=pełny chód — wygładzona „siła" lokomocji (anti-pop)
 var _run_blend: float = 0.0   # 0=chód, 1=bieg — wygładzone przejście chód<->bieg (amplitudy/tempo)
 var _loco_fwd: float = 1.0     # kierunek kroku vs twarz: +1=przód, -1=tył (backpedal w walce); wygładzony
+var _loco_side: float = 0.0    # boczna składowa kroku vs twarz: +1=w prawo, -1=w lewo (strafe lock-on); wygładzona
 var _prev_model_yaw: float = 0.0  # yaw modelu z poprz. klatki (do liczenia tempa obrotu = turn-in-place)
 var _turn_rate: float = 0.0    # |tempo obrotu twarzy| rad/s; wysokie + bezruch => turn-in-place
 var _air_blend: float = 0.0   # 0=na ziemi, 1=w powietrzu — wygładza wejście/wyjście z pozy lotu
@@ -1745,7 +1746,7 @@ func _anim_additive(delta: float) -> void:
 const _IK_K: float = 22.0   # smoothing nog (jak dotychczasowe _sm(22) na kolanach)
 
 func _foot_ik_leg(hip: Node3D, knee: Node3D, phase_off: float,
-		stride: float, lift: float, delta: float) -> void:
+		stride: float, lift: float, delta: float, side: float = 0.0) -> void:
 	var ph := _walk_phase + phase_off
 	var swing_phase := sin(ph)
 	var foot_z: float                          # +Z = tyl, -Z = przod (konwencja modelu)
@@ -1776,12 +1777,16 @@ func _foot_ik_leg(hip: Node3D, knee: Node3D, phase_off: float,
 			# target.y mniej ujemny (stopa wyzej). Wczesniej odwrocony znak wpychal stope W WYZSZY teren
 			# (schody/auto-step/zbocze). global_position to poziom stop (kapsula wycentrowana na body_h*0.5).
 			ground_drop = clampf((hit.position.y - global_position.y), -0.25, 0.25)
-	# Cel stopy w LOKALU biodra (X=0; Z=krok; Y w dol). UWAGA: cel NIE siega pelnej dlugosci nogi —
-	# zostawiamy ~12% luzu (stand_drop), by przy kroku fore/aft noga miala zapas i kolano moglo sie
-	# ugiac (nie ma przeprostu/clampu zasiegu). To naturalna, lekko ugieta postawa stojaca.
+	# Cel stopy w LOKALU biodra (X=krok boczny; Z=krok sagitt.; Y w dol). UWAGA: cel NIE siega pelnej
+	# dlugosci nogi — zostawiamy ~12% luzu (stand_drop), by przy kroku fore/aft noga miala zapas i kolano
+	# moglo sie ugiac (nie ma przeprostu/clampu zasiegu). To naturalna, lekko ugieta postawa stojaca.
+	# STRAFE LOCK-ON: side!=0 odsuwa stope LATERALNIE (lokalny X) proporcjonalnie do bocznej predkosci —
+	# stopa idzie tam, dokad jedzie cialo (koniec szurania). Domyslnie side=0 => X=0 (czysta sagitta,
+	# wstecznie zgodne z turn-in-place / dawnym wywolaniem).
 	var leg_len := float(_HIP_Y) * VS
 	var stand_drop := leg_len * 0.94               # bazowa wysokosc bioder nad stopa (luz na zgiecie)
-	var target_local := Vector3(0.0, -(stand_drop - foot_lift) + ground_drop, foot_z)
+	var foot_x := side                              # +X = stopa w prawo (lokal modelu); 0 = brak strafe'u
+	var target_local := Vector3(foot_x, -(stand_drop - foot_lift) + ground_drop, foot_z)
 	# --- 2-BONE IK (prawo cosinusow) ---
 	var L1 := float(_HIP_Y - _KNEE_Y) * VS       # udo (hip->knee)
 	var L2 := float(_KNEE_Y) * VS                # lydka+but (knee->podeszwa)
@@ -1797,6 +1802,13 @@ func _foot_ik_leg(hip: Node3D, knee: Node3D, phase_off: float,
 	var hip_ang := aim + hip_corr                # udo wychylone tak, by stopa trafila w cel
 	hip.rotation.x = lerpf(hip.rotation.x, hip_ang, _sm(_IK_K, delta))
 	knee.rotation.x = lerpf(knee.rotation.x, minf(knee_bend, -0.02), _sm(_IK_K, delta))
+	# ABDUKCJA BIODRA (strafe lock-on): analityczne IK powyzej rozwiazuje tylko plaszczyzne YZ (rotation.x),
+	# wiec lateralne przesuniecie celu (foot_x) nie zostaloby osiagniete bez obrotu nogi w bok. Dokladamy
+	# rotation.z na pivocie biodra ~ proporcjonalnie do bocznego kroku => noga TLUMACZY sie w bok podczas
+	# okrazania celu (a nie tylko szuruje). Znak: +X (prawo) => biodro odchyla sie tak, by stopa poszla w +X.
+	# Domyslnie side=0 => abdukcja 0 => rotation.z plynnie wraca do 0 (zero wplywu na zwykla lokomocje).
+	var abduct := atan2(foot_x, stand_drop) * 1.1   # kat odchylenia nogi ~ od bocznego celu (lekko wzmocniony)
+	hip.rotation.z = lerpf(hip.rotation.z, abduct, _sm(_IK_K, delta))
 
 # --- CHÓD / BIEG -----------------------------------------------------------
 # Naturalny, WAŻONY krok: biodra w przeciwfazie, ramiona w przeciwfazie do nóg, kolana
@@ -1828,16 +1840,25 @@ func _anim_locomotion(delta: float, _hspeed: float, _sprinting: bool) -> void:
 	var lift := lerpf(0.06, 0.12, _run_blend) * _gait       # uniesienie stopy w swingu (m)
 	# KIERUNEK KROKU vs TWARZ: gdy ruch jest DO TYŁU względem twarzy (np. cofanie w walce — postać celuje
 	# w przód, a wycofuje się), odwracamy znak kroku => BACKPEDAL zamiast „ślizgu" tyłem. Sagittalnie
-	# (przód/tył); boczny strafe wymaga abdukcji bioder (osobna zmiana rigu) — tu poza zakresem.
+	# (przód/tył). STRAFE (lock-on): przy okrążaniu celu twarz patrzy na cel, a ciało jedzie BOKIEM —
+	# czysto sagittalna animacja ślizgałaby stopami. Dlatego czytamy też LOKALNĄ składową X prędkości
+	# i sterujemy nią bocznym krokiem + abdukcją bioder (_foot_ik_leg side_amt).
 	var hsp := Vector2(velocity.x, velocity.z).length()
 	if hsp > 0.3:
 		var mloc := Vector3(velocity.x, 0.0, velocity.z).rotated(Vector3.UP, -_model.rotation.y)
 		_loco_fwd = lerpf(_loco_fwd, clampf(-mloc.z / hsp, -1.0, 1.0), _sm(8.0, delta))   # +1 przód, -1 tył
+		# +mloc.x = ruch w PRAWO względem twarzy modelu, -mloc.x = w lewo (układ Godot: +X = prawo).
+		_loco_side = lerpf(_loco_side, clampf(mloc.x / hsp, -1.0, 1.0), _sm(8.0, delta))   # +1 prawo, -1 lewo
 	else:
 		_loco_fwd = lerpf(_loco_fwd, 1.0, _sm(6.0, delta))
+		_loco_side = lerpf(_loco_side, 0.0, _sm(6.0, delta))
 	var fwd_sign := -1.0 if _loco_fwd < -0.15 else 1.0
-	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride * fwd_sign, lift, delta)
-	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride * fwd_sign, lift, delta)
+	# BRAMKA: boczny krok wchodzi DOPIERO przy znaczącym |_loco_side| — czysty bieg przód/backpedal
+	# (|_loco_side|≈0) ma side_amt=0 => identyczna, niezmieniona lokomocja sagittalna (zero regresji).
+	var side_amt := _loco_side if absf(_loco_side) > 0.2 else 0.0
+	var side_step := stride * side_amt              # boczne wychylenie stopy (m), skala = krok
+	_foot_ik_leg(_leg_l, _leg_l_lo, 0.0, stride * fwd_sign, lift, delta, side_step)
+	_foot_ik_leg(_leg_r, _leg_r_lo, PI, stride * fwd_sign, lift, delta, side_step)
 
 	# RĘCE — barki w PRZECIWFAZIE do nóg (ramię L z nogą R). Atak nadpisze je później, jeśli trwa.
 	if not is_attacking:
