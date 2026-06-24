@@ -14,6 +14,9 @@ extends Resource
 @export var rolled_affixes: Array = []                # [StatModifier] LUB [{affix_id, value}] (odtwarzane z seed)
 @export var sockets: Array[StringName] = []           # gem_id lub &"" (pusty)
 @export var enchant: Dictionary = {}                  # {enchant_id, rank}
+## Przynaleznosc do setu (ustawiane przy rolled SET-tier). &"" = brak setu. Bez tego pola rolled
+## set item NIGDY nie liczyl sie do progu 2/4-cz (InventoryComponent liczyl sety tylko z bazy).
+@export var set_id: StringName = &""
 
 ## Etap 0: jawne modyfikatory tej instancji (testowy item / implicit przed pelnym lootem).
 ## W Etapie 2 wieksza czesc przejdzie na odtwarzanie z seed + ItemDB, ale ten kanal zostaje
@@ -46,6 +49,7 @@ func to_dict() -> Dictionary:
 			return e.to_dict() if (e is StatModifier) else e),
 		"sockets": sockets.map(func(s: StringName) -> String: return String(s)),
 		"enchant": enchant,
+		"set_id": String(set_id),
 		"explicit_modifiers": explicit_modifiers.map(func(m: StatModifier) -> Dictionary: return m.to_dict()),
 	}
 
@@ -72,6 +76,7 @@ static func from_dict(d: Dictionary) -> ItemInstance:
 		sk.append(StringName(s))
 	it.sockets = sk
 	it.enchant = d.get("enchant", {})
+	it.set_id = StringName(d.get("set_id", ""))
 	var em: Array[StatModifier] = []
 	for md in d.get("explicit_modifiers", []):
 		em.append(StatModifier.from_dict(md))

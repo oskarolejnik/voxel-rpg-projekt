@@ -97,6 +97,7 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 	if tier == ItemResource.Rarity.SET:
 		set_def = _pick_set(rng)
 		if set_def != null:
+			it.set_id = set_def.id          # NAPRAWA (audyt #2): zapamietaj set na instancji — inaczej bonus 2/4-cz. NIGDY nie liczy
 			for fm in set_def.fixed_modifiers:
 				if fm is StatModifier:
 					var copy := _dup_mod(fm, &"set", set_def.id)

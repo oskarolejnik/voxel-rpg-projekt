@@ -72,8 +72,14 @@ func collect_modifiers() -> Array[StatModifier]:
 			for bm in ir.base_modifiers:
 				if bm is StatModifier:
 					out.append(_tag(bm, &"gear", item.base_id))
-			if ir.set_id != &"":
-				set_counts[ir.set_id] = int(set_counts.get(ir.set_id, 0)) + 1
+		# Przynaleznosc do setu: najpierw z ROLLED instancji (ItemInstance.set_id), fallback na definicje
+		# bazy (ItemResource.set_id). NAPRAWA (audyt #2): wczesniej liczono TYLKO z bazy WEWNATRZ `if ir`,
+		# wiec rolled SET item (set_id na instancji, base pusty/bez setu) NIGDY nie liczyl sie do progu 2/4-cz.
+		var eff_set_id: StringName = item.set_id
+		if eff_set_id == &"" and ir != null:
+			eff_set_id = ir.set_id
+		if eff_set_id != &"":
+			set_counts[eff_set_id] = int(set_counts.get(eff_set_id, 0)) + 1
 
 		# 2) afiksy + explicit (ItemInstance.collect_modifiers()).
 		out.append_array(item.collect_modifiers())
