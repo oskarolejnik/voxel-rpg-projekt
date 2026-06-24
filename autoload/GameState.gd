@@ -8,6 +8,11 @@ enum Mode { SINGLE, HOST, CLIENT }
 var mode: Mode = Mode.SINGLE
 var paused: bool = false
 
+## "Nowa gra" przeładowuje scenę dla czystego startu (świat+postać są budowane raz w Main._ready i
+## nie są resetowane). Ta flaga PRZEŻYWA reload (GameState to autoload), więc po przeładowaniu Main
+## wie, że ma od razu wejść do świeżej gry (pominąć menu). Konsumowana w Main._setup_menus.
+var pending_new_game: bool = false
+
 ## TRUE gdy modalne UI (np. ekwipunek) lapie input — gracz NIE chodzi/skacze/sprintuje wtedy.
 ## Ustawiane przez InventoryUI._set_open(). Player.gd zeruje lokomocje, gdy to jest true. Jedno
 ## zrodlo prawdy "czy UI ma fokus", zeby ruch i kursor nie walczyly o input (Etap 2 review #4/#5).

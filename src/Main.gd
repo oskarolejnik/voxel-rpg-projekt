@@ -1412,10 +1412,35 @@ func _setup_menus() -> void:
 	if _main_menu.has_signal("continue_requested"):
 		_main_menu.continue_requested.connect(_on_continue)
 
+	# Po reloadzie z "Nowa gra": auto-start świeżej gry (pomiń menu). Flaga przeżyła reload sceny
+	# (GameState autoload). Świat+postać są już świeże (zbudowane w tym _ready), więc wystarczy ukryć
+	# menu, złapać kursor i wystartować muzykę — BEZ ponownego reloadu.
+	if GameState != null and GameState.pending_new_game:
+		GameState.pending_new_game = false
+		_enter_new_game()
 
-## START: Nowa gra — świeży start (lvl 1). NIE wczytujemy zapisu postaci (read_progression pominięte).
-## Gra już zbudowana (spawn/HUD), menu się chowa i oddaje sterowanie. Muzyka gry rusza.
+
+## START: Nowa gra — ŚWIEŻY start. Świat i postać są budowane RAZ w _ready i NIE są resetowane, więc
+## samo odpauzowanie wracało do ISTNIEJĄCEJ gry (postać/świat z poprzedniej sesji — gracz zgłaszał
+## "nowa gra wrzuca mnie do już istniejącej"). Dlatego "Nowa gra" PRZEŁADOWUJE scenę (gwarantowany
+## czysty świat + postać lvl 1) i zrzuca ewentualną sesję co-op (inaczej zostałbyś w cudzej grze).
+## Flaga pending_new_game (GameState, przeżywa reload) auto-startuje grę po przeładowaniu — patrz
+## _setup_menus/_enter_new_game.
 func _on_new_game() -> void:
+	if NetManager != null:
+		NetManager.leave()                     # zamknij ewentualną sesję sieciową -> SINGLE (nie zostań w cudzej grze)
+	if GameState != null:
+		GameState.pending_new_game = true
+	get_tree().reload_current_scene()
+
+
+## Wejście do ŚWIEŻEJ gry po reloadzie z "Nowa gra" (świat/postać są już świeże — zbudowane w tym
+## _ready, bez wczytywania zapisu). Ukrywa menu (odpauzowuje), łapie kursor, startuje muzykę. NIE
+## przeładowuje sceny ponownie (to zrobił już _on_new_game) — inaczej byłaby pętla reloadów.
+func _enter_new_game() -> void:
+	if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.has_method("hide_menu"):
+		_main_menu.hide_menu()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var am := _audio_manager()
 	if am != null:
 		am.play_music(&"explore")
