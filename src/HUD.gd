@@ -132,6 +132,15 @@ var _flash_peak: float = 0.0
 const FLASH_COL_CRIT: Color = Color(1.0, 0.86, 0.45)
 const FLASH_COL_HIT: Color = Color(1.0, 1.0, 1.0)
 
+# Vignette niskiego HP — pulsująca czerwona ramka przy krawędziach ekranu (telegraf zagrożenia).
+# Aktywna dopiero poniżej progu; im niżej HP, tym mocniejsza. Zero kosztu przy pełnym HP.
+var _vig_phase: float = 0.0                  # faza sinusoidy (rad), narastana w _process
+const VIG_HP_THRESH: float = 0.25            # próg aktywacji (frakcja HP)
+const VIG_SPEED: float = 5.5                 # prędkość pulsu (rad/s)
+const VIG_ALPHA_MAX: float = 0.42            # maks. alpha vignette przy HP≈0
+const VIG_BAND: float = 0.18                 # grubość pasma vignette jako frakcja min(vp)
+const VIG_COL: Color = Color(0.78, 0.06, 0.08)  # czerwień zagrożenia
+
 # Pipsy COMBO (Ranger) — ColorRect, kontrakt E3.
 const COMBO_PIP_ON: Color = Color(1.0, 0.78, 0.25, 0.98)
 const COMBO_PIP_OFF: Color = Color(0.18, 0.20, 0.22, 0.70)
@@ -432,6 +441,11 @@ func _paint(ci: CanvasItem) -> void:
 	# --- RADAR (nad medalionem, lewy-górny) — blipy wrogów względem gracza ---
 	_radar(ci, PAD + r, cy + stack_h * 0.5 + RADAR_R + 14.0, _gather_enemy_blips())
 
+	# --- VIGNETTE NISKIEGO HP (krawędzie ekranu) — pulsująca czerwień zagrożenia ---
+	var vig_a := _vignette_alpha(_hp_f, _vig_phase)
+	if vig_a > 0.0:
+		_vignette(ci, vp, vig_a)
+
 	# --- CELOWNIK (środek ekranu) — system kamery TPS ---
 	if _show_crosshair:
 		_crosshair(ci, roundf(vp.x * 0.5), roundf(vp.y * 0.5))
@@ -456,6 +470,35 @@ func _crosshair(ci: CanvasItem, cx: float, cy: float) -> void:
 	for a in arms:
 		_px(ci, a.x, a.y, a.z, a.w, col)
 	_px(ci, cx - th * 0.5, cy - th * 0.5, th, th, col)
+
+## Alpha vignette niskiego HP. Czysta funkcja (testowalna bez sceny):
+## 0 powyżej progu VIG_HP_THRESH; poniżej — narasta liniowo do VIG_ALPHA_MAX przy HP=0,
+## modulowana pulsem sinusoidalnym (0.5+0.5*sin) wg fazy t. Zawsze w [0, VIG_ALPHA_MAX].
+func _vignette_alpha(hp_frac: float, t: float) -> float:
+	var hf := clampf(hp_frac, 0.0, 1.0)
+	if hf >= VIG_HP_THRESH:
+		return 0.0
+	var depth := (VIG_HP_THRESH - hf) / VIG_HP_THRESH   # 0 na progu -> 1 przy HP=0
+	var pulse := 0.5 + 0.5 * sin(t)                      # 0..1
+	return clampf(VIG_ALPHA_MAX * depth * pulse, 0.0, VIG_ALPHA_MAX)
+
+## Rysuje czerwone pasma przy krawędziach ekranu (4 gradientowe kroki na pasmo).
+## alpha = wynik _vignette_alpha. Krawędzie ciemniejsze do środka -> efekt vignette.
+func _vignette(ci: CanvasItem, vp: Vector2, alpha: float) -> void:
+	var band := minf(vp.x, vp.y) * VIG_BAND
+	var steps := 4
+	for s in steps:
+		# Od krawędzi (s=0, pełna alpha) do wnętrza (zanik) — kwadratowy spadek.
+		var f := 1.0 - float(s) / float(steps)
+		var a := alpha * f * f
+		var col := Color(VIG_COL.r, VIG_COL.g, VIG_COL.b, a)
+		var inset := band * (float(s) / float(steps))
+		var th := band / float(steps) + 1.0
+		# Góra / dół / lewo / prawo.
+		_px(ci, 0.0, inset, vp.x, th, col)
+		_px(ci, 0.0, vp.y - inset - th, vp.x, th, col)
+		_px(ci, inset, 0.0, th, vp.y, col)
+		_px(ci, vp.x - inset - th, 0.0, th, vp.y, col)
 
 # ============================================================================
 #  KOMPAS + RADAR (nawigacja)
@@ -565,6 +608,9 @@ func _process(delta: float) -> void:
 	_stam_f = lerpf(_stam_f, _stam_t, _sm(18.0, delta))
 	_res_f = lerpf(_res_f, _res_t, _sm(15.0, delta))
 	_xp_f = lerpf(_xp_f, _xp_t, _sm(10.0, delta))
+	# Faza pulsu vignette — narastana tylko przy niskim HP (zero kosztu przy zdrowiu).
+	if _hp_f < VIG_HP_THRESH:
+		_vig_phase = fposmod(_vig_phase + VIG_SPEED * delta, TAU)
 	# Yaw kompasu z gracza (jeśli wpięty) — tanio, raz na klatkę. Null-safe.
 	if _player_ref != null and is_instance_valid(_player_ref):
 		_compass_yaw = _player_ref.global_rotation.y
