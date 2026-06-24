@@ -28,6 +28,23 @@ var attack_entry_delay: float = 0.35
 
 var allegiance_hostile: bool = true        # pet (ALLY) celuje w HOSTILE; HOSTILE celuje w gracza
 
+# ============================================================================
+#  EKOSYSTEM (GDD Świat §4) — DISPOSITION dzikiego stworzenia: hostile / neutral / passive.
+# ============================================================================
+# Steruje TYLKO dzikim stworzeniem (allegiance_hostile=true, NIE pet). Default HOSTILE => pełna
+# wsteczna zgodność: istniejący Goblin/Brute/Slinger bez zmiany zachowania, pet/ALLY nietknięty.
+#   HOSTILE — agresywny na widok (CHASE w aggro_radius) ORAZ kontratak po trafieniu (jak dotąd).
+#   NEUTRAL — NIE atakuje na widok; kontratakuje DOPIERO po sprowokowaniu (trafienie -> CHASE).
+#   PASSIVE — nigdy nie atakuje; po sprowokowaniu LUB gdy gracz blisko -> UCIEKA (flee) od zagrożenia.
+# Wartość jest danymi (configure() czyta "disposition" z EnemyResource); enum trzymamy jako int,
+# by uniknąć ścisłej konwersji int->enum przy odczycie z Dictionary.
+enum Disposition { HOSTILE, NEUTRAL, PASSIVE }
+var disposition: int = Disposition.HOSTILE
+const FLEE_TIME: float = 4.0             # s ucieczki po sprowokowaniu (PASSIVE)
+const FLEE_SPEED_MULT: float = 1.35      # passive ucieka szybciej niż patroluje
+const PASSIVE_SCARE_RADIUS: float = 6.0  # gracz bliżej niż to => passive ucieka „na widok"
+var _flee_timer: float = 0.0             # >0 = passive w trakcie ucieczki (po prowokacji)
+
 # ETAP 6 — parametry peta (ALLY). Anchor leasha = gracz (zamiast _home). Pet skanuje wrogow z grupy
 # "enemies" w PET_AGGRO_RADIUS od SIEBIE; gdy za daleko od gracza (PET_LEASH_RADIUS) porzuca cel i
 # wraca do FOLLOW. Histereza FOLLOW (stop/resume), by nie deptal graczowi po petach.
@@ -65,6 +82,7 @@ func configure(p: Dictionary) -> void:
 	patrol_radius = float(p.get("patrol_radius", patrol_radius))
 	attack_entry_delay = float(p.get("attack_entry_delay", attack_entry_delay))
 	allegiance_hostile = bool(p.get("allegiance_hostile", allegiance_hostile))
+	disposition = int(p.get("disposition", disposition))   # ekosystem: 0=hostile/1=neutral/2=passive
 
 
 func set_home(h: Vector3) -> void:
@@ -101,6 +119,11 @@ func current_target() -> Node3D:
 ## natychmiast kontratakuje, zamiast czekac az _follow() sam zobaczy wroga. Bezpieczne: CHASE bez
 ## celu spadnie z powrotem do FOLLOW przez _lose_target() (pet) / PATROL (wrog).
 func wake_to_chase() -> void:
+	# EKOSYSTEM: PASSIVE sprowokowane UCIEKA (nie walczy) — ustawiamy timer flee, _passive_tick zajmie się ruchem.
+	if disposition == Disposition.PASSIVE:
+		_flee_timer = FLEE_TIME
+		return
+	# HOSTILE i NEUTRAL: trafione -> kontratak (CHASE). To realizuje „neutral: attack only if provoked".
 	if _state == State.IDLE or _state == State.PATROL or _state == State.FOLLOW:
 		_state = State.CHASE
 
@@ -121,6 +144,11 @@ func tick(delta: float) -> int:
 	if has_target:
 		var d: Vector3 = target.global_position - pos
 		dist = Vector2(d.x, d.z).length()
+
+	# EKOSYSTEM: PASSIVE nigdy nie CHASE/ATTACK — osobna ścieżka ucieczki/wander (zostaje w IDLE/PATROL).
+	if disposition == Disposition.PASSIVE and allegiance_hostile:
+		_passive_tick(delta, pos, target)
+		return _state
 
 	match _state:
 		State.IDLE:    _idle(delta, has_target, dist)
@@ -160,7 +188,8 @@ func _nearest_enemy(pos: Vector3) -> Node3D:
 
 func _idle(delta: float, has_target: bool, dist: float) -> void:
 	_host.ai_stop()
-	if has_target and dist <= aggro_radius:
+	# EKOSYSTEM: tylko HOSTILE agresuje „na widok". NEUTRAL czeka na prowokację, PASSIVE nie trafia tu.
+	if disposition == Disposition.HOSTILE and has_target and dist <= aggro_radius:
 		_state = State.CHASE
 		return
 	_idle_timer -= delta
@@ -171,7 +200,8 @@ func _idle(delta: float, has_target: bool, dist: float) -> void:
 
 
 func _patrol(delta: float, has_target: bool, dist: float, pos: Vector3) -> void:
-	if has_target and dist <= aggro_radius:
+	# EKOSYSTEM: tylko HOSTILE agresuje „na widok" w trakcie patrolu (patrz _idle).
+	if disposition == Disposition.HOSTILE and has_target and dist <= aggro_radius:
 		_state = State.CHASE
 		return
 	_host.ai_move_towards(_patrol_target, move_speed)
@@ -229,6 +259,39 @@ func _pick_patrol_target() -> void:
 	var ang := randf() * TAU
 	var r := randf() * patrol_radius
 	_patrol_target = _home + Vector3(cos(ang) * r, 0.0, sin(ang) * r)
+
+
+# ============================================================================
+#  EKOSYSTEM — PASSIVE: ucieczka od zagrożenia + spokojny wander (bez agresji)
+# ============================================================================
+## PASSIVE: nigdy nie atakuje. Ucieka OD gracza gdy sprowokowany (_flee_timer>0, ustawiany przez
+## wake_to_chase po trafieniu) LUB gdy gracz w PASSIVE_SCARE_RADIUS („spłoszenie na widok"). W trakcie
+## ucieczki biegnie w przeciwną stronę niż zagrożenie (PATROL = animacja biegu, FLEE_SPEED_MULT).
+## Gdy spokojnie — łagodny wander wokół _home (reuse _idle/_patrol z has_target=false: zero agresji).
+func _passive_tick(delta: float, pos: Vector3, threat: Node3D) -> void:
+	_flee_timer = maxf(0.0, _flee_timer - delta)
+	var scared := _flee_timer > 0.0
+	var has_threat := threat != null and is_instance_valid(threat)
+	if has_threat and not scared:
+		var dt := threat.global_position - pos
+		dt.y = 0.0
+		if dt.length() <= PASSIVE_SCARE_RADIUS:
+			scared = true
+	if scared and has_threat:
+		var away := pos - threat.global_position
+		away.y = 0.0
+		if away.length() < 0.01:
+			away = Vector3(1.0, 0.0, 0.0)
+		away = away.normalized()
+		_host.ai_face(away)
+		_host.ai_move_towards(pos + away * 4.0, move_speed * FLEE_SPEED_MULT)
+		_state = State.PATROL
+		return
+	# Spokojnie — łagodny wander wokół domu, BEZ agresji (has_target=false; aggro i tak gated HOSTILE).
+	match _state:
+		State.IDLE:   _idle(delta, false, INF)
+		State.PATROL: _patrol(delta, false, INF, pos)
+		_:            _state = State.IDLE   # CHASE/ATTACK/FOLLOW nie dotyczą passive — wróć do IDLE
 
 
 # ============================================================================
