@@ -33,6 +33,10 @@ const SOCKETS_BY_TIER: Array[Vector2i] = [
 ## Enchant od RARE w gore (GDD 6.2): RARE/EPIC/LEGENDARY/SET maja slot enchantu.
 const ENCHANT_FROM_RARITY: int = 2   # ItemResource.Rarity.RARE
 
+## Prog poziomu do zalozenia rosnie z ilvl: req_level = maxi(1, ilvl - REQ_LEVEL_OFFSET). Maly offset,
+## by item z danego ilvl byl noszalny troche wczesniej niz "ilvl == poziom" (luz na progresje, GDD 10).
+const REQ_LEVEL_OFFSET: int = 2
+
 ## Domyslne wagi rarity, gdy LootTableResource ich nie poda (driver mocy = liczba afiksow).
 ## Indeksy = Rarity. Suma niewazna (normalizujemy). Trash czesty, legenda rzadka.
 const DEFAULT_RARITY_WEIGHTS: Array[float] = [50.0, 30.0, 14.0, 5.0, 1.0, 0.0]
@@ -74,6 +78,18 @@ static func ilvl_scale(ilvl: int) -> float:
 	return 1.0 + float(maxi(1, ilvl) - 1) * 0.04
 
 
+## Prog poziomu do zalozenia derywowany z ilvl: maxi(1, ilvl - REQ_LEVEL_OFFSET). Rosnie liniowo z ilvl.
+## Gdy base_id wskazuje ItemResource z WYZSZYM authored req_level — honorujemy go (autor moze chciec
+## twardszy prog niz wynika z ilvl). Pusty/nieznany base -> czysto z ilvl.
+func _derive_req_level(ilvl: int, base_id: StringName) -> int:
+	var req := maxi(1, maxi(1, ilvl) - REQ_LEVEL_OFFSET)
+	if base_id != &"" and ItemDB != null:
+		var ir := ItemDB.item(base_id)
+		if ir != null:
+			req = maxi(req, maxi(1, ir.req_level))
+	return req
+
+
 ## GLOWNE wejscie: deterministyczne wylosowanie itemu. Z `seed` budujemy LOKALNY RNG i z niego
 ## losujemy wszystko dla tej instancji (afiksy/sockety/enchant) — odtwarzalne u klienta z samego
 ## seeda. `biome` (StringName) filtruje afiksy tematyczne; `tier` = ItemResource.Rarity; `slot` =
@@ -89,6 +105,7 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 	it.base_id = base_id
 	it.rarity = tier
 	it.ilvl = maxi(1, ilvl)
+	it.req_level = _derive_req_level(it.ilvl, base_id)
 	it.seed = item_seed
 
 	# --- Set (turkus): stale modyfikatory sztuki + przypisanie set_id ---
@@ -116,7 +133,7 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 			it.rolled_affixes.append(uniq)
 
 	# --- Sockety (puste; klejnoty wkladane pozniej w InventoryComponent.socket_gem) ---
-	it.sockets = _roll_sockets(rng, tier)
+	it.sockets = _roll_sockets(rng, tier, base_id)
 
 	# --- Enchant (RARE+): {enchant_id, rank} — wybor 1 z puli; modyfikatory dolacza Inventory ---
 	if tier >= ENCHANT_FROM_RARITY:
@@ -277,12 +294,19 @@ func _affix_pool(ilvl: int, biome: StringName, slot: int) -> Array:
 	return pool
 
 
-func _roll_sockets(rng: RandomNumberGenerator, tier: int) -> Array[StringName]:
+## Losuje liczbe socketow z zakresu tieru (SOCKETS_BY_TIER). Gdy base_id wskazuje ItemResource,
+## CLAMPujemy wynik do authored max_sockets (autor honoruje twardy limit per item). Pusty/nieznany
+## base -> czyste zachowanie wg tieru (wsteczna zgodnosc).
+func _roll_sockets(rng: RandomNumberGenerator, tier: int, base_id: StringName = &"") -> Array[StringName]:
 	var out: Array[StringName] = []
 	var rng_n := Vector2i(0, 0)
 	if tier >= 0 and tier < SOCKETS_BY_TIER.size():
 		rng_n = SOCKETS_BY_TIER[tier]
 	var n := rng.randi_range(rng_n.x, rng_n.y)
+	if base_id != &"" and ItemDB != null:
+		var ir := ItemDB.item(base_id)
+		if ir != null:
+			n = mini(n, maxi(0, ir.max_sockets))   # honoruj authored max_sockets bazy
 	for _i in n:
 		out.append(&"")   # pusty socket (klejnot wkladany pozniej)
 	return out

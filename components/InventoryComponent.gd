@@ -33,12 +33,16 @@ var equipment: Dictionary = {}
 var backpack: Array[ItemInstance] = []
 
 var _stats: StatsComponent = null
+## Sibling LevelComponent (jesli jest) — zrodlo poziomu nosiciela do progu req_level przy equip.
+## Pusty -> brak progu (equip nie odrzuca po poziomie; wsteczna zgodnosc dla bytow bez poziomu).
+var _level: LevelComponent = null
 
 
 func _ready() -> void:
 	_stats = _resolve_stats()
 	if _stats != null:
 		_stats.register_provider(self)   # rebuild + stats_changed
+	_level = _resolve_level()
 
 
 func _resolve_stats() -> StatsComponent:
@@ -50,6 +54,48 @@ func _resolve_stats() -> StatsComponent:
 			if child is StatsComponent:
 				return child
 	return null
+
+
+## Szuka brata typu LevelComponent (zrodlo poziomu nosiciela). null gdy brak.
+func _resolve_level() -> LevelComponent:
+	var parent := get_parent()
+	if parent != null:
+		for child in parent.get_children():
+			if child is LevelComponent:
+				return child
+	return null
+
+
+## Poziom nosiciela do progu req_level. Najpierw sibling LevelComponent; gdy brak — testy/UI moga
+## wstrzyknac poziom przez set_wearer_level(). Zwraca -1 gdy poziom NIEUSTALONY (equip wtedy NIE
+## odrzuca — wsteczna zgodnosc: byty bez poziomu zakladaja wszystko).
+func wearer_level() -> int:
+	if _override_level >= 0:
+		return _override_level
+	if _level == null:
+		_level = _resolve_level()       # lazy: komponent moglby dojsc po _ready
+	if _level != null:
+		return _level.level
+	return -1
+
+
+## Pozwala testom/UI podac poziom nosiciela wprost (gdy nie ma LevelComponent jako brata).
+## Ujemna wartosc = brak nadpisania (powrot do siblinga/„brak progu").
+var _override_level: int = -1
+
+func set_wearer_level(p_level: int) -> void:
+	_override_level = p_level
+
+
+## Czy item moze byc zalozony przez nosiciela (prog req_level). True gdy poziom nieustalony (-1)
+## albo req_level <= poziom. Host-authoritative: equip i tak wykonuje sie lokalnie.
+func can_equip(item: ItemInstance) -> bool:
+	if item == null:
+		return false
+	var lvl := wearer_level()
+	if lvl < 0:
+		return true                     # poziom nieustalony -> brak progu (wsteczna zgodnosc)
+	return item.req_level <= lvl
 
 
 # ============================================================================
@@ -124,6 +170,8 @@ func collect_modifiers() -> Array[StatModifier]:
 func equip(item: ItemInstance, target_slot: int = -1) -> ItemInstance:
 	if item == null:
 		return null
+	if not can_equip(item):
+		return null                     # za niski poziom nosiciela -> odmowa (item zostaje u callera)
 	var slot := target_slot
 	if slot < 0:
 		slot = _natural_slot(item)
@@ -157,6 +205,8 @@ func equip_from_backpack(backpack_index: int, target_slot: int = -1) -> bool:
 	if backpack_index < 0 or backpack_index >= backpack.size():
 		return false
 	var item := backpack[backpack_index]
+	if not can_equip(item):
+		return false   # za niski poziom nosiciela -> item ZOSTAJE w plecaku (sprawdzamy PRZED wyjeciem)
 	var slot := target_slot
 	if slot < 0:
 		slot = _natural_slot(item)

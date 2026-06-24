@@ -10,6 +10,9 @@ extends Resource
 @export var base_id: StringName = &""                 # -> ItemResource w ItemDB
 @export var rarity: int = 0                           # ItemResource.Rarity
 @export var ilvl: int = 1
+## Minimalny poziom postaci do zalozenia (derywowany z ilvl w LootService.roll_item). 1 = brak progu.
+## InventoryComponent.equip odrzuca item, gdy req_level > poziom nosiciela (jesli poziom da sie odczytac).
+@export var req_level: int = 1
 @export var seed: int = 0                             # deterministyczne odtworzenie afiksow u klienta
 @export var rolled_affixes: Array = []                # [StatModifier] LUB [{affix_id, value}] (odtwarzane z seed)
 @export var sockets: Array[StringName] = []           # gem_id lub &"" (pusty)
@@ -44,6 +47,7 @@ func to_dict() -> Dictionary:
 		"base_id": String(base_id),
 		"rarity": rarity,
 		"ilvl": ilvl,
+		"req_level": req_level,
 		"seed": seed,
 		"rolled_affixes": rolled_affixes.map(func(e):
 			return e.to_dict() if (e is StatModifier) else e),
@@ -59,6 +63,7 @@ static func from_dict(d: Dictionary) -> ItemInstance:
 	it.base_id = StringName(d.get("base_id", ""))
 	it.rarity = int(d.get("rarity", 0))
 	it.ilvl = int(d.get("ilvl", 1))
+	it.req_level = int(d.get("req_level", 1))   # brak klucza (stary save) -> 1 (brak progu, wsteczna zgodnosc)
 	it.seed = int(d.get("seed", 0))
 	# Symetria z to_dict(): wpisy bedace StatModifierem zapisuja sie przez e.to_dict() (slownik
 	# z kluczami stat/op/value/...). Tu odtwarzamy je z powrotem do StatModifier, by collect_modifiers()
