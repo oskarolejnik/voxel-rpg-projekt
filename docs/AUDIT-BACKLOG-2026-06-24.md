@@ -12,10 +12,10 @@
 | # | Item | Area | Sev | Eff | Status |
 |---|------|------|-----|-----|--------|
 | 1 | Enemy hitstun/stagger so hits interrupt windup | Combat | high | M | ✅ done — commit 4884319 |
-| 2 | Fix SET items granting zero set bonuses (`set_id` lost at roll) | Loot | high | M | todo |
-| 3 | Local-freeze SP hitstop (global `time_scale` freezes player input) | Feel | med | M | todo |
-| 4 | Loot in TREASURE/SECRET dungeon rooms (currently empty) | Dungeons | high | M | todo |
-| 5 | Real status-effect pipeline (ignite/chill/poison/stun; `on_hit_effects` is a no-op) | Combat | high | L | todo |
+| 2 | Fix SET items granting zero set bonuses (`set_id` lost at roll) | Loot | high | M | ✅ done — commit 6900d6d |
+| 3 | Local-freeze SP hitstop (global `time_scale` freezes player input) | Feel | med | M | ✅ done — commit 5bfe623 |
+| 4 | Loot in TREASURE/SECRET dungeon rooms (currently empty) | Dungeons | high | M | ✅ done — commit 32f20b2 |
+| 5 | Real status-effect pipeline (ignite/chill/poison/stun; `on_hit_effects` is a no-op) | Combat | high | L | todo (scoped — see note) |
 | 6 | Strafe locomotion for lock-on circling (feet skate) | Feel | high | L | todo |
 | 7 | Per-class skill kits + spawn handler (cast_time/Projectile/HazardZone) | Combat/Prog | med | L | todo |
 | 8 | Biome-aware heightmaps (terrain shape varies per biome) | World | high | L | todo |
@@ -23,6 +23,15 @@
 | 10 | Minimap + compass HUD | UI | high | L | todo |
 | 11 | Boss/miniboss unique mechanics (telegraph/phase/adds) | Dungeons | high | L | todo |
 | 12 | Per-class passive trees + per-level baseline power | Prog | crit | XL | todo |
+
+## #5 scope note (discovered while reading the code)
+
+Status effects is bigger than an in-place wiring fix — the data isn't flowing at all:
+- `HitData.on_hit_effects` exists but is **empty**; nothing populates it (elemental affixes add `<elem>_damage` stats, not effects).
+- `HitData.to_dict/from_dict` **don't serialize** `on_hit_effects`, so a co-op client→host attack would drop any status.
+- No DoT/CC engine exists. `DamageService._resolve` step 6 (`_apply_status`) is commented out.
+
+Sub-tasks (each a separate commit): (a) a host-authoritative `StatusEffectComponent` with a DoT ticker + CC; chill can **reuse the existing `BuffComponent`** (timed `move_speed` StatModifier); stun gates `AIComponent` windup. (b) Populate `on_hit_effects` from affix/skill tags. (c) Serialize `on_hit_effects` in HitData for co-op. (d) Uncomment + implement `DamageService._apply_status`. Start fresh — do NOT half-wire it (a stubbed status system reads as "done" but isn't).
 
 ## Cross-cutting themes
 
