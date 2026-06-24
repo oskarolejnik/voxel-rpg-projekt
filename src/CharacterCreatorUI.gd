@@ -184,6 +184,11 @@ func _on_create() -> void:
 		return
 	var path := _save(def)
 	_status.text = "Utworzono postać: %s  →  %s" % [def.full_name(), path]
+	# AUDYT (namespace): wybór klasy z kreatora PROPAGUJE do progresji. def.class_id to kanoniczne id
+	# ContentDB (polskie) — to samo, którego używają SkillDB.tree() i ClassResourceComponent.build_for(),
+	# więc wybrana klasa od razu dostaje swoje drzewko + właściwy pasek zasobu (dawniej choice ginął).
+	if GameState != null and def != null:
+		GameState.class_id = def.class_id
 	character_created.emit(def)
 
 func _save(def: CharacterDefinition) -> String:

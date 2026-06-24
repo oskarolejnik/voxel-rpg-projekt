@@ -582,7 +582,7 @@ func _build_components() -> void:
 # i wpina go w istniejace komponenty i sygnaly. Klasa z GameState.class_id, drzewko z SkillDB.
 # Wstepny stan (poziom/XP/alokacja) z save'a wczytuje Main przez load_progression() — tu start lvl 1.
 func _build_progression() -> void:
-	var cls: StringName = &"warrior"
+	var cls: StringName = &"wojownik"   # AUDYT (namespace): kanon = id ContentDB (polskie)
 	if typeof(GameState) != TYPE_NIL and GameState != null:
 		cls = GameState.class_id
 
@@ -647,8 +647,9 @@ func _build_progression() -> void:
 ## reszta (rogue/...) melee. Dane przykladowe rownolegle w data/db/skills/*.tres (content).
 func _build_class_finisher(cls: StringName) -> SkillResource:
 	var sk := SkillResource.new()
+	# AUDYT (namespace): klucze = kanoniczne id ContentDB (polskie). Pozostałe klasy -> melee fallback.
 	match cls:
-		&"mage":
+		&"mag":
 			# Pocisk Ognia — ranged: leci w kierunku celownika, dmg przez Projectile -> DamageService.
 			sk.id = &"firebolt"
 			sk.cooldown = 0.9
@@ -660,7 +661,7 @@ func _build_class_finisher(cls: StringName) -> SkillResource:
 			sk.aura_kind = &"cast"            # puls u stop przy kastowaniu
 			sk.aura_color = Color(1.0, 0.5, 0.15)
 			sk.aura_radius = 1.4
-		&"ranger":
+		&"lucznik":
 			# Przebijajacy Strzal — ranged z pierce: przebija kilka celow w linii.
 			sk.id = &"piercing_shot"
 			sk.cooldown = 0.8
@@ -672,7 +673,7 @@ func _build_class_finisher(cls: StringName) -> SkillResource:
 			sk.aura_kind = &"cast"
 			sk.aura_color = Color(0.6, 1.0, 0.7)
 			sk.aura_radius = 1.2
-		&"warrior":
+		&"wojownik":
 			# Wir Ostrzy (BEZ ZMIAN — 30 Furii, CD 1 s, AoE 360° wokol, aura-pierscien stalowy).
 			sk.id = &"whirlwind"
 			sk.cooldown = 1.0
@@ -793,7 +794,7 @@ func load_progression(p_level: int, p_xp: int, p_allocated: Array[StringName]) -
 func write_progression_to_save(sd: SaveData) -> void:
 	if sd == null:
 		return
-	sd.class_id = GameState.class_id if GameState != null else &"warrior"
+	sd.class_id = GameState.class_id if GameState != null else &"wojownik"
 	sd.level = get_level()
 	sd.xp = get_xp()
 	if _tree != null:

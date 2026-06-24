@@ -80,7 +80,7 @@ func _test_net_stub() -> void:
 func _test_save_roundtrip() -> void:
 	var data := SaveData.new()
 	data.char_name = "Berserker Testowy"
-	data.class_id = &"warrior"
+	data.class_id = &"wojownik"
 	data.level = 7
 	data.xp = 1234
 	data.gold = 5000
@@ -93,7 +93,7 @@ func _test_save_roundtrip() -> void:
 	data.pet_stable = [&"goblin_pet", &"wolf"]
 
 	var app := CharacterAppearance.new()
-	app.class_id = &"warrior"
+	app.class_id = &"wojownik"
 	app.body_color = Color(0.6, 0.4, 0.3, 1.0)
 	app.height_scale = 1.05
 	data.appearance = app

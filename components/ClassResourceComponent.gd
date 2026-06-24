@@ -30,7 +30,7 @@ signal combo_changed(count: int, maximum: int)   # tylko Ranger (combo to inny w
 
 ## Tryb wg klasy.
 var kind: Kind = Kind.RAGE
-var class_id: StringName = &"warrior"
+var class_id: StringName = &"wojownik"   # AUDYT (namespace): kanon = id ContentDB (polskie)
 
 ## StatsComponent zrodla mnoznikow (rage_gen) i pul (mana_max). Ustawia encja przez set_stats().
 ## Gdy null -> mnozniki = 1.0, pule = bazy (komponent dziala samodzielnie, np. w testach).
@@ -62,16 +62,24 @@ var focus_regen: float = 8.0             # /s — wolniejszy niz stamina/mana (z
 ## StatsComponent (opcjonalnie) skaluje mana_max/regen z lootem w przyszlosci — Etap 3 trzyma bazy.
 func build_for(p_class_id: StringName) -> void:
 	class_id = p_class_id
-	match p_class_id:
-		&"mage":
+	# AUDYT (namespace): zasób klasy z DANYCH (ContentDB.class_by_id().resource_kind) zamiast hardkodu
+	# id. Dawniej match po ANGIELSKICH id (mage/ranger) -> polskie id kreatora (mag/lucznik) trafiały
+	# w fallback RAGE (mag dostawał Furię zamiast Many). Teraz każda z 11 klas dostaje właściwy zasób.
+	var rkind: StringName = &"rage"
+	if typeof(ContentDB) != TYPE_NIL and ContentDB != null and ContentDB.has_method("class_by_id"):
+		var cr = ContentDB.class_by_id(p_class_id)
+		if cr != null and cr.resource_kind != &"":
+			rkind = cr.resource_kind
+	match rkind:
+		&"mana":
 			kind = Kind.MANA
 			mana = mana_max               # mag startuje z pelna mana
-		&"ranger":
+		&"focus", &"combo":
 			kind = Kind.COMBO_FOCUS
 			focus = focus_max
 			combo = 0
 		_:
-			# Wojownik (i fallback): Furia. Startuje z 0 (buduje sie w walce).
+			# rage (oraz nieobsłużone jeszcze: faith/essence/chi/nature) -> Furia jako bezpieczny default.
 			kind = Kind.RAGE
 			rage = 0.0
 	_apply_stat_maxima(true)   # dosuń mana_max/rage_max/focus_max do staty (gdy stats juz wpiete)

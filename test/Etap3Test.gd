@@ -273,7 +273,7 @@ func _test_respec() -> void:
 # ---------------------------------------------------------------------------
 func _test_rage_resource() -> void:
 	var cr := ClassResourceComponent.new()
-	cr.build_for(&"warrior")
+	cr.build_for(&"wojownik")
 	add_child(cr)
 	_check(cr.kind == ClassResourceComponent.Kind.RAGE, "Wojownik -> tryb FURIA")
 	_check(cr.rage == 0.0, "Furia startuje od 0")
@@ -311,7 +311,7 @@ func _test_rage_resource() -> void:
 # ---------------------------------------------------------------------------
 func _test_mana_and_combo() -> void:
 	var mage := ClassResourceComponent.new()
-	mage.build_for(&"mage")
+	mage.build_for(&"mag")
 	add_child(mage)
 	_check(mage.kind == ClassResourceComponent.Kind.MANA, "Mag -> tryb MANA")
 	_check(absf(mage.mana - mage.mana_max) < EPS, "Mag startuje z pelna mana")
@@ -322,7 +322,7 @@ func _test_mana_and_combo() -> void:
 	mage.queue_free()
 
 	var ranger := ClassResourceComponent.new()
-	ranger.build_for(&"ranger")
+	ranger.build_for(&"lucznik")
 	add_child(ranger)
 	_check(ranger.kind == ClassResourceComponent.Kind.COMBO_FOCUS, "Ranger -> tryb COMBO+FOCUS")
 	for i in range(7):
@@ -340,7 +340,7 @@ func _test_mana_and_combo() -> void:
 func _test_starter_tree() -> void:
 	var tree_res: SkillTreeResource = null
 	if typeof(SkillDB) != TYPE_NIL and SkillDB != null and SkillDB.has_method("tree"):
-		tree_res = SkillDB.tree(&"warrior")
+		tree_res = SkillDB.tree(&"wojownik")
 	_check(tree_res != null, "SkillDB ma drzewko warrior (.tres na dysku)")
 	if tree_res == null:
 		return
@@ -371,7 +371,7 @@ func _test_starter_tree() -> void:
 	# FUNKCJONALNY test petli zwrotnej (review major): zasob klasy WPIETY do StatsComponentu — przed
 	# alokacja Furia za cios = 6.0; po alokacji Furia Bitwy (+25% rage_gen) musi byc 7.5, a nie wciaz 6.0.
 	var cr := ClassResourceComponent.new()
-	cr.build_for(&"warrior")
+	cr.build_for(&"wojownik")
 	add_child(cr)
 	cr.set_stats(stats)
 	cr.on_hit_dealt(true)
@@ -391,7 +391,7 @@ func _test_starter_tree() -> void:
 # ---------------------------------------------------------------------------
 func _test_save_roundtrip() -> void:
 	var sd := SaveData.new()
-	sd.class_id = &"warrior"
+	sd.class_id = &"wojownik"
 	sd.level = 27
 	sd.xp = 1234
 	sd.orbs = 750
@@ -424,7 +424,7 @@ func _test_save_file_roundtrip() -> void:
 		return
 	var path := "user://saves/_e3_test_char.json"
 	var sd := SaveData.new()
-	sd.class_id = &"warrior"
+	sd.class_id = &"wojownik"
 	sd.level = 14
 	sd.xp = 321
 	sd.orbs = 640
@@ -457,7 +457,7 @@ func _test_mana_max_rescale() -> void:
 	stats.base = StatBlock.new()           # mana_max baza 100
 	add_child(stats)
 	var cr := ClassResourceComponent.new()
-	cr.build_for(&"mage")
+	cr.build_for(&"mag")
 	add_child(cr)
 	cr.set_stats(stats)
 	_check(absf(cr.mana_max - 100.0) < EPS, "mana_max baza 100 po set_stats (jest %.1f)" % cr.mana_max)

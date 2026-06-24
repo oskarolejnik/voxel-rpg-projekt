@@ -11,7 +11,7 @@
 
 [resource]
 script = ExtResource("1_tree")
-class_id = &"rogue"
+class_id = &"lotrzyk"
 nodes = Array[ExtResource("2_nb")]([ExtResource("2_nb"), ExtResource("3_b1"), ExtResource("4_b2"), ExtResource("5_le"), ExtResource("6_ev"), ExtResource("7_vn"), ExtResource("8_as")])
 layout = {
 &"rog_nimble": Vector2(0, 0),

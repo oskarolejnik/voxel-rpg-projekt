@@ -46,7 +46,7 @@ func _make_player(cls: StringName) -> Node:
 
 func _test() -> void:
 	# (1) Mag: ranged finisher (mana).
-	var mage = await _make_player(&"mage")
+	var mage = await _make_player(&"mag")
 	var msk: SkillResource = mage._skill_finisher
 	_check(msk != null, "mag: _build_progression NIE zbudowal finishera (null)")
 	if msk != null:
@@ -68,7 +68,7 @@ func _test() -> void:
 	await get_tree().process_frame
 
 	# (2) Ranger: ranged + pierce (focus).
-	var ranger = await _make_player(&"ranger")
+	var ranger = await _make_player(&"lucznik")
 	var rsk: SkillResource = ranger._skill_finisher
 	_check(rsk != null, "ranger: finisher null")
 	if rsk != null:
@@ -80,7 +80,7 @@ func _test() -> void:
 	await get_tree().process_frame
 
 	# (3) Wojownik niezmieniony: whirlwind, melee.
-	var warrior = await _make_player(&"warrior")
+	var warrior = await _make_player(&"wojownik")
 	var wsk: SkillResource = warrior._skill_finisher
 	_check(wsk != null and wsk.id == &"whirlwind", "wojownik: finisher != whirlwind (regresja)")
 	if wsk != null:
@@ -91,7 +91,7 @@ func _test() -> void:
 	await get_tree().process_frame
 
 	# (4) Klasa nieznana -> melee fallback (nie null).
-	var rogue = await _make_player(&"rogue")
+	var rogue = await _make_player(&"lotrzyk")
 	var rgk: SkillResource = rogue._skill_finisher
 	_check(rgk != null, "rogue: finisher null (fallback nie zadzialal)")
 	if rgk != null:

@@ -64,7 +64,7 @@ signal gold_changed(amount: int)
 ## ETAP 3 — klasa wybranej postaci (Mag/Wojownik/Ranger). Zrodlo dla ClassResourceComponent
 ## (jaki zasob: Mana/Furia/Combo+Focus) oraz dla SkillDB.tree(class_id) (ktore drzewko). Domyslnie
 ## Wojownik (klasa startowa vertical slice — GDD 4.2). Kreator postaci (GDD 12) ustawi to docelowo.
-var class_id: StringName = &"warrior"
+var class_id: StringName = &"wojownik"
 
 ## ETAP 3 — Orby Przemiany (waluta respecu drzewka, GDD 10.1). Zloto powyzej (tani respec).
 var orbs: int = 0

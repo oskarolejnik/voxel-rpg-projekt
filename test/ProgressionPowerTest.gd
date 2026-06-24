@@ -113,7 +113,7 @@ func _test_class_trees_loaded() -> void:
 		_check(false, "brak autoload SkillDB")
 		return
 	SkillDB.reload()
-	for cid in [&"mage", &"ranger", &"rogue"]:
+	for cid in [&"mag", &"lucznik", &"lotrzyk"]:
 		var t: SkillTreeResource = SkillDB.tree(cid)
 		_check(t != null, "SkillDB.tree(&\"%s\") == null (plaster nie wczytany)" % cid)
 		if t == null:
@@ -129,7 +129,7 @@ func _test_class_trees_loaded() -> void:
 				break
 		_check(has_root, "drzewko %s nie ma korzenia (wezla bez 'requires')" % cid)
 	# Warrior nadal dziala (wsteczna zgodnosc) — drzewko istnialo przed #12.
-	var w: SkillTreeResource = SkillDB.tree(&"warrior")
+	var w: SkillTreeResource = SkillDB.tree(&"wojownik")
 	_check(w != null and w.nodes.size() > 0, "drzewko warrior zepsute po #12")
 	print("[PROG] (4) plastry drzewek mage/ranger/rogue wczytane i niepuste OK")
 
@@ -140,7 +140,7 @@ func _test_class_trees_loaded() -> void:
 func _test_tree_component_can_allocate_root() -> void:
 	if SkillDB == null:
 		return
-	var t: SkillTreeResource = SkillDB.tree(&"mage")
+	var t: SkillTreeResource = SkillDB.tree(&"mag")
 	if t == null:
 		_check(false, "brak drzewka mage do testu integracyjnego (5)")
 		return

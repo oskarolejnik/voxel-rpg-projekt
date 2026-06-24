@@ -11,7 +11,7 @@
 
 [resource]
 script = ExtResource("1_tree")
-class_id = &"ranger"
+class_id = &"lucznik"
 nodes = Array[ExtResource("2_ke")]([ExtResource("2_ke"), ExtResource("3_p1"), ExtResource("4_p2"), ExtResource("5_sw"), ExtResource("6_su"), ExtResource("7_hm"), ExtResource("8_de")])
 layout = {
 &"rng_keen_eye": Vector2(0, 0),

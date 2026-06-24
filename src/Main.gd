@@ -991,10 +991,9 @@ func _setup_hud() -> void:
 		if _hud.has_method("set_skill_slot"):
 			_hud.set_skill_slot(0, "whirl", "1")
 			_hud.set_skill_slot(1, "dash", "Q")
-			# Sloty 2-4: skille KLASY gracza z ContentDB (ikony wg skill_hints). Klasa z GameState
-			# (warrior/mage/ranger) -> id ContentDB; heurystyka nazwa->ikona. Fallback: puste.
-			var pclass: StringName = GameState.class_id if (GameState != null and "class_id" in GameState) else &"warrior"
-			var cdb_id: StringName = {&"mage": &"mag", &"ranger": &"lucznik"}.get(pclass, &"wojownik")
+			# Sloty 2-4: skille KLASY gracza z ContentDB (ikony wg skill_hints). AUDYT (namespace):
+			# GameState.class_id JEST już kanonicznym id ContentDB (polskie) — zero mapowania ang->pl.
+			var cdb_id: StringName = GameState.class_id if (GameState != null and "class_id" in GameState) else &"wojownik"
 			var cdef = ContentDB.class_by_id(cdb_id) if (ContentDB != null) else null
 			var hints: PackedStringArray = cdef.skill_hints if cdef != null else PackedStringArray()
 			for i in range(3):

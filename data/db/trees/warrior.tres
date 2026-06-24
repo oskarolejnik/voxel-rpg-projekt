@@ -12,7 +12,7 @@
 
 [resource]
 script = ExtResource("1_tree")
-class_id = &"warrior"
+class_id = &"wojownik"
 nodes = Array[ExtResource("2_bf")]([ExtResource("2_bf"), ExtResource("3_d1"), ExtResource("4_d2"), ExtResource("5_tg"), ExtResource("6_en"), ExtResource("7_bt"), ExtResource("8_sw"), ExtResource("9_rk")])
 layout = {
 &"war_battle_fury": Vector2(0, 0),

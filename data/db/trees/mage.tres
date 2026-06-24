@@ -12,7 +12,7 @@
 
 [resource]
 script = ExtResource("1_tree")
-class_id = &"mage"
+class_id = &"mag"
 nodes = Array[ExtResource("2_as")]([ExtResource("2_as"), ExtResource("3_s1"), ExtResource("4_s2"), ExtResource("5_fo"), ExtResource("6_wd"), ExtResource("7_ov"), ExtResource("8_mf"), ExtResource("9_am")])
 layout = {
 &"mag_arcane_spark": Vector2(0, 0),
