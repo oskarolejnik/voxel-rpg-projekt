@@ -2713,7 +2713,8 @@ func _on_hitbox_hit_landed(_target: Node) -> void:
 	# FEEL (2): hitstop TIEROWANY — krytyk (0.14) > ciezki/3.cios/AoE (0.10) > zwykly (0.04). Mocniej na
 	# TRAFIENIU, nigdy na zamachu. _last_hit_crit przychodzi z DamageService tuz przed tym callbackiem.
 	if not _hitstop_active:
-		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
+		# allow_global tylko dla krytyka/ciężkiego ciosu (emfaza); zwykłe trafienia = lokalny freeze (responsywność).
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy), _last_hit_crit or heavy)
 	# Trauma kamery proporcjonalna do wagi. FAZA 4 (5): KRYTYK = najmocniejszy wstrzas (0.26) — czesc
 	# wyrazistego "POW" (obok screen-flasha/crit-burst); ciezki/3.cios = 0.20; zwykly = 0.12.
 	add_trauma(0.26 if _last_hit_crit else (0.20 if heavy else 0.12))
@@ -2755,7 +2756,7 @@ func _melee_sweep(forward: Vector3) -> void:
 		_combo_timer = combo_window
 		# FEEL (2)+FAZA 1: tiered hitstop tez w fallbacku (krytyk z _last_hit_crit, 3.cios = ciezki).
 		var heavy := _is_heavy_attack or _is_chain_finisher()
-		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy))
+		_hitstop(FeelFX.hitstop_for(_last_hit_crit, heavy), _last_hit_crit or heavy)
 		add_trauma(0.26 if _last_hit_crit else (0.20 if heavy else 0.12))
 	else:
 		_combo_count = 0
@@ -2801,17 +2802,20 @@ func _stat(key: StringName, fallback: float) -> float:
 # ETAP 1 (TDD 6.4): globalny Engine.time_scale ZAMRAŻA wszystkich w co-opie. Dlatego globalny
 # bezczas dozwolony TYLKO w prawdziwym single-player (brak transportu sieciowego). W co-opie
 # robimy „local freeze-frame" — krótkie zamrożenie własnej pozy ataku + trauma kamery (lokalne FX).
-func _hitstop(dur: float) -> void:
+func _hitstop(dur: float, allow_global: bool = false) -> void:
 	if _hitstop_active:
 		return
 	_hitstop_active = true
-	if not NetManager.has_network():
-		# SP: globalny time_scale wolno (nikogo nie zamrażamy poza sobą — jesteśmy sami).
+	# FEEL (audyt #3): globalny Engine.time_scale ZAMRAŻA też wejście/ruch/bufor gracza, więc używany
+	# na KAŻDYM trafieniu psuł responsywność (przy combo postać "lepiła się"). Rezerwujemy go TYLKO
+	# dla mocnych ciosów (krytyk/finisher) w prawdziwym SP — czytelna emfaza dużego ciosu. Zwykłe
+	# trafienia (i CAŁY co-op, TDD 6.4 — globalny time_scale zamroziłby pozostałych) używają LOKALNEGO
+	# freeze-frame'u (zamrożenie własnej pozy ataku), więc sterowanie i bufor akcji zostają płynne.
+	if allow_global and not NetManager.has_network():
 		Engine.time_scale = 0.05
 		await get_tree().create_timer(dur, true, false, true).timeout  # ignore_time_scale=true (realny czas)
 		Engine.time_scale = 1.0
 	else:
-		# CO-OP: lokalny freeze-frame pozy ataku (nie ruszamy globalnego czasu).
 		_local_freeze_t = dur
 		await get_tree().create_timer(dur, true, false, true).timeout
 	_hitstop_active = false
