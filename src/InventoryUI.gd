@@ -79,6 +79,12 @@ func _unhandled_input(event: InputEvent) -> void:
 func _set_open(value: bool) -> void:
 	if value == _open:
 		return
+	# Jeden autorytet kursora (Etap 2 review #5): gdy INNY panel (np. drzewko umiejetnosci) juz lapie
+	# input, NIE otwieramy ekwipunku rownolegle i NIE ruszamy mouse_mode — inaczej dwa UI biłyby sie o
+	# kursor i po zamknieciu jednego zostawalby zly stan (VISIBLE/CAPTURED). Lustro guardu z SkillTreeUI.
+	# Headless tego nie wykrywa.
+	if value and GameState != null and GameState.ui_capturing_input and not _open:
+		return
 	_open = value
 	_root.visible = value
 	if GameState != null:
