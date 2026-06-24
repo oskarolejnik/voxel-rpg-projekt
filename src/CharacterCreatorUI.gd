@@ -20,6 +20,12 @@ var _race_btns: Dictionary = {}
 var _class_btns: Dictionary = {}
 var _origin_btns: Dictionary = {}
 var _name_seed: int = 1
+# Podgląd 3D (voxelowy manekin w SubViewport — reaguje kolorem na rasę/klasę, obraca się).
+var _preview_vp: SubViewport
+var _preview_rig: Node3D
+var _skin_mat: StandardMaterial3D
+var _tunic_mat: StandardMaterial3D
+var _legs_mat: StandardMaterial3D
 
 
 func _ready() -> void:
@@ -42,14 +48,20 @@ func _ready() -> void:
 	title.add_theme_color_override("font_color", COL_SEL)
 	root.add_child(title)
 
-	# Trzy kolumny wyboru: rasa | klasa | pochodzenie.
+	# Środek: [3 kolumny wyboru] po lewej + [podgląd 3D] po prawej.
+	var mid := HBoxContainer.new()
+	mid.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	mid.add_theme_constant_override("separation", 16)
+	root.add_child(mid)
 	var cols := HBoxContainer.new()
-	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	cols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cols.size_flags_stretch_ratio = 2.3
 	cols.add_theme_constant_override("separation", 16)
-	root.add_child(cols)
+	mid.add_child(cols)
 	cols.add_child(_make_column("RASA", ContentDB.races(), _on_pick_race, _race_btns))
 	cols.add_child(_make_column("KLASA", ContentDB.classes(), _on_pick_class, _class_btns))
 	cols.add_child(_make_column("POCHODZENIE", ContentDB.origins(), _on_pick_origin, _origin_btns))
+	mid.add_child(_build_preview())
 
 	# Dolny pasek: imię + Losuj + Stwórz.
 	var bottom := HBoxContainer.new()
@@ -136,11 +148,13 @@ func _highlight(btns: Dictionary, sel: StringName) -> void:
 func _on_pick_race(id: StringName) -> void:
 	_cc.set_race(id)
 	_highlight(_race_btns, id)
+	_update_preview()
 	_refresh()
 
 func _on_pick_class(id: StringName) -> void:
 	_cc.set_class(id)
 	_highlight(_class_btns, id)
+	_update_preview()
 	_refresh()
 
 func _on_pick_origin(id: StringName) -> void:
@@ -197,6 +211,108 @@ func _refresh() -> void:
 	var nm := _cc.def.char_name.strip_edges()
 	_summary.text = "[b]Rasa:[/b] %s    [b]Klasa:[/b] %s %s   [b]Pochodzenie:[/b] %s\n[b]Imię:[/b] %s" % [
 		rt, ct, ("(" + role + ")" if role != "" else ""), ot, (nm if nm != "" else "—")]
+
+
+# ============================================================================
+#  PODGLĄD 3D (SubViewport + voxelowy manekin; reaguje kolorem na rasę/klasę, obraca się)
+# ============================================================================
+func _build_preview() -> Control:
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.size_flags_stretch_ratio = 1.0
+	var h := Label.new(); h.text = "PODGLĄD"
+	h.add_theme_font_size_override("font_size", 16)
+	h.add_theme_color_override("font_color", COL_SEL)
+	box.add_child(h)
+	var frame := PanelContainer.new()
+	frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	frame.add_theme_stylebox_override("panel", _panel_style())
+	box.add_child(frame)
+	var svc := SubViewportContainer.new()
+	svc.stretch = true
+	svc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	svc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	frame.add_child(svc)
+	_preview_vp = SubViewport.new()
+	_preview_vp.transparent_bg = true
+	_preview_vp.own_world_3d = true
+	_preview_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_preview_vp.msaa_3d = Viewport.MSAA_2X
+	svc.add_child(_preview_vp)
+
+	# Środowisko (ambient, by manekin nie był czarny w osobnym World3D).
+	var we := WorldEnvironment.new()
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.07, 0.06, 0.09)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.55, 0.55, 0.62)
+	env.ambient_light_energy = 1.0
+	we.environment = env
+	_preview_vp.add_child(we)
+	var light := DirectionalLight3D.new()
+	light.rotation_degrees = Vector3(-42.0, -34.0, 0.0)
+	light.light_energy = 1.2
+	_preview_vp.add_child(light)
+	var cam := Camera3D.new()
+	cam.position = Vector3(0.0, 1.05, 3.1)
+	cam.look_at(Vector3(0.0, 0.95, 0.0), Vector3.UP)
+	_preview_vp.add_child(cam)
+
+	_preview_rig = Node3D.new()
+	_preview_vp.add_child(_preview_rig)
+	_build_mannequin()
+	return box
+
+func _mat(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.roughness = 0.85
+	return m
+
+func _build_mannequin() -> void:
+	_skin_mat = _mat(Color(0.92, 0.76, 0.60))
+	_tunic_mat = _mat(Color(0.30, 0.45, 0.75))
+	_legs_mat = _mat(Color(0.22, 0.20, 0.26))
+	# (mesh_size, pozycja, materiał)
+	_box(Vector3(0.42, 0.42, 0.42), Vector3(0.0, 1.55, 0.0), _skin_mat)     # głowa
+	_box(Vector3(0.54, 0.62, 0.32), Vector3(0.0, 1.05, 0.0), _tunic_mat)    # tułów
+	_box(Vector3(0.16, 0.52, 0.16), Vector3(-0.36, 1.05, 0.0), _skin_mat)   # ręka L
+	_box(Vector3(0.16, 0.52, 0.16), Vector3(0.36, 1.05, 0.0), _skin_mat)    # ręka P
+	_box(Vector3(0.18, 0.62, 0.18), Vector3(-0.14, 0.42, 0.0), _legs_mat)   # noga L
+	_box(Vector3(0.18, 0.62, 0.18), Vector3(0.14, 0.42, 0.0), _legs_mat)    # noga P
+
+func _box(sz: Vector3, pos: Vector3, mat: StandardMaterial3D) -> void:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new(); bm.size = sz
+	mi.mesh = bm
+	mi.material_override = mat
+	mi.position = pos
+	_preview_rig.add_child(mi)
+
+# Skóra wg rasy, tunika wg klasy (proste mapy — pełna personalizacja wyglądu osobno).
+func _update_preview() -> void:
+	if _skin_mat == null:
+		return
+	match _cc.def.race_id:
+		&"sylvani": _skin_mat.albedo_color = Color(0.86, 0.82, 0.66)
+		&"grimhold": _skin_mat.albedo_color = Color(0.80, 0.62, 0.48)
+		&"embrani": _skin_mat.albedo_color = Color(0.85, 0.55, 0.45)
+		&"orguni": _skin_mat.albedo_color = Color(0.55, 0.70, 0.50)
+		&"feruni": _skin_mat.albedo_color = Color(0.78, 0.66, 0.52)
+		_: _skin_mat.albedo_color = Color(0.92, 0.76, 0.60)
+	var cn := ContentDB.class_by_id(_cc.def.class_id)
+	if cn != null:
+		match cn.role:
+			&"tank": _tunic_mat.albedo_color = Color(0.55, 0.55, 0.60)
+			&"healer": _tunic_mat.albedo_color = Color(0.85, 0.82, 0.55)
+			&"support": _tunic_mat.albedo_color = Color(0.80, 0.70, 0.35)
+			&"ranged_dps": _tunic_mat.albedo_color = Color(0.30, 0.55, 0.40)
+			_: _tunic_mat.albedo_color = Color(0.65, 0.30, 0.28)   # melee_dps
+
+func _process(delta: float) -> void:
+	if _preview_rig != null:
+		_preview_rig.rotate_y(delta * 0.7)   # powolny obrót prezentacyjny
 
 
 # --- Zrzut ekranu (CREATOR_SHOT) ---
