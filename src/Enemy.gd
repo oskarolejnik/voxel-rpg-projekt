@@ -193,6 +193,7 @@ var _hurtbox: HurtboxComponent = null           # cel hitboxów gracza (Area3D, 
 var _hitbox: HitboxComponent = null             # okno ataku w zwarciu (Area3D); ranged używa Projectile
 # Maszyna stanów jako komponent (host-only). Gdy null -> używamy wbudowanej maszyny w tym pliku.
 var _ai: AIComponent = null
+var _status: StatusEffectComponent = null   # AUDYT #5: statusy (DoT/chill/stun/weaken) — sibling
 
 # ============================================================================
 #  STAN
@@ -358,6 +359,10 @@ func _build_components() -> void:
 		"disposition": disposition,
 	})
 	_ai.set_home(_home)
+
+	# AUDYT #5: StatusEffectComponent (DoT/chill/stun/weaken). PO HealthComponent (czyta je w _ready).
+	_status = StatusEffectComponent.new()
+	add_child(_status)
 
 # ============================================================================
 #  BUDOWA: kolizja + model voxelowy
@@ -714,6 +719,16 @@ func _physics_process(delta: float) -> void:
 		if _hitstun_t > 0.0:
 			velocity.x = 0.0
 			velocity.z = 0.0
+		# AUDYT #5: stun zeruje ruch własny (jak hitstun); chill skaluje prędkość. Knockback dalej działa.
+		if _status != null:
+			if _status.is_stunned():
+				velocity.x = 0.0
+				velocity.z = 0.0
+			else:
+				var sm := _status.speed_mult()
+				if sm < 1.0:
+					velocity.x *= sm
+					velocity.z *= sm
 
 	# 5b) Knockback poziomy: doliczamy PO wyborze stanu (stany nadpisują/zerują velocity.x/z),
 	# żeby odrzut był widoczny mimo logiki AI. Wygaszamy go przez move_toward co klatkę.
@@ -816,6 +831,8 @@ func _process_attack_windup(delta: float, has_target: bool, dist: float) -> void
 	if not _attacking:
 		return
 	if _hitstun_t > 0.0:                          # COMBAT: hitstun pauzuje windup — cios przerywa rytm zamachu
+		return
+	if _status != null and _status.is_stunned(): # AUDYT #5: stun pauzuje atak (ogłuszony wróg nie zadaje ciosu)
 		return
 	_windup_timer -= delta
 	if _windup_timer > 0.0:
@@ -1201,6 +1218,9 @@ func _build_hit() -> HitData:
 	if element != &"":
 		t.append(element)
 	hit.tags = t
+	# AUDYT #5: wróg z elementem nakłada status na cel (ember->burn, frost->chill, ...). mag ~ 30% dmg.
+	if element != &"":
+		hit.on_hit_effects = [{ "kind": element, "mag": _stat(&"damage", attack_damage) * 0.3, "dur": 3.0 }]
 	return hit
 
 func _stat(key: StringName, fallback: float) -> float:

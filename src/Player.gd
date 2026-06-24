@@ -321,6 +321,7 @@ var _is_heavy_attack: bool = false
 # HurtboxComponent(wroga) -> HealthComponent(wroga); a obrażenia gracza wchodzą jego HealthComponent.
 var _stats: StatsComponent = null               # JEDYNE źródło staty (gdy wpięte)
 var _health: HealthComponent = null             # JEDYNE źródło HP gracza (gdy wpięte); hp mirroruje
+var _status: StatusEffectComponent = null       # AUDYT #5: statusy bojowe na graczu (DoT/chill/stun/weaken)
 var _consumables_granted: bool = false          # idempotencja startowych mikstur (krok 7)
 var _hurtbox: HurtboxComponent = null           # cel hitboxów wroga (Area3D, warstwa player_body)
 var _hitbox: HitboxComponent = null             # okno ataku LMB (Area3D) zamiast ręcznej pętli dot()
@@ -488,6 +489,10 @@ func _build_components() -> void:
 	_health.died.connect(_on_health_died)
 	_health.hp_changed.connect(_on_health_hp_changed)
 	hp = _health.current_hp
+
+	# AUDYT #5: StatusEffectComponent (statusy bojowe na graczu). PO HealthComponent (czyta je w _ready).
+	_status = StatusEffectComponent.new()
+	add_child(_status)
 
 	# 3) HurtboxComponent (Area3D) — cel hitboxów wroga (warstwa player_body). Kształt ~ kapsuła gracza.
 	_hurtbox = HurtboxComponent.new()
@@ -2146,6 +2151,13 @@ func _physics_process(delta: float) -> void:
 	var sprint_held := Input.is_physical_key_pressed(KEY_SHIFT) if read_local else (_net_sync != null and _net_sync.remote_input_run())
 	var can_sprint := sprint_held and stamina > 0.0 and not ui_locked
 	var current_speed := sprint_speed if can_sprint else speed
+	# AUDYT #5: chill spowalnia gracza; stun zatrzymuje (zero prędkości -> wyhamowanie do bezruchu).
+	if _status != null:
+		if _status.is_stunned():
+			current_speed = 0.0
+			moving = false
+		else:
+			current_speed *= _status.speed_mult()
 	# FAZA 1: MOVEMENT WEIGHT ("ciezki ale szybki"). Rozdzielamy ROZPED (ground_accel) od WYHAMOWANIA
 	# (ground_decel, slabsze -> poslizg) i dodajemy TURN_ACCEL (wektor ruchu obraca sie ku nowemu
 	# kierunkowi stopniowo ~0.08 s, nie natychmiast — ciezar zwrotu). W powietrzu zostaje air_accel
@@ -2400,6 +2412,8 @@ func _try_finisher() -> void:
 
 func _try_attack() -> void:
 	if is_dead:
+		return
+	if _status != null and _status.is_stunned():   # AUDYT #5: ogłuszony gracz nie atakuje
 		return
 	# FAZA 1: CANCEL-INTO-NEXT. Jesli trwa RECOVERY i jestesmy w OKNIE CANCEL (wczesna czesc recovery) ->
 	# NIE odpalaj nowego ciosu od razu, tylko ZAKOLEJKUJ kolejny krok lancucha (plynny combo flow).
@@ -2790,7 +2804,27 @@ func _build_hit() -> HitData:
 	var t: Array[StringName] = []
 	t.append(&"melee")
 	hit.tags = t
+	# AUDYT #5: afiksy żywiołowe -> statusy on-hit (fire->burn DoT, frost->chill, poison->poison DoT,
+	# lightning->weaken). Magnitude z odpowiedniego statu; DamageService nakłada przez StatusEffectComponent.
+	hit.on_hit_effects = _build_status_effects()
 	return hit
+
+## AUDYT #5: buduje on_hit_effects z żywiołowych statów gracza (z afiksów lootu). Pusty gdy brak żywiołów.
+func _build_status_effects() -> Array:
+	var fx: Array = []
+	var fire := _stat(&"fire_damage", 0.0)
+	if fire > 0.0:
+		fx.append({ "kind": &"fire", "mag": fire, "dur": 3.0 })       # burn (DoT)
+	var frost := _stat(&"frost_damage", 0.0)
+	if frost > 0.0:
+		fx.append({ "kind": &"frost", "mag": frost, "dur": 2.0 })     # chill (slow)
+	var poison := _stat(&"poison_damage", 0.0)
+	if poison > 0.0:
+		fx.append({ "kind": &"poison", "mag": poison, "dur": 4.0 })   # poison (DoT)
+	var light := _stat(&"lightning_damage", 0.0)
+	if light > 0.0:
+		fx.append({ "kind": &"lightning", "mag": light, "dur": 3.0 }) # weaken (+dmg taken)
+	return fx
 
 # Odczyt staty przez StatsComponent (jeśli wpięty), inaczej fallback na eksport (Etap 0/1 most).
 func _stat(key: StringName, fallback: float) -> float:
@@ -2826,6 +2860,8 @@ func _hitstop(dur: float, allow_global: bool = false) -> void:
 
 func _try_dodge() -> void:
 	if is_dead:
+		return
+	if _status != null and _status.is_stunned():   # AUDYT #5: ogłuszony gracz nie robi uniku
 		return
 	if not _can_dodge():
 		# ETAP 1: nie teraz -> buforuj (np. wciśnięty w trakcie ataku, odpali po CD uniku).

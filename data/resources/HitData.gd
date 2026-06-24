@@ -27,6 +27,12 @@ func to_dict() -> Dictionary:
 		"armor_pierce": armor_pierce,
 		"lifesteal": lifesteal,
 		"knockback": knockback,
+		"on_hit_effects": on_hit_effects.map(func(fx) -> Dictionary:
+			return {
+				"kind": String((fx as Dictionary).get("kind", &"")),
+				"mag": float((fx as Dictionary).get("mag", 0.0)),
+				"dur": float((fx as Dictionary).get("dur", 0.0)),
+			} if fx is Dictionary else {}),
 		"hit_position": hit_position,
 	}
 
@@ -45,5 +51,14 @@ static func from_dict(d: Dictionary) -> HitData:
 	h.armor_pierce = float(d.get("armor_pierce", 0.0))
 	h.lifesteal = float(d.get("lifesteal", 0.0))
 	h.knockback = float(d.get("knockback", 6.0))
+	var fxs: Array = []
+	for fx in d.get("on_hit_effects", []):
+		if fx is Dictionary:
+			fxs.append({
+				"kind": StringName((fx as Dictionary).get("kind", &"")),
+				"mag": float((fx as Dictionary).get("mag", 0.0)),
+				"dur": float((fx as Dictionary).get("dur", 0.0)),
+			})
+	h.on_hit_effects = fxs
 	h.hit_position = d.get("hit_position", Vector3.ZERO)
 	return h

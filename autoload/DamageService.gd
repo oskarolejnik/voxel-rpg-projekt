@@ -66,8 +66,12 @@ func _resolve(source: Node, target: Node, hit: HitData) -> float:
 		if heal_amt > 0.0:
 			_heal(source, heal_amt)
 
-	# 6) on_hit_effects (statusy/proki) — hook pod Etap 2 (ignite/chill/poison...). Na razie no-op.
-	# for fx in hit.on_hit_effects: _apply_status(target, fx)
+	# 6) on_hit_effects (statusy/proki) — AUDYT #5: ignite/chill/poison/stun z afiksow/elementu.
+	#    Każdy fx = { kind:StringName(element|"stun"), mag:float, dur:float }. Aplikuje host (autorytet).
+	if not hit.on_hit_effects.is_empty():
+		for fx in hit.on_hit_effects:
+			if fx is Dictionary:
+				_apply_status(target, fx, source)
 
 	# 7) ETAP 7: REPLIKACJA HP host -> klienci (TDD 6.2 "klient tylko wyswietla"). Po autorytatywnej
 	#    mutacji rozsylamy current_hp celu, by KLIENCI widzieli ZGODNE HP (brak desyncu). No-op w SP.
@@ -239,3 +243,67 @@ func _find_health(entity: Node) -> HealthComponent:
 		if c is HealthComponent:
 			return c as HealthComponent
 	return null
+
+
+## Znajduje StatusEffectComponent jako dziecko encji (audyt #5). Brak -> null.
+func _find_status(entity: Node) -> StatusEffectComponent:
+	if entity == null or not is_instance_valid(entity):
+		return null
+	for c in entity.get_children():
+		if c is StatusEffectComponent:
+			return c as StatusEffectComponent
+	return null
+
+
+# ============================================================================
+#  AUDYT #5 — STATUSY (on_hit_effects -> StatusEffectComponent) + DoT (host-only)
+# ============================================================================
+
+## Nakłada status z pojedynczego on_hit_effects. fx = { kind:StringName, mag:float, dur:float } gdzie
+## kind to element (&"fire"/&"frost"/&"poison"/&"lightning"/&"dark") albo &"stun". Cel musi mieć
+## StatusEffectComponent (inaczej no-op). Host-only (woływane z _resolve, które już ma autorytet).
+func _apply_status(target: Node, fx: Dictionary, source: Node) -> void:
+	var se := _find_status(target)
+	if se == null:
+		return
+	var what := StringName(fx.get("kind", &""))
+	var mag := float(fx.get("mag", 0.0))
+	var dur := float(fx.get("dur", 0.0))
+	if dur <= 0.0:
+		return
+	if what == &"stun":
+		se.apply(StatusEffectComponent.Kind.STUN, 1.0, dur, source)
+	else:
+		se.apply_element(what, mag, dur, source)
+
+
+## DoT / obrażenia statusowe (audyt #5): HOST-ONLY, BEZ take_damage — NIE wyzwala hitstunu/odrzutu
+## (inaczej płonący wróg byłby permastunowany ciągłym hitstunem z rank #1). Odporność elementu
+## redukuje, weaken celu zwiększa; HP odejmuje HealthComponent (śmierć -> died -> loot/XP); broadcast
+## replikuje HP klientom; hit_resolved daje FX/damage-numbers tyków. Woła StatusEffectComponent._tick_dot.
+func apply_dot(target: Node, amount: float, element: StringName, source: Node) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	if NetManager != null and not NetManager.has_state_authority(target):
+		return
+	var dmg := amount
+	if element != &"" and "resistances" in target:
+		var res = target.resistances
+		if res is Dictionary and (res as Dictionary).has(element):
+			var r := float((res as Dictionary)[element])
+			if r > 1.0:
+				r = r / 100.0
+			dmg *= (1.0 - clampf(r, 0.0, 0.95))
+	var se := _find_status(target)
+	if se != null:
+		dmg *= se.damage_taken_mult()
+	dmg = maxf(0.0, dmg)
+	if dmg <= 0.0:
+		return
+	var hc := _find_health(target)
+	if hc != null:
+		hc.apply_damage(dmg, source)
+		_broadcast_hp(target)
+	elif target.has_method("take_damage"):
+		target.take_damage(dmg, source, 0.0)   # fallback bez HealthComponent: 0 knockback (DoT nie odpycha)
+	hit_resolved.emit(source, target, dmg, false)

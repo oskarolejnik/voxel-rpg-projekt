@@ -34,6 +34,10 @@ GameSettings="*res://autoload/GameSettings.gd"
 AudioManager="*res://autoload/AudioManager.gd"
 ContentDB="*res://autoload/ContentDB.gd"
 
+[gui]
+
+theme/custom="res://data/ui/wood_gold_theme.tres"
+
 [physics]
 
 3d/default_gravity=18.0
@@ -42,7 +46,3 @@ common/physics_interpolation=true
 [rendering]
 
 anti_aliasing/quality/msaa_3d=1
-
-[gui]
-
-theme/custom="res://data/ui/wood_gold_theme.tres"
