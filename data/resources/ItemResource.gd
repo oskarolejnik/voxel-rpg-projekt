@@ -18,3 +18,7 @@ enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET }   # KANON tierow (G
 @export var set_id: StringName = &""
 @export var req_level: int = 1
 @export var stack_size: int = 1
+# Konsumpcyjne (slot CONSUMABLE): efekt użycia (mikstury). 0/&"" = brak danego efektu.
+@export var heal_amount: float = 0.0            # ile HP leczy po użyciu
+@export var restore_stat: StringName = &""      # zasób do uzupełnienia (np. &"stamina")
+@export var restore_amount: float = 0.0         # ile zasobu uzupełnia

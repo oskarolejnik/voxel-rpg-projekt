@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="1_item"]
+
+[resource]
+script = ExtResource("1_item")
+id = &"healing_potion"
+display_name = "Mikstura Leczenia"
+slot = 6
+req_level = 1
+stack_size = 9
+heal_amount = 45.0

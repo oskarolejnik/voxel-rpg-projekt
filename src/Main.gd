@@ -528,6 +528,10 @@ func _process(_delta: float) -> void:
 		_hud.set_skill_cooldown(0, fcd.x, fcd.y)
 		var dcd: Vector2 = _player_ref.skill_cd(&"dash")
 		_hud.set_skill_cooldown(1, dcd.x, dcd.y)
+	# KROK 7: sloty przedmiotów = liczniki mikstur z plecaka (slot0 leczenie, slot1 wytrwałość).
+	if _player_ref != null and _hud != null and _hud.has_method("set_item_slot") and _player_ref.has_method("consumable_count"):
+		_hud.set_item_slot(0, "potion", _player_ref.consumable_count(&"healing_potion"))
+		_hud.set_item_slot(1, "potion", _player_ref.consumable_count(&"stamina_potion"))
 	if _player_ref == null or _fireflies == null:
 		return
 	var pos := _player_ref.global_position
@@ -996,9 +1000,10 @@ func _setup_hud() -> void:
 			for i in range(3):
 				var ic := _icon_for_skill(String(hints[i])) if i < hints.size() else ""
 				_hud.set_skill_slot(2 + i, ic, str(3 + i))
-		# Slot przedmiotu 0 = mikstura (placeholder do czasu spięcia ekwipunku w kroku dalszym).
-		if _hud.has_method("set_item_slot"):
-			_hud.set_item_slot(0, "potion", 3)
+		# KROK 7: startowe mikstury w plecaku; sloty przedmiotów HUD spięte z realnym ekwipunkiem
+		# (ikona+licznik aktualizowane w _process). Klawisze: 6 = leczenie, 7 = wytrwałość.
+		if _player_ref.has_method("grant_starting_consumables"):
+			_player_ref.grant_starting_consumables()
 
 		# ETAP 8: SFX awansu poziomu (no-op gdy brak pliku).
 		_player_ref.leveled_up.connect(func(_lv: int, _pts: int) -> void: _play_sfx(&"levelup"))

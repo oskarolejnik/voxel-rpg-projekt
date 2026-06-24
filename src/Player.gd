@@ -321,6 +321,7 @@ var _is_heavy_attack: bool = false
 # HurtboxComponent(wroga) -> HealthComponent(wroga); a obrażenia gracza wchodzą jego HealthComponent.
 var _stats: StatsComponent = null               # JEDYNE źródło staty (gdy wpięte)
 var _health: HealthComponent = null             # JEDYNE źródło HP gracza (gdy wpięte); hp mirroruje
+var _consumables_granted: bool = false          # idempotencja startowych mikstur (krok 7)
 var _hurtbox: HurtboxComponent = null           # cel hitboxów wroga (Area3D, warstwa player_body)
 var _hitbox: HitboxComponent = null             # okno ataku LMB (Area3D) zamiast ręcznej pętli dot()
 var _ability: AbilityComponent = null           # wykonuje atak/dash jako SkillResource (bufor/cancel)
@@ -1374,6 +1375,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			and not event.echo and (event.physical_keycode == KEY_R or event.physical_keycode == KEY_1):
 		_try_finisher()   # finisher: klawisz R lub slot hotbara "1"
 
+	# KROK 7: mikstury (sloty przedmiotów hotbara) — 6 = leczenie, 7 = wytrwałość.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed and not event.echo:
+		if event.physical_keycode == KEY_6:
+			use_consumable(&"healing_potion")
+		elif event.physical_keycode == KEY_7:
+			use_consumable(&"stamina_potion")
+
 	# ETAP 6: T = oswajanie najblizszej bestii (gate lvl 5 + cel <35% HP + item-oswajacz). TameSystem
 	# pilnuje warunkow i 1-aktywnego-peta; brak warunkow -> tame_failed (no-op dla rozgrywki).
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and event is InputEventKey and event.pressed \
@@ -2324,6 +2332,51 @@ func _can_dodge() -> bool:
 
 # ETAP 3: finisher zasobu klasy (Wojownik: Wir Ostrzy). AbilityComponent sprawdza koszt (Furia) i CD;
 # gdy brak Furii -> nie odpali. perform_skill (_perform_skill) otwiera szerokie okno hitboxa (AoE).
+# KROK 7 (KONSUMPCYJNE/mikstury): użyj itemu CONSUMABLE z plecaka -> efekt (heal/zasób) + dekrement.
+func use_consumable(base_id: StringName) -> bool:
+	var inv: Node = _find_inventory()
+	if inv == null or not inv.has_method("consume_item") or not inv.consume_item(base_id, 1):
+		return false
+	var res: ItemResource = ItemDB.item(base_id) if (ItemDB != null) else null
+	if res != null:
+		if res.heal_amount > 0.0:
+			if _health != null:
+				_health.heal(res.heal_amount)
+			else:
+				hp = minf(max_hp, hp + res.heal_amount)
+				hp_changed.emit(hp, max_hp)
+		if res.restore_stat == &"stamina" and res.restore_amount > 0.0:
+			stamina = minf(max_stamina, stamina + res.restore_amount)
+			_stamina_idle = 0.0
+			stamina_changed.emit(stamina, max_stamina)
+	_play_sfx(&"ui_click")
+	return true
+
+# Ile sztuk konsumpcyjnego itemu w plecaku (sloty przedmiotów HUD).
+func consumable_count(base_id: StringName) -> int:
+	var inv: Node = _find_inventory()
+	if inv != null and inv.has_method("count_item"):
+		return inv.count_item(base_id)
+	return 0
+
+# Startowe mikstury (Main woła po utworzeniu InventoryComponent). Idempotentne.
+func grant_starting_consumables() -> void:
+	if _consumables_granted:
+		return
+	var inv: Node = _find_inventory()
+	if inv == null or not inv.has_method("add_to_backpack"):
+		return
+	_consumables_granted = true
+	for n in 3:
+		_grant_one(inv, &"healing_potion")
+	for n in 2:
+		_grant_one(inv, &"stamina_potion")
+
+func _grant_one(inv: Node, base_id: StringName) -> void:
+	var it := ItemInstance.new()
+	it.base_id = base_id
+	inv.add_to_backpack(it)
+
 # HOTBAR: frakcja cooldownu (0..1; 1=pełny CD) + sekundy do gotowości dla skilla po nazwie.
 # which: &"finisher" / &"dash" / &"attack". Zwraca Vector2(frac, secs). Źródło: AbilityComponent.
 func skill_cd(which: StringName) -> Vector2:
