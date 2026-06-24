@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="SkillResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillResource.gd" id="1_skill"]
+
+[resource]
+script = ExtResource("1_skill")
+id = &"piercing_shot"
+display_name = "Przebijajacy Strzal"
+class_path = &"ranger"
+cost_resource = &"focus"
+cost_amount = 25.0
+cooldown = 0.8
+cast_time = 0.0
+damage_mult = 1.2
+tags = Array[StringName]([&"ranged", &"pierce", &"phys"])
+aura_kind = &"cast"
+aura_color = Color(0.6, 1.0, 0.7, 1.0)
+aura_radius = 1.2

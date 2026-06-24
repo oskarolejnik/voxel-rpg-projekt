@@ -634,21 +634,69 @@ func _build_progression() -> void:
 		var inv: Node = _find_inventory()
 		return inv != null and inv.consume_item(TameSystem.TAME_CHARM_ITEM)
 
-	# 4) Finisher zasobu klasy (sink, by zasob mial sens w grze). Wojownik: Wir Ostrzy (30 Furii,
-	#    CD 1 s, AoE wokol — ROADMAP 6). Koszt/CD pilnuje AbilityComponent (cost_resource=rage).
-	if cls == &"warrior":
-		_skill_finisher = SkillResource.new()
-		_skill_finisher.id = &"whirlwind"
-		_skill_finisher.cooldown = 1.0
-		_skill_finisher.cost_resource = &"rage"
-		_skill_finisher.cost_amount = 30.0
-		_skill_finisher.damage_mult = 0.8
-		var ftags: Array[StringName] = [&"phys", &"aoe", &"melee"]
-		_skill_finisher.tags = ftags
-		# FAZA 4 (3): Wir Ostrzy -> aura-pierscien (kolor stalowy, promien = zasieg AoE wokol gracza).
-		_skill_finisher.aura_kind = &"ring"
-		_skill_finisher.aura_color = Color(0.8, 0.9, 1.0)
-		_skill_finisher.aura_radius = 2.6
+	# 4) Finisher/aktyw zasobu klasy (sink, by zasob mial sens w grze). KAZDA klasa dostaje swoj zestaw
+	#    (krok #7): Wojownik -> Wir Ostrzy (melee AoE, BEZ ZMIAN), Mag -> Pocisk (ranged+fire, Projectile),
+	#    Ranger -> Przebijajacy Strzal (ranged pierce), pozostali (rogue/...) -> Wybuch wrecz (melee AoE).
+	#    Koszt/CD pilnuje AbilityComponent (cost_resource = zasob klasy z ClassResourceComponent).
+	#    Skille z tagiem &"ranged"/&"zone" spawnuja efekt w _perform_skill (Projectile/HazardZone),
+	#    host-authoritative (DamageService liczy obrazenia jak przy melee).
+	_skill_finisher = _build_class_finisher(cls)
+
+## KROK #7: buduje finisher/aktyw klasy w kodzie (jak Wir Ostrzy). Per GameState.class_id.
+## Wojownik niezmieniony. Mag/Ranger dostaja skille z tagiem &"ranged" (spawn Projectile w _perform_skill),
+## reszta (rogue/...) melee. Dane przykladowe rownolegle w data/db/skills/*.tres (content).
+func _build_class_finisher(cls: StringName) -> SkillResource:
+	var sk := SkillResource.new()
+	match cls:
+		&"mage":
+			# Pocisk Ognia — ranged: leci w kierunku celownika, dmg przez Projectile -> DamageService.
+			sk.id = &"firebolt"
+			sk.cooldown = 0.9
+			sk.cost_resource = &"mana"
+			sk.cost_amount = 20.0
+			sk.damage_mult = 1.4
+			var mtags: Array[StringName] = [&"ranged", &"fire", &"magic"]
+			sk.tags = mtags
+			sk.aura_kind = &"cast"            # puls u stop przy kastowaniu
+			sk.aura_color = Color(1.0, 0.5, 0.15)
+			sk.aura_radius = 1.4
+		&"ranger":
+			# Przebijajacy Strzal — ranged z pierce: przebija kilka celow w linii.
+			sk.id = &"piercing_shot"
+			sk.cooldown = 0.8
+			sk.cost_resource = &"focus"
+			sk.cost_amount = 25.0
+			sk.damage_mult = 1.2
+			var rtags: Array[StringName] = [&"ranged", &"pierce", &"phys"]
+			sk.tags = rtags
+			sk.aura_kind = &"cast"
+			sk.aura_color = Color(0.6, 1.0, 0.7)
+			sk.aura_radius = 1.2
+		&"warrior":
+			# Wir Ostrzy (BEZ ZMIAN — 30 Furii, CD 1 s, AoE 360° wokol, aura-pierscien stalowy).
+			sk.id = &"whirlwind"
+			sk.cooldown = 1.0
+			sk.cost_resource = &"rage"
+			sk.cost_amount = 30.0
+			sk.damage_mult = 0.8
+			var ftags: Array[StringName] = [&"phys", &"aoe", &"melee"]
+			sk.tags = ftags
+			sk.aura_kind = &"ring"
+			sk.aura_color = Color(0.8, 0.9, 1.0)
+			sk.aura_radius = 2.6
+		_:
+			# Rogue/inni: Wybuch wrecz — melee AoE wokol gracza (zasob Furii jako fallback ClassResource).
+			sk.id = &"melee_burst"
+			sk.cooldown = 0.9
+			sk.cost_resource = &"rage"
+			sk.cost_amount = 25.0
+			sk.damage_mult = 1.1
+			var btags: Array[StringName] = [&"phys", &"aoe", &"melee"]
+			sk.tags = btags
+			sk.aura_kind = &"slam"
+			sk.aura_color = Color(1.0, 0.85, 0.4)
+			sk.aura_radius = 2.2
+	return sk
 
 # ============================================================================
 #  ETAP 3 — PUBLICZNE API PROGRESJI (Main/HUD/UI drzewka/test wolaja to)
@@ -2495,21 +2543,86 @@ func _perform_skill(skill: SkillResource, _target: Node) -> void:
 	elif skill == _skill_dash:
 		_begin_dash()
 	elif skill == _skill_finisher:
-		# ETAP 3: Wir Ostrzy — AoE 360°. Otwieramy okno hitboxa BEZ filtra łuku (dot=-1 -> wszystko
-		# wokół) i z lekkim juicem. Damage idzie tą samą ścieżką DamageService (HitData z _build_hit).
-		_is_heavy_attack = true              # FEEL (2): AoE/finisher = ciezki tier hitstopu
-		_attack_anim_t = attack_anim_time
-		is_attacking = true
-		if _hitbox != null:
-			var fyaw := _pivot.rotation.y
-			var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
-			_atk_forward = forward          # FAZA 4: smuga/aura zorientowane wzdluz ciosu
-			_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
-			_hitbox.open_window(0.14, forward)
-		add_trauma(0.18)
-		# FAZA 4 (1)+(3): Wir Ostrzy — szeroka smuga 360° (big) + aura-pierscien wg SkillResource.
-		_spawn_slash_trail(true)
-		_spawn_ability_aura(_skill_finisher)
+		# KROK #7: rozgalezienie wg TAGOW skilla. Ranged/zone -> spawn efektu (Projectile/HazardZone);
+		# inaczej (melee/aoe) -> dawne okno hitboxa 360° (Wir Ostrzy). Cast_time (windup) honoruje juz
+		# AbilityComponent: gdy skill.cast_time > 0, perform_skill wola sie DOPIERO po windupie.
+		if skill.tags.has(&"ranged"):
+			_perform_ranged_skill(skill)
+		elif skill.tags.has(&"zone"):
+			_perform_zone_skill(skill)
+		else:
+			_perform_melee_finisher(skill)
+
+# KROK #7: melee finisher (Wir Ostrzy / Wybuch wrecz) — AoE 360° wokol gracza. Otwieramy okno hitboxa
+# BEZ filtra łuku (dot=-1 -> wszystko wokół) i z lekkim juicem. Damage idzie ta sama sciezka
+# DamageService (HitData z _build_hit). Wydzielone z _perform_skill (rozgalezienie per-klasa).
+func _perform_melee_finisher(skill: SkillResource) -> void:
+	_is_heavy_attack = true              # FEEL (2): AoE/finisher = ciezki tier hitstopu
+	_attack_anim_t = attack_anim_time
+	is_attacking = true
+	if _hitbox != null:
+		var fyaw := _pivot.rotation.y
+		var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+		_atk_forward = forward          # FAZA 4: smuga/aura zorientowane wzdluz ciosu
+		_hitbox.global_position = global_position + Vector3(0.0, 0.9, 0.0)
+		_hitbox.open_window(0.14, forward)
+	add_trauma(0.18)
+	# FAZA 4 (1)+(3): szeroka smuga 360° (big) + aura wg SkillResource (pierscien/slam).
+	_spawn_slash_trail(true)
+	_spawn_ability_aura(skill)
+
+# KROK #7: ranged skill (Mag: Pocisk, Ranger: Przebijajacy Strzal). Spawnuje Projectile w kierunku
+# celownika/przodu (z soft-targetem jak melee). Pierce z tagu &"pierce". Obrazenia liczy Projectile
+# -> DamageService (host-authoritative; HitData z _build_hit, skalowany damage_mult skilla). Maska
+# celu = teren | cialo wroga (bit2) — lustro pociskow peta (ALLY).
+func _perform_ranged_skill(skill: SkillResource) -> void:
+	_attack_anim_t = attack_anim_time
+	is_attacking = true
+	var fyaw := _pivot.rotation.y
+	var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+	var aim := _attack_aim_dir(forward)
+	_atk_forward = aim
+	_model.rotation.y = atan2(-aim.x, -aim.z)
+	var origin := global_position + Vector3(0.0, 0.9, 0.0)
+	var mask := (1 << 0) | (1 << 2)                     # teren | cialo wroga
+	var pierce := 2 if skill.tags.has(&"pierce") else 0
+	var mult := skill.damage_mult
+	# Builder HitData per cel — domkniecie na self; skalujemy base_damage mnoznikiem skilla.
+	var builder := func(_t: Node) -> HitData:
+		var h := _build_hit()
+		h.base_damage *= mult
+		return h
+	var proj := Projectile.new()
+	proj.setup(self, aim, 0.0, builder, mask, -1.0, pierce)
+	var parent := get_parent()
+	if parent != null:
+		parent.add_child(proj)
+		proj.global_position = origin
+	_spawn_ability_aura(skill)
+	_play_sfx(&"ability")
+
+# KROK #7: zone skill (kaluza/strefa) — spawnuje HazardZone na celu/przodzie. Tyka obrazeniami na
+# hoscie (HazardZone liczy -> DamageService). Maska celu = cialo wroga (bit2). Przykladowy aktyw pod
+# klasy obszarowe; dzis zadna klasa nie ma tagu &"zone" w kodzie, ale .tres w data/db/skills go uzywaja.
+func _perform_zone_skill(skill: SkillResource) -> void:
+	var fyaw := _pivot.rotation.y
+	var forward := Vector3(-sin(fyaw), 0.0, -cos(fyaw)).normalized()
+	_atk_forward = forward
+	var mult := skill.damage_mult
+	var builder := func(_t: Node) -> HitData:
+		var h := _build_hit()
+		h.base_damage *= mult
+		return h
+	var zone := HazardZone.new()
+	zone.radius = maxf(1.0, skill.aura_radius)
+	zone.setup(self, builder, (1 << 2))               # cel = cialo wroga
+	var parent := get_parent()
+	if parent != null:
+		parent.add_child(zone)
+		# Strefa na kierunku przodu (kilka metrow przed graczem).
+		zone.global_position = global_position + forward * 2.5
+	_spawn_ability_aura(skill)
+	_play_sfx(&"ability")
 
 # ============================================================================
 #  FAZA 1 — ATTACK TIMELINE (ANTICIPATION -> ACTIVE -> RECOVERY) + COMBO CHAIN

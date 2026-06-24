@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="SkillResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillResource.gd" id="1_skill"]
+
+[resource]
+script = ExtResource("1_skill")
+id = &"poison_pool"
+display_name = "Trujaca Kaluza"
+class_path = &"mage"
+cost_resource = &"mana"
+cost_amount = 30.0
+cooldown = 4.0
+cast_time = 0.35
+damage_mult = 0.5
+tags = Array[StringName]([&"zone", &"aoe", &"poison"])
+aura_kind = &"cast"
+aura_color = Color(0.5, 0.9, 0.3, 1.0)
+aura_radius = 2.5
