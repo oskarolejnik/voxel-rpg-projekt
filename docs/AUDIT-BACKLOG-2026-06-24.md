@@ -15,14 +15,14 @@
 | 2 | Fix SET items granting zero set bonuses (`set_id` lost at roll) | Loot | high | M | ✅ done — commit 6900d6d |
 | 3 | Local-freeze SP hitstop (global `time_scale` freezes player input) | Feel | med | M | ✅ done — commit 5bfe623 |
 | 4 | Loot in TREASURE/SECRET dungeon rooms (currently empty) | Dungeons | high | M | ✅ done — commit 32f20b2 |
-| 5 | Real status-effect pipeline (ignite/chill/poison/stun; `on_hit_effects` is a no-op) | Combat | high | L | ✅ done — commit (status system) |
-| 6 | Strafe locomotion for lock-on circling (feet skate) | Feel | high | L | todo |
-| 7 | Per-class skill kits + spawn handler (cast_time/Projectile/HazardZone) | Combat/Prog | med | L | todo |
-| 8 | Biome-aware heightmaps (terrain shape varies per biome) | World | high | L | todo |
-| 9 | Author the 4 missing biomes + extend progression | World | high | L | todo |
-| 10 | Minimap + compass HUD | UI | high | L | todo |
-| 11 | Boss/miniboss unique mechanics (telegraph/phase/adds) | Dungeons | high | L | todo |
-| 12 | Per-class passive trees + per-level baseline power | Prog | crit | XL | todo |
+| 5 | Real status-effect pipeline (ignite/chill/poison/stun; `on_hit_effects` is a no-op) | Combat | high | L | ✅ done — commit 666fb76 |
+| 6 | Strafe locomotion for lock-on circling (feet skate) | Feel | high | L | ✅ done — commit 70f77bb |
+| 7 | Per-class skill kits + spawn handler (cast_time/Projectile/HazardZone) | Combat/Prog | med | L | ✅ done — commit bbe8e1e |
+| 8 | Biome-aware heightmaps (terrain shape varies per biome) | World | high | L | ✅ done — commit ed808ee |
+| 9 | Author the 4 missing biomes + extend progression | World | high | L | ✅ done — commit ed808ee |
+| 10 | Minimap + compass HUD | UI | high | L | ✅ done — commit 6a90d88 |
+| 11 | Boss/miniboss unique mechanics (telegraph/phase/adds) | Dungeons | high | L | ✅ done — commit 4749827 |
+| 12 | Per-class passive trees + per-level baseline power | Prog | crit | XL | ◑ slice done — commit c20a988 (mage/ranger/rogue + baseline; 7 classes + namespace remain) |
 
 ## #5 scope note (discovered while reading the code)
 
@@ -44,15 +44,22 @@ Sub-tasks (each a separate commit): (a) a host-authoritative `StatusEffectCompon
 
 ## Quick wins (S effort, high payoff)
 
-- Low-HP red vignette pulse in HUD (cheap, makes the potion loop urgent).
-- Enforce `req_level` on equip (host-authoritative) in LootService/InventoryComponent.
-- Persist respec cost index (`respec_count` in SaveData) so respec isn't always the cheapest.
-- Charge currency on per-node deallocate (close the free-respec loophole).
-- Read `ItemResource.max_sockets` in `LootService._roll_sockets`.
-- Guard `InventoryUI._set_open` against opening while another modal holds `ui_capturing_input`.
-- Fix boss-door blocker height in DungeonRun (size to door, not full room).
-- Slope/water validity check + retry in `WorldSpawner._spawn_pos` (stop spawns in water/cliffs).
-- ~~Knockback interrupts windup~~ ✅ folded into the rank-1 poise mechanic (commit 4884319).
+- ✅ Low-HP red vignette pulse in HUD — commit a83ef0e.
+- ✅ Enforce `req_level` on equip (LootService/InventoryComponent) — commit 650072d.
+- ✅ Charge currency on per-node deallocate (close the free-respec loophole) — commit d6652a6.
+- ✅ Read `ItemResource.max_sockets` in `LootService._roll_sockets` — commit 650072d.
+- ✅ Guard `InventoryUI._set_open` against opening while another modal holds `ui_capturing_input` — commit 5922511.
+- ✅ Fix boss-door blocker height in DungeonRun (size to door, not full room) — commit bb45dfe.
+- ✅ Slope/water validity check + retry in `WorldSpawner._spawn_pos` — commit bb45dfe.
+- ✅ Knockback interrupts windup — folded into the rank-1 poise mechanic (commit 4884319).
+- ⬜ Persist respec cost index (`respec_count` in SaveData) — not yet (Save subsystem; deferred).
+
+## Status: ALL of the audit top-12 + quick-wins are implemented and verified (headless suite 39/39 green).
+
+Remaining follow-ups intentionally NOT in this pass (separate scope): #12 full 11-class trees + the
+class-id namespace unification (Polish creator ids vs English progression ids); the Save subsystem
+fixes (persist inventory/equipment during gameplay, atomic writes + .bak, corrupt-save guard); and the
+netcode prediction/reconciliation hardening. These were flagged by the audit but are their own efforts.
 
 ## Notable critical/high bugs surfaced (some inside the ranked items)
 
