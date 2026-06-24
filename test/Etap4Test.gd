@@ -34,6 +34,11 @@ func _ready() -> void:
 
 	_test_get_biome_deterministic()
 	_test_get_biome_three_zones()
+	# BIOME PROGRESSION (redesign dystansowy) — kontrakt: las na starcie, dalej=trudniej w kolejności,
+	# organiczne granice. Te testy FAILowałyby na starym modelu czystego szumu klimatu.
+	_test_biome_spawn_is_forest()
+	_test_biome_progression_by_distance()
+	_test_biome_borders_organic()
 	_test_biome_resources_loaded()
 	_test_enemy_variant_stats()
 	_test_configure_from_resource()
@@ -103,6 +108,60 @@ func _test_get_biome_three_zones() -> void:
 
 func _is_valid_biome(b: StringName) -> bool:
 	return b == VoxelWorld.BIOME_VERDANT or b == VoxelWorld.BIOME_EMBERWASTE or b == VoxelWorld.BIOME_FROSTHELM
+
+
+## Indeks biomu w progresji trudności (0=start/las .. N=najdalszy). -1 = nieznany.
+func _biome_progression_index(b: StringName) -> int:
+	return VoxelWorld.BIOME_PROGRESSION.find(b)
+
+
+# ---------------------------------------------------------------------------
+#  (1b) PROGRESJA — start to ZAWSZE las (verdant), a najbliższa okolica spawnu też.
+#       "starting biome = forest, beginner friendly". Stary model (czysty szum) tego NIE gwarantował.
+# ---------------------------------------------------------------------------
+func _test_biome_spawn_is_forest() -> void:
+	_check(_world.get_biome(0, 0) == VoxelWorld.BIOME_VERDANT, "spawn (0,0) nie jest lasem (verdant)")
+	# Cała najbliższa okolica (≤ ~300 m, dobrze wewnątrz pasma 0 nawet z maks. warpem) musi być lasem.
+	for p in [Vector2i(200, 0), Vector2i(-200, 0), Vector2i(0, 250), Vector2i(150, 150), Vector2i(-180, -120)]:
+		var b := _world.get_biome(p.x, p.y)
+		_check(b == VoxelWorld.BIOME_VERDANT, "okolica spawnu %s nie jest lasem (jest %s)" % [p, b])
+	print("[E4] (1b) spawn + okolica = las (verdant) OK")
+
+
+# ---------------------------------------------------------------------------
+#  (1c) PROGRESJA — dalej = trudniejszy biom w STAŁEJ kolejności (verdant<ember<frost).
+#       Punkty oddalone DUŻO bardziej niż jitter granicy => kolejność musi być ściśle rosnąca.
+# ---------------------------------------------------------------------------
+func _test_biome_progression_by_distance() -> void:
+	# Checkpointy wzdłuż +X, rozstawione >> jitter (90 m), więc ranga jest jednoznaczna.
+	var near_i := _biome_progression_index(_world.get_biome(0, 0))        # ~las
+	var mid_i := _biome_progression_index(_world.get_biome(1000, 0))      # ~ember
+	var far_i := _biome_progression_index(_world.get_biome(2000, 0))      # ~frost
+	_check(near_i == 0, "biom @spawn nie jest pierwszym w progresji (indeks %d)" % near_i)
+	_check(mid_i > near_i, "biom @1000m nie jest dalszy w progresji niż start (%d <= %d)" % [mid_i, near_i])
+	_check(far_i > mid_i, "biom @2000m nie jest dalszy w progresji niż @1000m (%d <= %d)" % [far_i, mid_i])
+	# Determinizm progresji w innym kierunku (–Z) — ta sama ranga na tym samym dystansie ± jitter.
+	var far_negz := _biome_progression_index(_world.get_biome(0, -2000))
+	_check(far_negz >= 1, "biom @2000m w –Z zbyt blisko startu progresji (indeks %d)" % far_negz)
+	print("[E4] (1c) progresja dystansem (start<mid<far: %d<%d<%d) OK" % [near_i, mid_i, far_i])
+
+
+# ---------------------------------------------------------------------------
+#  (1d) PROGRESJA — granice są ORGANICZNE (warp szumem), nie idealne okręgi. Na pierścieniu
+#       blisko granicy pasma 0/1 (~700 m) próbkowanie po kątach musi dać OBA pasma.
+# ---------------------------------------------------------------------------
+func _test_biome_borders_organic() -> void:
+	var seen_bands := {}
+	var samples := 64
+	var radius := VoxelWorld.BIOME_BAND_METERS   # dokładnie na granicy pasma 0/1
+	for i in samples:
+		var ang := TAU * float(i) / float(samples)
+		var x := int(round(cos(ang) * radius))
+		var z := int(round(sin(ang) * radius))
+		seen_bands[_biome_progression_index(_world.get_biome(x, z))] = true
+	_check(seen_bands.size() >= 2,
+		"granica pasm na r=%.0f m NIE jest organiczna (warp martwy): widziano %d pasm" % [radius, seen_bands.size()])
+	print("[E4] (1d) organiczne granice biomów (warp szumem, %d pasm na pierścieniu) OK" % seen_bands.size())
 
 
 # ---------------------------------------------------------------------------

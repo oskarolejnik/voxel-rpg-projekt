@@ -248,30 +248,48 @@ func biome_factor(world_x: int, world_z: int) -> float:
 	return _biome_noise.get_noise_2d(float(world_x), float(world_z))
 
 
-## ETAP 4 (DoD): zwraca ID biomu dla kolumny świata (StringName). DETERMINISTYCZNY — czysta
-## funkcja niemutowanych szumów (temperatura=_biome_noise, wilgotność=_humid_noise) + stałego
-## offsetu dystansu: ten sam (world_x, world_z) ZAWSZE daje ten sam biom; 3 strefy są realnie
-## obecne na mapie. Spójny z biome_factor (2C) — temperatura to ten sam szum, więc paleta trawy
-## (sucha/bujna w Chunk._solid_color) idzie w parze z biomem (ciepły<->Emberwaste, chłodny<->bujny).
+## ETAP 4 + BIOME PROGRESSION (redesign dystansowy): zwraca ID biomu dla kolumny świata (StringName).
+## DETERMINISTYCZNY — czysta funkcja DYSTANSU od spawnu (origin) + niemutowanych szumów klimatu
+## (tylko warp granicy): ten sam (world_x, world_z) ZAWSZE daje ten sam biom; co-op-safe (ten sam
+## seed -> ten sam świat). Sygnatura i zwracane id (verdant/emberwaste/frosthelm) BEZ ZMIAN — wszyscy
+## konsumenci (WorldSpawner._region_biome, Chunk._biomemap, Blocks._solid_color, AmbientLife,
+## DungeonEntrance, Main spawn) działają dalej bez modyfikacji.
 ##
-## Model temperatura×wilgotność (klasyczny Whittaker-light, 3 strefy z dwuwymiarowego szumu):
-##   temp = _biome_noise [-1,1]  (ciepło na +; chłód na -)
-##   hum  = _humid_noise [-1,1]  (wilgotno na +; sucho na -)
-##   - chłodno (temp <= COLD_T)                -> Frosthelm Peaks (mróz)
-##   - ciepło (temp >= HOT_T) i SUCHO (hum<0)  -> Emberwaste (pustynia/ogień)
-##   - reszta (umiarkowane / ciepłe+wilgotne)  -> Verdant Hollow (start)
-## Progi dobrane tak, by każda strefa zajmowała sensowny ułamek mapy (test E4 weryfikuje 3 strefy).
-const BIOME_COLD_TEMP: float = -0.15      # poniżej tego = mróz (Frosthelm)
-const BIOME_HOT_TEMP: float = 0.12        # powyżej tego (i sucho) = pustynia (Emberwaste)
+## MODEL (zmiana z czystego szumu klimatu na PROGRESJĘ DYSTANSEM — GDD Świat §2, wizja Cube World):
+##   Biom = funkcja DYSTANSU od spawnu, ułożony w PASMA trudności (BIOME_PROGRESSION). Świat jest
+##   ukierunkowaną PODRÓŻĄ: las na starcie -> dalej trudniejsze, tematyczne biomy w STAŁEJ kolejności.
+##   Klimatyczny szum (_biome_noise + _humid_noise) służy TERAZ tylko do WARPU granicy pasma
+##   (organiczne brzegi — anty-okrąg), a NIE do wyboru biomu. Dzięki temu:
+##     * start (origin) ZAWSZE = pierwszy biom (las/verdant) — „starting biome = forest",
+##     * dalej = inny, trudniejszy biom w stałej kolejności (koniec „las graniczy ze śniegiem"),
+##     * przejścia wielkoskalowe (BIOME_BAND_METERS), bez chaotycznego przeskakiwania,
+##     * w obrębie pasma distance_tier() dalej skaluje ilvl co DISTANCE_RING_METERS (moc rośnie płynnie).
+##   ROZSZERZENIE do pełnych 7 biomów (forest/plains/swamp/mountains/desert/snow/volcanic) to DODANIE
+##   DANYCH: wydłuż BIOME_PROGRESSION + dodaj odpowiednie BiomeResource .tres — BEZ zmiany tej logiki.
+## Uporządkowane wg trudności (indeks = jak daleko w podróży). Mapuje na ISTNIEJĄCE biome .tres.
+const BIOME_PROGRESSION: Array[StringName] = [
+	BIOME_VERDANT,     # pasmo 0 — start (las), beginner-friendly, najbliżej spawnu
+	BIOME_EMBERWASTE,  # pasmo 1 — ember/pustynia (mid)
+	BIOME_FROSTHELM,   # pasmo 2 — frost/szczyty (hard; obecny koniec podróży, clamp w głąb)
+]
+const BIOME_BAND_METERS: float = 700.0      # szerokość jednego pasma biomu (m) — wielkoskalowe przejścia
+const BIOME_BORDER_JITTER_M: float = 90.0   # warp granicy pasma z szumu klimatu (organiczne brzegi)
 
 func get_biome(world_x: int, world_z: int) -> StringName:
-	var temp := _biome_noise.get_noise_2d(float(world_x), float(world_z))   # [-1,1]
-	var hum := _humid_noise.get_noise_2d(float(world_x), float(world_z))    # [-1,1]
-	if temp <= BIOME_COLD_TEMP:
-		return BIOME_FROSTHELM
-	if temp >= BIOME_HOT_TEMP and hum < 0.0:
-		return BIOME_EMBERWASTE
-	return BIOME_VERDANT
+	return BIOME_PROGRESSION[_biome_band(float(world_x), float(world_z))]
+
+## Indeks pasma biomu z dystansu od spawnu, z organicznym (warpowanym szumem) brzegiem.
+## Czysta, deterministyczna funkcja. clamp do ostatniego pasma => świat poza ostatnim biomem
+## pozostaje w najtrudniejszym biomie (nigdy „pusty"/nieznany — kontrakt get_biome nienaruszony).
+func _biome_band(world_x: float, world_z: float) -> int:
+	var d := Vector2(world_x, world_z).length()
+	# Warp efektywnego dystansu szumem klimatu (temp+wilgotność), by granice pasm falowały
+	# (NIE idealne okręgi). |warp| <= BIOME_BORDER_JITTER_M. Determinizm: niemutowane szumy.
+	var temp := _biome_noise.get_noise_2d(world_x, world_z)   # [-1,1]
+	var hum := _humid_noise.get_noise_2d(world_x, world_z)    # [-1,1]
+	var warp := (temp * 0.6 + hum * 0.4) * BIOME_BORDER_JITTER_M
+	var band := int(floor((d + warp) / BIOME_BAND_METERS))
+	return clampi(band, 0, BIOME_PROGRESSION.size() - 1)
 
 
 ## ETAP 4: tier lootu wg dystansu od spawnu (model Cube World — „skalowanie po dystansie”).
