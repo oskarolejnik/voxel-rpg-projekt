@@ -22,7 +22,7 @@
 | 9 | Author the 4 missing biomes + extend progression | World | high | L | ✅ done — commit ed808ee |
 | 10 | Minimap + compass HUD | UI | high | L | ✅ done — commit 6a90d88 |
 | 11 | Boss/miniboss unique mechanics (telegraph/phase/adds) | Dungeons | high | L | ✅ done — commit 4749827 |
-| 12 | Per-class passive trees + per-level baseline power | Prog | crit | XL | ◑ slice done — commit c20a988 (mage/ranger/rogue + baseline; 7 classes + namespace remain) |
+| 12 | Per-class passive trees + per-level baseline power | Prog | crit | XL | ✅ done — c20a988 (slice) + 98c220e (namespace) + edbc1bd (7 remaining trees, 11/11 resolve) |
 
 ## #5 scope note (discovered while reading the code)
 
@@ -54,15 +54,23 @@ Sub-tasks (each a separate commit): (a) a host-authoritative `StatusEffectCompon
 - ✅ Knockback interrupts windup — folded into the rank-1 poise mechanic (commit 4884319).
 - ⬜ Persist respec cost index (`respec_count` in SaveData) — not yet (Save subsystem; deferred).
 
-## Status: ALL of the audit top-12 + quick-wins are implemented and verified (headless suite 39/39 green).
+## Status: ALL of the audit top-12 + quick-wins are implemented and verified. Post-audit follow-ups also landed:
 
-Remaining follow-ups intentionally NOT in this pass (separate scope): #12 full 11-class trees + the
-class-id namespace unification (Polish creator ids vs English progression ids); the Save subsystem
-fixes (persist inventory/equipment during gameplay, atomic writes + .bak, corrupt-save guard); and the
-netcode prediction/reconciliation hardening. These were flagged by the audit but are their own efforts.
+- **#12 fully closed** — class-id namespace unified on canonical ContentDB (Polish) ids (98c220e);
+  data-driven resource bars; trees authored for all 7 remaining classes (edbc1bd). New
+  `AllClassTreesTest` asserts 11/11 classes resolve a non-empty tree.
+- **Class actually selectable** — `CharacterCreator` wired into "Nowa gra" (7fca082); before this every
+  new game was hard-locked to wojownik because the creator (the sole writer of `GameState.class_id`)
+  was never shown. Picking a class now drives the tree + resource bar + skill kit end-to-end.
+- **Save subsystem** — loot now persists during gameplay (equipment/backpack), atomic writes (tmp +
+  `.bak` + rename), corrupt-save recovery from backup (4ff280e).
+
+Remaining deferred follow-ups (their own efforts, NOT yet done): appearance/equipped-skills persistence
+(only class+progression+inventory persist today); world persistence (`load_world` has no caller);
+migration-step loop + >2^53 seed precision in SaveManager; netcode prediction/reconciliation hardening.
 
 ## Notable critical/high bugs surfaced (some inside the ranked items)
 
-- **Class-id namespace split** (Polish `wojownik` in creator vs English `warrior` in progression): the creator's class choice never reaches `GameState.class_id`, and non-warrior classes get no tree + the wrong resource bar. Blocks per-class progression (#12) — must unify ids first.
-- **Save never persists inventory/equipment/appearance/skills during gameplay** — the loot pillar is lost on exit; only tests save full data. (Save subsystem; not in top-12 but high.)
-- **Non-atomic save writes + silent wipe on corrupt save** — a crash mid-write or a corrupt file silently yields a fresh level-1 character.
+- ✅ **Class-id namespace split** (Polish `wojownik` in creator vs English `warrior` in progression): the creator's class choice never reached `GameState.class_id`, and non-warrior classes got no tree + the wrong resource bar. FIXED 98c220e (unify ids) + 7fca082 (creator now shown so the choice is actually made).
+- ✅ **Save never persists inventory/equipment during gameplay** — the loot pillar was lost on exit; only tests saved full data. FIXED 4ff280e (persist equipment/backpack on save). Appearance/equipped-skills persistence still deferred.
+- ✅ **Non-atomic save writes + silent wipe on corrupt save** — a crash mid-write or a corrupt file silently yielded a fresh level-1 character. FIXED 4ff280e (tmp+`.bak`+rename, recover from backup).
