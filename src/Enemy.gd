@@ -110,6 +110,8 @@ func configure_from_resource(res: EnemyResource) -> void:
 	ai_profile = res.ai_profile
 	threat_tier = res.threat_tier
 	disposition = res.disposition   # EKOSYSTEM: hostile/neutral/passive -> AIComponent (przez _build_components)
+	poise = res.poise               # COMBAT: pula poise (odporność na stagger); 0 = trash
+	_poise_current = poise
 	if res.loot_table != null:
 		loot_table = res.loot_table
 	var sb: StatBlock = res.stats
@@ -235,6 +237,16 @@ var _patrol_timer: float = 0.0
 var _attack_timer: float = 0.0                # cooldown między atakami
 var _windup_timer: float = 0.0
 var _attacking: bool = false                  # czy trwa cykl zamachu
+# COMBAT (reaktywność — audyt rank #1): hitstun + poise. Każdy cios ustawia _hitstun_t (krótka pauza
+# windupu i ruchu własnego — cios "rejestruje się" na wrogu). Złamanie poise (_poise_current<=0)
+# PRZERYWA atak (anuluje _attacking + telegraf) i wydłuża stagger. Trash (poise 0) przerywa się
+# każdym ciosem; elity/bossy mają poise i opierają się, regenerując ją między ciosami. Knockback osobno.
+const HITSTUN_TIME: float = 0.12              # s krótkiego znieruchomienia po każdym ciosie
+const STAGGER_TIME: float = 0.35              # s dłuższego stuna po złamaniu poise
+const POISE_REGEN: float = 2.0                # poise/s regenerowane poza hitstunem
+var poise: float = 0.0                        # max poise (z EnemyResource); 0 = trash
+var _poise_current: float = 0.0               # bieżąca poise; <=0 => break (przerwanie ataku)
+var _hitstun_t: float = 0.0                   # >0 => windup i ruch własny zamrożone
 var _flash_timer: float = 0.0
 var _walk_phase: float = 0.0
 
@@ -664,6 +676,10 @@ func _physics_process(delta: float) -> void:
 
 	# Liczniki ataku zawsze tykają.
 	_attack_timer = maxf(0.0, _attack_timer - delta)
+	# COMBAT (reaktywność): tyk hitstunu + regeneracja poise poza hitstunem (elity wracają do gardy).
+	_hitstun_t = maxf(0.0, _hitstun_t - delta)
+	if _hitstun_t <= 0.0 and _poise_current < poise:
+		_poise_current = minf(poise, _poise_current + POISE_REGEN * delta)
 
 	# Pionowy impuls knockbacku (jednorazowy, jak u gracza) — dodawany do velocity.y.
 	if _knockback.y > 0.0:
@@ -693,6 +709,11 @@ func _physics_process(delta: float) -> void:
 				State.PATROL:  _state_patrol(delta, has_target, dist)
 				State.CHASE:   _state_chase(delta, has_target, dist)
 				State.ATTACK:  _state_attack(delta, has_target, dist)
+		# COMBAT (reaktywność): podczas hitstunu wróg NIE napiera (zamrożenie ruchu własnego);
+		# knockback (doliczany niżej) działa dalej, więc trafienie odpycha i przerywa napór.
+		if _hitstun_t > 0.0:
+			velocity.x = 0.0
+			velocity.z = 0.0
 
 	# 5b) Knockback poziomy: doliczamy PO wyborze stanu (stany nadpisują/zerują velocity.x/z),
 	# żeby odrzut był widoczny mimo logiki AI. Wygaszamy go przez move_toward co klatkę.
@@ -793,6 +814,8 @@ func _clear_telegraph() -> void:
 # ranged = Projectile). Histereza zasięgu *1.3 jak dawniej — gracz może odskoczyć w trakcie windupu.
 func _process_attack_windup(delta: float, has_target: bool, dist: float) -> void:
 	if not _attacking:
+		return
+	if _hitstun_t > 0.0:                          # COMBAT: hitstun pauzuje windup — cios przerywa rytm zamachu
 		return
 	_windup_timer -= delta
 	if _windup_timer > 0.0:
@@ -1039,6 +1062,17 @@ func take_damage(amount: float, from: Node = null, knockback: float = -1.0) -> v
 			var force := knockback if knockback >= 0.0 else knockback_force
 			_knockback = away.normalized() * force
 			_knockback.y = 3.0         # jednorazowy impuls w górę (zerowany po doliczeniu)
+
+	# COMBAT (reaktywność): hitstun + złamanie poise. Wywoływane dla KAŻDEGO ciosu (DamageService woła
+	# take_damage jako hook FX, amount=0), więc tu "rejestruje się" reakcja wroga. Knockback już doliczony.
+	_hitstun_t = maxf(_hitstun_t, HITSTUN_TIME)
+	_poise_current -= 1.0
+	if _poise_current <= 0.0:
+		_poise_current = poise                  # reset puli (trash: poise 0 => łamie się każdym ciosem)
+		_hitstun_t = maxf(_hitstun_t, STAGGER_TIME)
+		if _attacking:                          # PRZERWANIE ataku: telegraf znika, windup anulowany
+			_attacking = false
+			_clear_telegraph()
 
 	# HP: gdy wpięty HealthComponent — to ON liczy HP/śmierć (DoD). amount>0 kierujemy do niego
 	# (bezpośrednie wywołania działają), amount==0 to czysty hook FX (DamageService już odjął HP).

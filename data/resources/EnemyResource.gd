@@ -14,6 +14,10 @@ extends Resource
 ## EKOSYSTEM (GDD Świat §4): 0=Hostile (agresja na widok), 1=Neutral (kontratak po prowokacji),
 ## 2=Passive (nigdy nie atakuje, ucieka). Czytane przez Enemy.configure_from_resource -> AIComponent.
 @export_enum("Hostile", "Neutral", "Passive") var disposition: int = 0
+## COMBAT (reaktywność): pula POISE — odporność na przerwanie ataku. 0 = trash (każdy cios przerywa
+## windup i staggeruje); >0 = elity/bossy (przerywają się dopiero po złamaniu poise — nie da się ich
+## permastunować trashem). Regeneruje się między ciosami. Czytane przez Enemy.configure_from_resource.
+@export var poise: float = 0.0
 @export var tameable: bool = false                   # pet od lvl 5
 @export var tame_difficulty_mult: float = 1.0
 @export var biomes: Array[StringName] = []

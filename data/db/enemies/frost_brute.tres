@@ -21,6 +21,7 @@ loot_table = ExtResource("3_loot")
 xp_reward = 80
 ai_profile = &"melee"
 threat_tier = &"boss"
+poise = 4.0
 biomes = Array[StringName]([&"frosthelm"])
 variant_meta = {
 "attack_windup": 0.6,
