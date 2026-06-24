@@ -343,26 +343,29 @@ func _spawn_enemies() -> void:
 
 
 ## Spawn wrogow walki w jednym pokoju. Liczba/typy z LOKALNEGO RNG (deterministyczne); miniboss
-## dostaje jednego mocniejszego (elite). ilvl wg glebi+tieru.
+## dostaje jednego mocniejszego (KUROWANY ELITE — bump statow/skali, nie identyczny trash). ilvl wg glebi+tieru.
 func _spawn_room_enemies(room: Dictionary, table: Array) -> void:
 	if table.is_empty():
 		return
 	var room_id := int(room["id"])
 	var depth := int(room["depth"])
 	var rtype := int(room["type"])
+	var is_miniboss := rtype == RoomType_MINIBOSS()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _content_seed(room_id, SALT_ROOM_COUNT)
 	# Miniboss: 1 elite. Combat: 1..(2+tier) trash/mix.
-	var count := 1 if rtype == RoomType_MINIBOSS() else rng.randi_range(1, 2 + _tier)
+	var count := 1 if is_miniboss else rng.randi_range(1, 2 + _tier)
 	var center := _room_floor_center(room)
 	var ilvl := maxi(1, depth + _tier * 2)
 	for i in count:
-		var enemy_id := _pick_enemy(rng, table, rtype == RoomType_MINIBOSS())
+		var enemy_id := _pick_enemy(rng, table, is_miniboss)
 		if enemy_id == &"":
 			continue
 		var off := _enemy_offset(room_id, i)
 		var pos := center + off
-		_spawn_one_enemy(enemy_id, pos, ilvl, false)
+		# #11: miniboss to KUROWANY ELITE (bump statow/skali/threat_tier elite -> telegraf ciosu), a nie
+		# pojedynczy trash z count=1. Dotad lock-key prowadzil do anemicznego "jednego zwyklego wroga".
+		_spawn_one_enemy(enemy_id, pos, ilvl, false, is_miniboss)
 
 
 ## AUDYT #4 — LOOT skarbca/sekretu. TREASURE i SECRET byly PUSTE (sprzeczne z "loot to glowna
@@ -424,11 +427,22 @@ func _spawn_boss(room: Dictionary) -> void:
 
 
 ## Tworzy i konfiguruje jedna encje Enemy. is_boss podbija staty (boss = "mocny wariant Enemy",
-## GDD 8). loot_ilvl wg pokoju (glebia+tier). Cel = gracz. Sygnaly: smierc/loot -> przekaz Main.
-func _spawn_one_enemy(enemy_id: StringName, pos: Vector3, ilvl: int, is_boss: bool) -> Node:
+## GDD 8). is_miniboss promuje wroga w KUROWANEGO ELITE (#11: bump statow/skali/threat_tier elite ->
+## telegraf ciosu), zamiast identycznego trasha. loot_ilvl wg pokoju (glebia+tier). Cel = gracz.
+## Sygnaly: smierc/loot -> przekaz Main. is_miniboss domyslnie false (wsteczna zgodnosc).
+func _spawn_one_enemy(enemy_id: StringName, pos: Vector3, ilvl: int, is_boss: bool, is_miniboss: bool = false) -> Node:
 	var res: EnemyResource = EnemyDB.enemy(enemy_id) if EnemyDB != null else null
 	var e := EnemyScript.new()
 	e.configure_from_resource(res)
+	if is_miniboss and not is_boss:
+		# #11: KUROWANY ELITE (mini-cel) — wyrazny bump ponad trash, ale slabszy niz boss. threat_tier
+		# elite => telegraf ciosu (czytelnosc). Reuse istniejacych pol (jak boss nizej, lzejsze mnozniki).
+		e.max_hp = e.max_hp * (2.0 + 0.5 * float(_tier))
+		e.hp = e.max_hp
+		e.attack_damage = e.attack_damage * 1.3
+		e.body_scale = maxf(e.body_scale, 1.0) * 1.3
+		if e.threat_tier == &"trash":
+			e.threat_tier = &"elite"
 	if is_boss:
 		# Wzmocnienie bossa: skala HP/dmg z tierem (czytelna walka koncowa). Reuse istniejacych pol.
 		e.max_hp = e.max_hp * (3.0 + float(_tier))
@@ -437,10 +451,15 @@ func _spawn_one_enemy(enemy_id: StringName, pos: Vector3, ilvl: int, is_boss: bo
 		e.body_scale = maxf(e.body_scale, 1.0) * 1.6
 		e.threat_tier = &"boss"
 		e.armor = clampf(e.armor + 0.15, 0.0, 0.9)
+		# #11: UNIKATOWA MECHANIKA — boss wchodzi w ENRAGE poniżej 50% HP (szybsze/mocniejsze ciosy +
+		# szybszy ruch + czerwona aura). Bez tego boss byl tylko "najgrubszym trashem" — finał lock-key
+		# mial antyklimaks. Enrage liczy sam Enemy z HealthComponent.hp_changed (gated na threat_tier boss).
+		e.set_boss_mechanics(true)
 	# Loot: ilvl rosnie z glebia/tierem; biom dungeonu filtruje afiksy; tier_bonus przesuwa rzadkosc.
 	e.loot_ilvl = ilvl
 	e.loot_biome = _biome
-	e.loot_tier_bonus = maxi(0, _tier - 1) + (2 if is_boss else 0)
+	# #11: miniboss (kurowany elite) tez oplaca sie ubic -> +1 do bonusu rzadkosci (boss nadal +2).
+	e.loot_tier_bonus = maxi(0, _tier - 1) + (2 if is_boss else (1 if is_miniboss else 0))
 	# pos jest LOKALNE (z _room_floor_center, ktore liczy wzgledem origin DungeonRun). Instancja stoi
 	# na DUNGEON_ORIGIN, wiec globalna pozycja wroga = origin + local. Ustawiamy global po add_child.
 	e.position = pos

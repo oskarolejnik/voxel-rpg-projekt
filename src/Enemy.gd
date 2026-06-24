@@ -99,6 +99,27 @@ var _elite_aura_phase: float = 0.0
 # Aktywny telegraf bieżącego ciosu (HazardZone preview). Zwalniany po zadaniu ciosu / przerwaniu.
 var _telegraph: HazardZone = null
 
+# ============================================================================
+#  #11 — BOSS: UNIKATOWA MECHANIKA (ENRAGE poniżej 50% HP)
+# ============================================================================
+# Lock-key dungeonu prowadzi do bossa; żeby finał nie był "najgrubszym trashem", boss dostaje fazę
+# ENRAGE: przy spadku HP <=50% raz wchodzi w szał — szybsze i mocniejsze ciosy + szybszy ruch (czytelny
+# zwrot walki: "boss się wkurzył"). Wizualnie: emisyjna AURA wściekłości (czerwony OmniLight) + lekkie
+# powiększenie sylwetki. Mechanika GATED na threat_tier==&"boss" ORAZ jawnie włączona set_boss_mechanics
+# (default off): zwykłe moby i elity NIGDY nie szałują (wsteczna zgodność). Trigger w _on_health_hp_changed
+# (Enemy już słucha hp_changed z HealthComponent) — jedno źródło HP, brak osobnego pollingu.
+@export var boss_mechanics: bool = false        # czy boss ma fazę enrage (DungeonRun włącza dla bossa)
+@export var enrage_hp_frac: float = 0.5         # próg HP (ułamek max) wejścia w szał
+@export var enrage_damage_mult: float = 1.5     # mnożnik dmg po szale
+@export var enrage_speed_mult: float = 1.35     # mnożnik prędkości ruchu po szale
+@export var enrage_attack_speed_mult: float = 1.4  # mnożnik szybkości ataku (skraca attack_cooldown)
+var _enraged: bool = false                       # jednorazowa flaga szału (nie cofa się przy leczeniu)
+# Aura szału (OmniLight3D) — czerwona, pulsuje szybciej niż aura elite. null póki nie wkurzony.
+var _enrage_aura: OmniLight3D = null
+const ENRAGE_AURA_BASE_ENERGY: float = 3.0
+const ENRAGE_AURA_RANGE: float = 7.0
+var _enrage_aura_phase: float = 0.0
+
 # ETAP 4: konfiguruje wroga z EnemyResource PRZED dodaniem do drzewa (więc _build_components
 # zobaczy już docelowe staty). WOŁAĆ tuż po Enemy.new(), ZANIM add_child / _ready. Mapuje
 # StatBlock -> eksporty (max_hp/dmg/armor/speed/krytyk), ai_profile, threat_tier, loot (table/biome).
@@ -184,6 +205,21 @@ func promote_to_roaming_elite() -> void:
 ## Diagnostyka / test: czy to wedrujacy elite.
 func is_roaming_elite() -> bool:
 	return _is_roaming_elite
+
+
+# ============================================================================
+#  #11 — API BOSSA: WLACZENIE UNIKATOWEJ MECHANIKI (wolane przez DungeonRun._spawn_one_enemy)
+# ============================================================================
+## Wlacza faze ENRAGE bossa (default OFF -> zwykle moby/elity nieruszone). Sensowna TYLKO dla
+## threat_tier==&"boss" (sam enrage i tak jest gated na ten tier w _on_health_hp_changed), ale flagę
+## trzymamy osobno, by jawnie wyrazic "to boss z mechanika" i pozwolic testowi/encji ja sprawdzic.
+func set_boss_mechanics(on: bool) -> void:
+	boss_mechanics = on
+
+
+## Diagnostyka / test: czy boss jest w fazie szalu (enrage). Trash/elite: zawsze false.
+func is_enraged() -> bool:
+	return _enraged
 
 # ETAP 1: komponenty wpięte w realną encję (DoD: atak idzie ścieżką komponentów). Gdy z jakiegoś
 # powodu nie powstaną, kod ma BEZPIECZNE fallbacki (eksporty + wbudowana maszyna), więc gra działa.
@@ -980,6 +1016,11 @@ func _process(delta: float) -> void:
 		_elite_aura_phase += delta * 2.4
 		_elite_aura.light_energy = ELITE_AURA_BASE_ENERGY * (0.8 + 0.35 * (0.5 + 0.5 * sin(_elite_aura_phase)))
 
+	# #11: ENRAGE — czerwona aura pulsuje SZYBCIEJ (gniewne "tetno") niz aura elite. Tania (jedno swiatlo).
+	if _enrage_aura != null:
+		_enrage_aura_phase += delta * 5.0
+		_enrage_aura.light_energy = ENRAGE_AURA_BASE_ENERGY * (0.85 + 0.4 * (0.5 + 0.5 * sin(_enrage_aura_phase)))
+
 	# Obrót modelu w stronę _face_dir (przód = -Z), płynnie.
 	if _face_dir.length() > 0.01:
 		var target_yaw := atan2(-_face_dir.x, -_face_dir.z)
@@ -1111,8 +1152,67 @@ func is_dead() -> bool:
 var _dead_emitted: bool = false
 
 # Mostek z HealthComponent: HP zmienione -> mirror do publicznego pola hp (HUD/AI/gracz czytają hp).
+# #11: tu też wyzwalamy ENRAGE bossa — gdy HP spadnie <=50% maxa (raz). Jedyny punkt prawdy HP, więc
+# bez osobnego pollingu. Gated: tylko boss z włączoną mechaniką (boss_mechanics). Nie cofa się przy
+# leczeniu (_enraged jednorazowe). _maximum z HealthComponent jest miarodajny (po klamrowaniu staty).
 func _on_health_hp_changed(current: float, _maximum: float) -> void:
 	hp = current
+	if not _enraged and boss_mechanics and threat_tier == &"boss":
+		var mx := _maximum if _maximum > 0.0 else max_hp
+		if mx > 0.0 and current <= mx * enrage_hp_frac and current > 0.0:
+			_enrage()
+
+# #11: WEJSCIE W SZAL — jednorazowy boost statow bossa + wizualna aura wsciekłości. Skraca attack_cooldown
+# (szybsze ciosy), podbija attack_damage i move_speed. Mnozniki wchodza tez do _stats (jesli wpiety),
+# by HitData liczone przez StatsComponent realnie urosło (a nie tylko goly attack_damage). Idempotentne:
+# _enraged blokuje ponowne wejscie (np. wahanie HP wokol progu / leczenie ponizej-powyzej 50%).
+func _enrage() -> void:
+	if _enraged:
+		return
+	_enraged = true
+	# Staty: gola sciezka eksportow (fallback) — zawsze podbita, by is_enraged + buff byly widoczne.
+	attack_damage *= enrage_damage_mult
+	move_speed *= enrage_speed_mult
+	if enrage_attack_speed_mult > 0.0:
+		attack_cooldown = maxf(0.05, attack_cooldown / enrage_attack_speed_mult)
+	# Sciezka komponentowa: dosyp INCREASED do StatsComponent (damage/move_speed), by HitData/AI liczone
+	# przez staty tez urosly. Re-aplikowalne (source_id), choc enrage i tak odpala sie raz.
+	if _stats != null:
+		var mods: Array[StatModifier] = []
+		var md := StatModifier.new()
+		md.stat = &"damage"; md.op = StatModifier.Op.INCREASED
+		md.value = enrage_damage_mult - 1.0; md.source_id = &"boss_enrage"
+		mods.append(md)
+		var ms := StatModifier.new()
+		ms.stat = &"move_speed"; ms.op = StatModifier.Op.INCREASED
+		ms.value = enrage_speed_mult - 1.0; ms.source_id = &"boss_enrage"
+		mods.append(ms)
+		_stats.add_modifiers(mods)
+	# AI: szybszy ruch wymaga odswiezenia move_speed w AIComponent (czyta go z configure).
+	if _ai != null:
+		_ai.configure({ "move_speed": move_speed })
+	# Wizual: czerwona aura wsciekłości + lekkie powiekszenie sylwetki (czytelny zwrot walki).
+	if _model != null:
+		_model.scale *= 1.12
+	_build_enrage_aura()
+
+# #11: aura ENRAGE — czerwony OmniLight3D pulsujacy szybciej niz aura elite (czytelne "boss sie wkurzyl"
+# z daleka). Bez cieni (tanio), distance fade. Pulsacja w _process (_enrage_aura_phase). Idempotentne.
+func _build_enrage_aura() -> void:
+	if _enrage_aura != null or _model == null:
+		return
+	var l := OmniLight3D.new()
+	l.name = "EnrageAura"
+	l.light_color = Color(1.0, 0.18, 0.10)        # gniewna czerwien
+	l.light_energy = ENRAGE_AURA_BASE_ENERGY
+	l.omni_range = ENRAGE_AURA_RANGE
+	l.shadow_enabled = false
+	l.distance_fade_enabled = true
+	l.distance_fade_begin = 40.0
+	l.distance_fade_length = 12.0
+	l.position = Vector3(0.0, 1.1, 0.0)
+	add_child(l)
+	_enrage_aura = l
 
 # FEEL (3): HealthComponent.damaged (amount>0) -> wyzwala FLINCH (szarpniecie modelu). Kierunek OD
 # zrodla (jak knockback); brak zrodla -> losowy mikro-flinch. CZYSTO wizualne, zero wplywu na HP/AI.
