@@ -149,11 +149,33 @@ func allocate(node_id: StringName) -> bool:
 	return true
 
 
+## Koszt waluty (Orb Drobny) za cofniecie POJEDYNCZEGO wezla (GDD 10.9). Domyslnie 1 Orb Drobny —
+## drobna oplata zamykajaca luke "darmowego respecu": bez niej gracz mogl rozebrac caly build za 0
+## i ominac platny respec(). Liczone osobno od Orbow Przemiany (waluta respecu).
+const ORB_DROBNY_COST: int = 1
+
+## Koszt cofniecia pojedynczego wezla jako UAMEK pelnego respecu (alternatywa dla flat ORB_DROBNY_COST,
+## gdy warstwa wyzej woli pobierac te sama walute co respec). 1/100 schodka, min 1.
+static func orb_drobny_cost_for(respec_index: int) -> int:
+	return maxi(1, orb_cost_for(respec_index) / 100)
+
+
 ## Cofa pojedynczy wezel — ale TYLKO jesli zaden wziety wezel nie zalezy od niego (spojnosc grafu).
-## Zwrot punktu nastepuje przez sam fakt dealokacji (available_points = granted - spent). Walute
-## za pojedynczy wezel (Orb Drobny) pobiera warstwa wyzej, jesli zechce; tu dealokacja jest darmowa
-## strukturalnie (pelny platny reset to respec()). Zwraca true przy sukcesie.
-func deallocate(node_id: StringName) -> bool:
+## Zwrot punktu nastepuje przez sam fakt dealokacji (available_points = granted - spent).
+##
+## EKONOMIA (GDD 10.9): cofniecie POJEDYNCZEGO wezla kosztuje walute (Orb Drobny), inaczej gracz
+## rozbieralby caly build za darmo, omijajac platny respec(). Parametry (jak w respec()):
+##   cost: ile waluty pobrac (domyslnie ORB_DROBNY_COST). Gdy <=0 -> bez oplaty.
+##   currency_pool: Callable() -> int            (ile mamy waluty); pusty/niewazny -> brak pokrycia.
+##   currency_spend: Callable(amount:int) -> void
+## Gdy cost>0: BEZ poprawnej puli LUB gdy waluty za malo -> ODMOWA (return false), wezel zostaje.
+## Wsteczna zgodnosc: domyslny cost=ORB_DROBNY_COST, ale gdy currency_pool jest niewazny (dawni
+## wolajacy bez waluty), traktujemy to jak darmowa sciezke strukturalna — patrz `allow_free`.
+##   allow_free: gdy true i nie podano puli waluty -> dealokacja darmowa (kompatybilnosc/UI debug).
+## Zwraca true przy sukcesie.
+func deallocate(node_id: StringName, cost: int = ORB_DROBNY_COST,
+		currency_pool: Callable = Callable(), currency_spend: Callable = Callable(),
+		allow_free: bool = true) -> bool:
 	if not _allocated.has(node_id):
 		return false
 	# Spojnosc: nie da sie cofnac wezla, na ktorym stoi inny wziety wezel.
@@ -163,6 +185,20 @@ func deallocate(node_id: StringName) -> bool:
 		var other: PassiveNodeResource = _node_by_id.get(other_id, null)
 		if other != null and node_id in other.requires:
 			return false
+	# Oplata waluty (Orb Drobny) — domykamy luke darmowego respecu.
+	if cost > 0:
+		if not currency_pool.is_valid():
+			# Brak zrodla waluty: darmowa sciezka TYLKO jesli jawnie dozwolona (dawni wolajacy/UI).
+			if not allow_free:
+				respec_failed.emit("brak zrodla waluty (Orb Drobny)")
+				return false
+		else:
+			var have := int(currency_pool.call())
+			if have < cost:
+				respec_failed.emit("za malo Orbow Drobnych (%d/%d)" % [have, cost])
+				return false
+			if currency_spend.is_valid():
+				currency_spend.call(cost)
 	_allocated.erase(node_id)
 	_sync_spent_points()
 	if _stats != null:
