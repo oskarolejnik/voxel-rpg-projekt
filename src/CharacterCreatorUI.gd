@@ -6,6 +6,7 @@ extends Control
 ## (Podgląd 3D postaci dochodzi w osobnym kroku — tu szkielet UI + logika.)
 
 signal character_created(def)
+signal cancelled                       ## "Wstecz" — powrót do menu bez tworzenia postaci
 
 const COL_BG := Color(0.06, 0.07, 0.10, 1.0)
 const COL_PANEL := Color(0.10, 0.11, 0.15, 0.95)
@@ -79,6 +80,9 @@ func _ready() -> void:
 	bottom.add_child(rnd)
 	var spacer := Control.new(); spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bottom.add_child(spacer)
+	var back := Button.new(); back.text = "Wstecz"
+	back.pressed.connect(func() -> void: cancelled.emit())
+	bottom.add_child(back)
 	var create := Button.new(); create.text = "Stwórz postać"
 	create.add_theme_font_size_override("font_size", 18)
 	create.pressed.connect(_on_create)

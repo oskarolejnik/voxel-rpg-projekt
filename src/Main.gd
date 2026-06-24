@@ -28,6 +28,7 @@ const LobbyUIScript := preload("res://src/LobbyUI.gd")
 # ETAP 8: menu glowne (overlay startowy) + menu pauzy (ESC). Polish/UX vertical slice.
 const MainMenuScript := preload("res://src/MainMenu.gd")
 const PauseMenuScript := preload("res://src/PauseMenu.gd")
+const CharacterCreatorUIScript := preload("res://src/CharacterCreatorUI.gd")
 
 # Referencje przechowywane jako pola — VoxelWorld potrzebuje gracza do streamingu.
 var _world: VoxelWorld
@@ -90,6 +91,7 @@ var _remote_players: Dictionary = {}        # int(peer) -> CharacterBody3D (zdal
 # ETAP 8: menu glowne (overlay startowy w grze) + menu pauzy (ESC). Audio + ambient music state.
 var _main_menu: CanvasLayer
 var _pause_menu: CanvasLayer
+var _creator: CanvasLayer        # nakładka kreatora postaci (nad HUD), pokazywana na "Nowa gra"
 var _was_in_combat: bool = false            # do przelaczania muzyki explore<->combat
 var _music_check_accum: float = 0.0         # throttling sprawdzania kontekstu muzyki
 
@@ -1426,8 +1428,66 @@ func _setup_menus() -> void:
 ## Flaga pending_new_game (GameState, przeżywa reload) auto-startuje grę po przeładowaniu — patrz
 ## _setup_menus/_enter_new_game.
 func _on_new_game() -> void:
+	# KREATOR: "Nowa gra" najpierw pokazuje ekran wyboru rasy/klasy/pochodzenia. Wybór klasy ustawia
+	# GameState.class_id (autoload — przeżyje reload), więc dopiero PO utworzeniu postaci przeładowujemy
+	# scenę: świeży _ready zbuduje świat + postać + HUD już z wybraną klasą (drzewko, pasek zasobu, skille
+	# klasowe). Bez tego każda nowa gra startowała jako domyślny wojownik (kreator nie był nigdzie pokazany).
+	# Bez menu (headless/probe/test) kreatora nie ma — od razu świeży reload z domyślną klasą.
+	if not _menus_enabled():
+		_begin_new_game_reload()
+		return
+	_show_character_creator()
+
+
+## Nakładka kreatora postaci. Drzewo zostaje SPAUZOWANE (menu główne już spauzowało) — kreator działa
+## mimo pauzy dzięki PROCESS_MODE_ALWAYS; menu chowamy wizualnie pod spodem. CanvasLayer z wysokim
+## numerem warstwy gwarantuje rysowanie nad HUD-em.
+func _show_character_creator() -> void:
+	if _creator != null and is_instance_valid(_creator):
+		return
+	_creator = CanvasLayer.new()
+	_creator.name = "CharacterCreatorLayer"
+	_creator.layer = 100
+	_creator.process_mode = Node.PROCESS_MODE_ALWAYS
+	var ui: Control = CharacterCreatorUIScript.new()
+	ui.process_mode = Node.PROCESS_MODE_ALWAYS
+	_creator.add_child(ui)
+	add_child(_creator)
+	if ui.has_signal("character_created"):
+		ui.character_created.connect(_on_character_created)
+	if ui.has_signal("cancelled"):
+		ui.cancelled.connect(_on_creator_cancelled)
+	# Menu chowamy, ale NIE odpauzowujemy (świat pod spodem ma stać). Kursor z powrotem widoczny —
+	# klik "Nowa gra" w menu przełączył go w CAPTURED.
+	if _main_menu != null and is_instance_valid(_main_menu):
+		_main_menu.visible = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+## Kreator: "Stwórz postać" — klasa już zapisana w GameState.class_id przez CharacterCreatorUI.
+## Sprzątamy nakładkę i robimy świeży start (reload), który podchwyci wybraną klasę.
+func _on_character_created(_def) -> void:
+	if _creator != null and is_instance_valid(_creator):
+		_creator.queue_free()
+	_creator = null
+	_begin_new_game_reload()
+
+
+## Kreator: "Wstecz" — anuluj tworzenie, wróć do menu głównego (pauza trwa).
+func _on_creator_cancelled() -> void:
+	if _creator != null and is_instance_valid(_creator):
+		_creator.queue_free()
+	_creator = null
+	if _main_menu != null and is_instance_valid(_main_menu):
+		_main_menu.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+## Świeży start: zrzuć ewentualną sesję co-op (nie zostań w cudzej grze), ustaw flagę pending_new_game
+## (przeżyje reload — patrz _setup_menus) i przeładuj scenę dla gwarantowanego czystego świata + lvl 1.
+func _begin_new_game_reload() -> void:
 	if NetManager != null:
-		NetManager.leave()                     # zamknij ewentualną sesję sieciową -> SINGLE (nie zostań w cudzej grze)
+		NetManager.leave()
 	if GameState != null:
 		GameState.pending_new_game = true
 	get_tree().reload_current_scene()
