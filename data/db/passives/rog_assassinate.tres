@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_assa_more"]
+script = ExtResource("1_sm")
+stat = &"crit_mult"
+op = 2
+value = 0.4
+tags = Array[StringName]([&"rogue", &"combo", &"keystone"])
+source = &"tree"
+source_id = &"rog_assassinate"
+
+[sub_resource type="Resource" id="mod_assa_hp"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+op = 1
+value = -0.12
+tags = Array[StringName]([&"rogue", &"keystone"])
+source = &"tree"
+source_id = &"rog_assassinate"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"rog_assassinate"
+display_name = "Skrytobojstwo"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_assa_more"), SubResource("mod_assa_hp")])
+cost_points = 1
+requires = Array[StringName]([&"rog_backstab_2"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

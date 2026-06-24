@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_arch_more"]
+script = ExtResource("1_sm")
+stat = &"damage"
+op = 2
+value = 0.3
+tags = Array[StringName]([&"mage", &"spell", &"keystone"])
+source = &"tree"
+source_id = &"mag_archmage"
+
+[sub_resource type="Resource" id="mod_arch_hp"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+op = 1
+value = -0.15
+tags = Array[StringName]([&"mage", &"keystone"])
+source = &"tree"
+source_id = &"mag_archmage"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"mag_archmage"
+display_name = "Arcymag"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_arch_more"), SubResource("mod_arch_hp")])
+cost_points = 1
+requires = Array[StringName]([&"mag_overload"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

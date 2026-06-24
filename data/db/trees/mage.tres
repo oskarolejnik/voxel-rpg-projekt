@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_arcane_spark.tres" id="2_as"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_spell_power_1.tres" id="3_s1"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_spell_power_2.tres" id="4_s2"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_focus.tres" id="5_fo"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_warding.tres" id="6_wd"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_overload.tres" id="7_ov"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_mana_flow.tres" id="8_mf"]
+[ext_resource type="Resource" path="res://data/db/passives/mag_archmage.tres" id="9_am"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"mage"
+nodes = Array[ExtResource("2_as")]([ExtResource("2_as"), ExtResource("3_s1"), ExtResource("4_s2"), ExtResource("5_fo"), ExtResource("6_wd"), ExtResource("7_ov"), ExtResource("8_mf"), ExtResource("9_am")])
+layout = {
+&"mag_arcane_spark": Vector2(0, 0),
+&"mag_spell_power_1": Vector2(-120, 110),
+&"mag_focus": Vector2(120, 110),
+&"mag_spell_power_2": Vector2(-200, 230),
+&"mag_warding": Vector2(120, 230),
+&"mag_mana_flow": Vector2(40, 230),
+&"mag_overload": Vector2(-200, 350),
+&"mag_archmage": Vector2(-200, 470)
+}

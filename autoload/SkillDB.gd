@@ -29,7 +29,14 @@ func skill(id: StringName) -> SkillResource:
 	return skills.get(id, null)
 
 func tree(class_id: StringName) -> SkillTreeResource:
-	return trees.get(class_id, null)
+	var t: SkillTreeResource = trees.get(class_id, null)
+	if t == null:
+		# Brak drzewka == punkty niewydawalne dla tej klasy. Nie ucisz tego po cichu — niech
+		# brakujace dane ujawniaja sie w logu (10/11 klas wciaz bez .tres). UWAGA na rozjazd
+		# przestrzeni id: SkillDB/trees kluczuja po ANGIELSKICH id (warrior), a ContentDB/kreator
+		# po POLSKICH (wojownik) — pytanie o zla przestrzen tez wyladuje tutaj.
+		push_warning("[SkillDB] brak drzewka umiejetnosci dla class_id=&\"%s\" (punkty niewydawalne; sprawdz res://data/db/trees i przestrzen id ang/pl)" % class_id)
+	return t
 
 func passive(id: StringName) -> PassiveNodeResource:
 	return passives.get(id, null)

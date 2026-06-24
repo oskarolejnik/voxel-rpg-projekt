@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_leth_crit"]
+script = ExtResource("1_sm")
+stat = &"crit_chance"
+op = 0
+value = 0.06
+tags = Array[StringName]([&"rogue", &"combo"])
+source = &"tree"
+source_id = &"rog_lethality"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"rog_lethality"
+display_name = "Zabojczosc"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_leth_crit")])
+cost_points = 1
+requires = Array[StringName]([&"rog_nimble"])
+min_level = 1
+is_keystone = false
+grants_skill = &""

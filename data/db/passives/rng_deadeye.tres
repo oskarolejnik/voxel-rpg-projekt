@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="PassiveNodeResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/PassiveNodeResource.gd" id="2_pn"]
+
+[sub_resource type="Resource" id="mod_dead_more"]
+script = ExtResource("1_sm")
+stat = &"crit_mult"
+op = 2
+value = 0.5
+tags = Array[StringName]([&"ranger", &"ranged", &"keystone"])
+source = &"tree"
+source_id = &"rng_deadeye"
+
+[sub_resource type="Resource" id="mod_dead_aspd"]
+script = ExtResource("1_sm")
+stat = &"attack_speed"
+op = 1
+value = -0.1
+tags = Array[StringName]([&"ranger", &"keystone"])
+source = &"tree"
+source_id = &"rng_deadeye"
+
+[resource]
+script = ExtResource("2_pn")
+id = &"rng_deadeye"
+display_name = "Smiertelne Oko"
+modifiers = Array[ExtResource("1_sm")]([SubResource("mod_dead_more"), SubResource("mod_dead_aspd")])
+cost_points = 1
+requires = Array[StringName]([&"rng_precision_2"])
+min_level = 25
+is_keystone = true
+grants_skill = &""

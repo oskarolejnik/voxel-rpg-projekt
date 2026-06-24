@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="SkillTreeResource" load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://data/resources/SkillTreeResource.gd" id="1_tree"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_nimble.tres" id="2_nb"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_backstab_1.tres" id="3_b1"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_backstab_2.tres" id="4_b2"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_lethality.tres" id="5_le"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_evasion.tres" id="6_ev"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_venom.tres" id="7_vn"]
+[ext_resource type="Resource" path="res://data/db/passives/rog_assassinate.tres" id="8_as"]
+
+[resource]
+script = ExtResource("1_tree")
+class_id = &"rogue"
+nodes = Array[ExtResource("2_nb")]([ExtResource("2_nb"), ExtResource("3_b1"), ExtResource("4_b2"), ExtResource("5_le"), ExtResource("6_ev"), ExtResource("7_vn"), ExtResource("8_as")])
+layout = {
+&"rog_nimble": Vector2(0, 0),
+&"rog_backstab_1": Vector2(-120, 110),
+&"rog_lethality": Vector2(120, 110),
+&"rog_backstab_2": Vector2(-200, 230),
+&"rog_venom": Vector2(-40, 230),
+&"rog_evasion": Vector2(120, 230),
+&"rog_assassinate": Vector2(-200, 350)
+}
