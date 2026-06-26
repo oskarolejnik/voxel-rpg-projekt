@@ -929,6 +929,27 @@ func _apply_class_palette() -> void:
 		&"kaplan":     prim = Color(0.86, 0.84, 0.78); trim = Color(0.90, 0.76, 0.36); cape = Color(0.42, 0.52, 0.68); pants = Color(0.64, 0.60, 0.52); boots = Color(0.50, 0.44, 0.34); leather = Color(0.72, 0.66, 0.52)  # biel + złoto (kapłan)
 		&"druid":      prim = Color(0.29, 0.39, 0.23); trim = Color(0.74, 0.58, 0.28); cape = Color(0.25, 0.35, 0.19); pants = Color(0.31, 0.25, 0.17); boots = Color(0.27, 0.21, 0.14); leather = Color(0.46, 0.34, 0.20)  # ziemista zieleń + bursztyn (druid)
 		&"mnich":      prim = Color(0.72, 0.47, 0.19); trim = Color(0.64, 0.19, 0.15); cape = Color(0.56, 0.17, 0.15); pants = Color(0.44, 0.31, 0.17); boots = Color(0.34, 0.24, 0.15); leather = Color(0.54, 0.38, 0.20)  # szafran/ochra + czerwień (mnich)
+	# Masa naramienników wg pancerza klasy (ContentDB): heavy=duże płyty, medium=kapsel, light=brak.
+	_armor_weight = &"medium"
+	if ContentDB != null:
+		var cdef = ContentDB.class_by_id(cls)
+		if cdef != null and cdef.armor_weight != &"":
+			_armor_weight = cdef.armor_weight
+	# Sygnaturowy GLOW klasy (emisyjny akcent — klejnot na piersi / iskra broni). Żywe, czytelne hue.
+	var accent := trim
+	match cls:
+		&"wojownik":   accent = Color(1.00, 0.32, 0.22)   # szkarłatna krawędź ostrza
+		&"paladyn":    accent = Color(1.00, 0.86, 0.45)   # święte złoto
+		&"berserker":  accent = Color(1.00, 0.36, 0.12)   # ognista furia
+		&"lucznik":    accent = Color(0.55, 1.00, 0.45)   # leśna zieleń
+		&"lotrzyk":    accent = Color(0.72, 0.45, 1.00)   # fioletowy cień
+		&"zabojca":    accent = Color(1.00, 0.20, 0.24)   # krwawy szkarłat
+		&"mag":        accent = Color(0.45, 0.85, 1.00)   # arkana cyjan
+		&"nekromanta": accent = Color(0.55, 1.00, 0.45)   # trupia zieleń
+		&"kaplan":     accent = Color(1.00, 0.92, 0.55)   # boskie światło
+		&"druid":      accent = Color(0.65, 1.00, 0.45)   # natura
+		&"mnich":      accent = Color(1.00, 0.55, 0.20)   # chi / płomień
+	_C_ACCENT = accent
 	_C_TUNIC = prim
 	_C_TUNIC_SH = prim.darkened(0.28)
 	_C_TRIM = trim
@@ -1037,6 +1058,38 @@ func _build_voxel_character() -> void:
 	_sculpt_weapon(wpn)
 	_add_model_mesh(_weapon, wpn, mat, Vector3i(_ARM_X, wrist_y, 0))
 
+	# ART OVERHAUL: emisyjny sygnaturowy akcent klasy (klejnot na piersi + iskra na czubku broni).
+	_add_class_accent()
+
+
+## ART OVERHAUL — „glowing magical details" (Storybook Voxel signature): mały emisyjny akcent
+## sygnaturowego koloru klasy (_C_ACCENT). Osobne mini-meshe z materiałem emisyjnym (jak eye-glints),
+## energia ~2.2 => czytelny błysk także w cieniu/nocy, ale AGX/glow-safe (nie robi flara). Klejnot na
+## piersi (czytelny z przodu) + iskra na końcu broni (czytelność broni + „naładowanie" klasy).
+func _add_class_accent() -> void:
+	var gm := StandardMaterial3D.new()
+	gm.albedo_color = _C_ACCENT
+	gm.emission_enabled = true
+	gm.emission = _C_ACCENT
+	gm.emission_energy_multiplier = 2.2
+	gm.roughness = 1.0
+	# Klejnot na piersi: przód torsu (-Z), ~2/3 wysokości tułowia. Pivot _torso = pas (_HIP_Y).
+	var gem_y := _HIP_Y + (_SHOULDER_Y - _HIP_Y) * 2 / 3
+	var gem := MeshInstance3D.new()
+	var gb := BoxMesh.new(); gb.size = Vector3.ONE * (VS * 1.15)
+	gem.mesh = gb
+	gem.material_override = gm
+	gem.position = Vector3(0.0, float(gem_y - _HIP_Y) * VS, float(-(P_TORSO_D / 2) - 1) * VS - VS * 0.4)
+	_torso.add_child(gem)
+	# Iskra na czubku broni (dziecko _weapon; geometria broni zwisa w dół od nadgarstka).
+	if _weapon != null and is_instance_valid(_weapon):
+		var tip := MeshInstance3D.new()
+		var tb := BoxMesh.new(); tb.size = Vector3.ONE * (VS * 0.95)
+		tip.mesh = tb
+		tip.material_override = gm
+		tip.position = Vector3(0.0, float(-3) * VS, float(-1) * VS)
+		_weapon.add_child(tip)
+
 # Bakuje JEDNĄ grupę voxeli do zbatchowanego ArrayMesh i wiesza pod 'parent'.
 # pivot_vox = logiczny punkt obrotu (w voxelach); geometrię przesuwamy o -pivot*VS,
 # żeby zawias leżał w (0,0,0) węzła (animacja rotation.x bez zmian).
@@ -1128,6 +1181,8 @@ const _C_SOLE    := Color(0.16, 0.12, 0.09)   # ciemna podeszwa (uniwersalna —
 var _C_CAPE    := Color(0.62, 0.20, 0.22)   # peleryna (akcent koloru z tyłu)
 var _C_CAPE_SH := Color(0.48, 0.14, 0.16)
 var _C_LEATHER := Color(0.45, 0.30, 0.18)   # rękawice/karwasz skórzany
+var _C_ACCENT  := Color(0.55, 0.80, 1.00)   # ART OVERHAUL: sygnaturowy GLOW klasy (emisyjny akcent — klejnot/iskra)
+var _armor_weight: StringName = &"medium"   # ART OVERHAUL: masa naramienników (heavy/medium/light z ContentDB)
 const _C_EAR     := _C_SKIN
 
 # GŁOWA — UMIARKOWANA (NIE chibi): owalna czaszka + schludne włosy + uszy + CZYTELNA twarz.
@@ -1311,7 +1366,23 @@ func _sculpt_upper_arm(d: VoxelModel.VoxelDef, side: int) -> void:
 	# Rękaw kaftana (od barku do łokcia).
 	d.fill_box(Vector3i(x0, _ELBOW_Y, -dz), Vector3i(x1, _SHOULDER_Y, dz + 1), _C_TUNIC)
 	d.fill_box(Vector3i(x0, _ELBOW_Y, dz), Vector3i(x1, _SHOULDER_Y, dz + 1), _C_TUNIC_SH)  # cień rękawa
-	d.fill_box(Vector3i(x0, _SHOULDER_Y - 1, -dz), Vector3i(x1, _SHOULDER_Y, dz + 1), _C_TRIM)  # naramiennik
+	d.fill_box(Vector3i(x0, _SHOULDER_Y - 1, -dz), Vector3i(x1, _SHOULDER_Y, dz + 1), _C_TRIM)  # naramiennik (seam)
+	# ART OVERHAUL: NARAMIENNIK PROJEKTUJĄCY sylwetkę — płyta wystaje NA ZEWNĄTRZ od ciała i W GÓRĘ
+	# ponad zawias barku => bohaterskie „szerokie barki" czytelne z dystansu. Skala wg armor_weight.
+	var pw := 0
+	if _armor_weight == &"heavy": pw = 2
+	elif _armor_weight == &"medium": pw = 1
+	if pw > 0:
+		var ox0 := (x0 - pw) if side < 0 else x0
+		var ox1 := x1 if side < 0 else (x1 + pw)
+		# Główna płyta: 2 górne rzędy ramienia, poszerzona na zewnątrz + głębsza w z (bryła, nie naklejka).
+		d.fill_box(Vector3i(ox0, _SHOULDER_Y - 2, -dz - 1), Vector3i(ox1, _SHOULDER_Y, dz + 2), _C_TRIM)
+		# Grzbiet/kapsel ponad barkiem (sylwetka „rośnie" w górę o pw rzędów).
+		d.fill_box(Vector3i(ox0, _SHOULDER_Y, -dz, ), Vector3i(ox1, _SHOULDER_Y + pw, dz + 1), _C_TRIM)
+		# Nity (cień lamówki) na krawędzi płyty — drobny micro-voxel detal na ciężkiej zbroi.
+		if _armor_weight == &"heavy":
+			var edge := (ox0) if side < 0 else (ox1 - 1)
+			d.set_voxel(Vector3i(edge, _SHOULDER_Y - 1, 0), _C_BUCKLE)
 
 # PRZEDRAMIĘ + DŁOŃ (dolny segment ręki). side=-1/+1. y[0(=łokieć-baza).._ELBOW_Y w skali pivota).
 # UWAGA: bryła liczona w GLOBALNYCH y; segment wisi pod pivotem łokcia (_ELBOW_Y), więc dłoń
