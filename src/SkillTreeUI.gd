@@ -97,6 +97,7 @@ func _build_panel() -> void:
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
 	_root.visible = false
+	_root.theme = UITheme.get_theme()                # wspólny motyw drewno-złoto (koniec szarości silnika)
 	add_child(_root)
 
 	var dim := ColorRect.new()

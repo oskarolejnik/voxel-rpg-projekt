@@ -94,6 +94,12 @@ var _show_crosshair: bool = true   # celownik TPS (środek ekranu)
 # HOTBAR — dane slotów (rysowane w _paint). Skille: ikona+klawisz+cooldown; przedmioty: ikona+licznik.
 var _skill_slots: Array = []   # [{icon:String, key:String, cd:float(0..1), secs:float}]
 var _item_slots: Array = []    # [{icon:String, count:int}]
+# READY-GLOW: krótki rozbłysk slotu skilla w momencie zejścia z cooldownu (telegraf „gotowe!").
+# Na slot: poprzedni cd (do wykrycia przejścia >0 -> 0) + maleńcy timer rozbłysku (sekundy).
+var _skill_prev_cd: Array = []     # [float] poprzedni cd na slot (wykrycie zbocza)
+var _skill_glow: Array = []        # [float] pozostały czas rozbłysku (s), 0 = brak
+const READY_GLOW_DUR: float = 0.45 # czas zaniku rozbłysku (s)
+const READY_GLOW_COL: Color = Color(1.0, 0.92, 0.55)  # ciepły złoty błysk gotowości
 # Ikony hotbara (autorskie 5x5/5x7 piksele; rysowane _blit jednokolorowo z tintem z _hotbar_icon).
 const IC_WHIRL: Array = ["..#..", "#.#.#", ".###.", "#.#.#", "..#.."]
 const IC_DASH: Array = [".#...", "..#..", "...#.", "..#..", ".#..."]
@@ -164,8 +170,12 @@ func _ready() -> void:
 
 	# Hotbar: domyślne puste sloty (Main je wypełnia przez set_skill_slot/set_item_slot).
 	_skill_slots.clear()
+	_skill_prev_cd.clear()
+	_skill_glow.clear()
 	for i in SKILL_SLOTS:
 		_skill_slots.append({"icon": "", "key": str(i + 1), "cd": 0.0, "secs": 0.0})
+		_skill_prev_cd.append(0.0)
+		_skill_glow.append(0.0)
 	_item_slots.clear()
 	for i in ITEM_SLOTS:
 		_item_slots.append({"icon": "", "count": 0})
@@ -422,6 +432,15 @@ func _paint(ci: CanvasItem) -> void:
 			var secs: float = float(sd.get("secs", 0.0))
 			if secs >= 0.1:
 				_text_centered(ci, str(int(ceil(secs))), sx + slot * 0.5, sy + slot * 0.5, 3, COL_NUM)
+		# READY-GLOW: ciepły rozbłysk slotu tuż po zejściu z cooldownu (maleje w czasie).
+		if i < _skill_glow.size() and _skill_glow[i] > 0.0:
+			var gf := clampf(_skill_glow[i] / READY_GLOW_DUR, 0.0, 1.0)
+			# Wypełnienie slotu (jasność) + jaśniejsza złota obwódka — telegraf „gotowe!".
+			_px(ci, sx, sy, slot, slot, Color(READY_GLOW_COL.r, READY_GLOW_COL.g, READY_GLOW_COL.b, 0.45 * gf))
+			_px(ci, sx - 1.0, sy - 1.0, slot + 2.0, 2.0, Color(C_GOLD_L.r, C_GOLD_L.g, C_GOLD_L.b, gf))
+			_px(ci, sx - 1.0, sy + slot - 1.0, slot + 2.0, 2.0, Color(C_GOLD_L.r, C_GOLD_L.g, C_GOLD_L.b, gf))
+			_px(ci, sx - 1.0, sy - 1.0, 2.0, slot + 2.0, Color(C_GOLD_L.r, C_GOLD_L.g, C_GOLD_L.b, gf))
+			_px(ci, sx + slot - 1.0, sy - 1.0, 2.0, slot + 2.0, Color(C_GOLD_L.r, C_GOLD_L.g, C_GOLD_L.b, gf))
 		_text(ci, String(sd.get("key", str(i + 1))), sx + 3.0, sy + slot - 13.0, 2, Color8(150, 180, 220))
 	# Separator.
 	_divider(ci, x0 + skills_w + divider * 0.5 - 2.0, sy - 2.0, slot + 4.0)
@@ -611,6 +630,10 @@ func _process(delta: float) -> void:
 	# Faza pulsu vignette — narastana tylko przy niskim HP (zero kosztu przy zdrowiu).
 	if _hp_f < VIG_HP_THRESH:
 		_vig_phase = fposmod(_vig_phase + VIG_SPEED * delta, TAU)
+	# Zanik rozbłysków „gotowe!" slotów skilli (tanio, tylko gdy któryś aktywny).
+	for i in _skill_glow.size():
+		if _skill_glow[i] > 0.0:
+			_skill_glow[i] = maxf(0.0, _skill_glow[i] - delta)
 	# Yaw kompasu z gracza (jeśli wpięty) — tanio, raz na klatkę. Null-safe.
 	if _player_ref != null and is_instance_valid(_player_ref):
 		_compass_yaw = _player_ref.global_rotation.y
@@ -728,9 +751,17 @@ func set_skill_slot(i: int, icon: String, key: String) -> void:
 		_skill_slots[i]["key"] = key
 
 ## Ustawia cooldown slotu skilla: frac 0..1 (1=pełny CD) + sekundy do gotowości (do napisu).
+## Wykrywa zbocze cd>0 -> cd≈0 (skill właśnie zszedł z cooldownu) i odpala READY-GLOW.
 func set_skill_cooldown(i: int, frac: float, secs: float) -> void:
 	if i >= 0 and i < _skill_slots.size():
-		_skill_slots[i]["cd"] = clampf(frac, 0.0, 1.0)
+		var nf := clampf(frac, 0.0, 1.0)
+		# Zbocze opadające: poprzednio na cooldownie (>0.01), teraz gotowy (≈0) -> rozbłysk.
+		if i < _skill_prev_cd.size() and _skill_prev_cd[i] > 0.01 and nf <= 0.01:
+			if i < _skill_glow.size():
+				_skill_glow[i] = READY_GLOW_DUR
+		if i < _skill_prev_cd.size():
+			_skill_prev_cd[i] = nf
+		_skill_slots[i]["cd"] = nf
 		_skill_slots[i]["secs"] = maxf(0.0, secs)
 
 ## Ustawia ikonę i licznik sztuk slotu przedmiotu (i=0..ITEM_SLOTS-1).

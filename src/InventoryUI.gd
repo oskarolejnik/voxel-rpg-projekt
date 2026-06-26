@@ -109,6 +109,7 @@ func _build_panel() -> void:
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP   # blokuje klik "przez" panel do gry
 	_root.visible = false                            # start ukryty (_set_open(false) w _ready early-returnuje)
+	_root.theme = UITheme.get_theme()                # wspólny motyw drewno-złoto (koniec szarości silnika)
 	add_child(_root)
 
 	# Przyciemnione tlo (nieco przezroczyste — widac gre za spodem).
@@ -416,8 +417,18 @@ func _push_toast(text: String, color: Color) -> void:
 	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	lbl.add_theme_constant_override("outline_size", 4)
 	_toast_box.add_child(lbl)
-	# Fade out + usuniecie.
+	# Wejscie: krotki fade-in + delikatny „pop" skali wokol srodka (slide pozycji w VBoxie
+	# walczylby z layoutem kontenera, wiec animujemy modulate+scale, ktore go nie ruszaja).
+	# Potem przerwa zycia i fade-out + usuniecie.
+	var base_a := color.a
+	lbl.modulate.a = 0.0
+	lbl.pivot_offset = lbl.size * 0.5
+	lbl.scale = Vector2(0.92, 0.92)
 	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(lbl, "modulate:a", base_a, 0.22).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lbl, "scale", Vector2.ONE, 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.set_parallel(false)
 	tw.tween_interval(TOAST_LIFETIME - 0.8)
 	tw.tween_property(lbl, "modulate:a", 0.0, 0.8)
 	tw.tween_callback(lbl.queue_free)
