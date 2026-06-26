@@ -11,9 +11,22 @@ i właścicielem praw autorskich**.
 
 ## Status
 
-🟢 **Etap 1 — „Hello 3D" (kod gotowy).** Silnik wybrany: **Godot 4**.
-Prototyp (sterowalna postać + kamera 3rd-person + teren z punktami odniesienia) jest
-napisany — wystarczy zainstalować Godota i uruchomić. Instrukcja: [`docs/SETUP.md`](docs/SETUP.md).
+🟢 **W aktywnym rozwoju — grywalny szkielet action-RPG.** Silnik: **Godot 4.7 / GDScript**.
+Architektura **single-player-first** z trybem **co-op do 4 graczy** (listen-server).
+Projekt urósł daleko poza prototyp „Hello 3D": działa świat z biomami, progresja postaci,
+walka ze status-effectami, proceduralne lochy z bossami oraz trwały zapis gry.
+
+## ✨ Co już działa
+
+- **Świat i biomy** — voxelowy świat z 7 biomami i progresją trudności opartą o dystans od startu.
+- **Klasy i rozwój** — 11 klas postaci, każda z własnym drzewkiem umiejętności, plus kreator postaci.
+- **Walka** — system status-effectów (podpalenie, trucizna, krwawienie, spowolnienie, ogłuszenie, osłabienie) oraz „game feel" (hitstop, przerwanie postawy / poise-break, strafe).
+- **Lochy** — proceduralnie generowane lochy z mechanikami bossów (enrage / miniboss) i lootem z pomieszczeń.
+- **Co-op** — hostowanie i dołączanie przez RPC, do 4 graczy na listen-serverze.
+- **Zapis gry** — trwały system zapisu (`SaveManager`) z pokryciem testowym.
+- **AI** — system nastawienia stworzeń (wrogie / neutralne / pasywne).
+- **Pipeline treści** — dane gry (rasy, klasy, pochodzenie) jako zasoby `.tres`, łatwe do rozszerzania.
+- **Jakość** — własny audyt 11 podsystemów napędzający backlog (`docs/`).
 
 ## Struktura repo
 
@@ -27,7 +40,7 @@ napisany — wystarczy zainstalować Godota i uruchomić. Instrukcja: [`docs/SET
 | `CREDITS.md` | Rejestr pochodzenia każdego assetu (dowód autorstwa) |
 | `LICENSE` | Prawa zastrzeżone © Oskar Olejnik |
 | `assets/` | Własne assety (modele .vox, tekstury, audio) |
-| `src/` | Kod gry |
+| `src/` | Kod gry (świat, walka, klasy, lochy, sieć, zapis) |
 
 ## Zasada nr 1
 
