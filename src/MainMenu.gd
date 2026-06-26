@@ -18,6 +18,7 @@ const SettingsMenuScript := preload("res://src/SettingsMenu.gd")
 
 signal new_game_requested
 signal continue_requested
+signal multiplayer_requested   # „Multiplayer (Co-op)" — Main pokazuje LobbyUI (Host/Join)
 
 var _root: Control
 var _buttons_box: VBoxContainer
@@ -89,6 +90,7 @@ func _build_ui() -> void:
 	_continue_btn = _add_menu_button(_buttons_box, "Kontynuuj", _on_continue)
 	_continue_btn.disabled = not _has_save
 	_continue_btn.visible = _has_save
+	_add_menu_button(_buttons_box, "Multiplayer (Co-op)", _on_multiplayer)
 	_add_menu_button(_buttons_box, "Ustawienia", _on_settings)
 	_add_menu_button(_buttons_box, "Wyjscie", _on_quit)
 
@@ -149,6 +151,13 @@ func _on_continue() -> void:
 	hide_menu()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	continue_requested.emit()
+
+
+## Multiplayer: NIE chowamy menu ani nie odpauzowujemy — Main pokazuje LobbyUI (Host/Join) NAD menu,
+## kursor zostaje widoczny. Wejście do gry następuje dopiero po nawiązaniu sesji (Main._on_session_started).
+func _on_multiplayer() -> void:
+	_click()
+	multiplayer_requested.emit()
 
 
 func _on_settings() -> void:

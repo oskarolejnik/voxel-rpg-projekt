@@ -26,6 +26,7 @@ var _leave_btn: Button
 
 func _ready() -> void:
 	layer = 20                                          # nad HUD-em walki i ekwipunkiem
+	process_mode = Node.PROCESS_MODE_ALWAYS             # klikalne też z menu (drzewo spauzowane)
 	_build_ui()
 	_refresh()
 	# Reaguj na zmiany sesji (status w panelu).
@@ -36,6 +37,17 @@ func _ready() -> void:
 		NetManager.peer_left.connect(func(_p: int) -> void: _refresh())
 		NetManager.connection_failed.connect(func() -> void:
 			_set_status("Połączenie nieudane"); _refresh())
+
+
+## Pokaż/ukryj panel lobby (wołane z menu głównego — „Multiplayer"). Niezależne od toggle F1.
+func show_lobby() -> void:
+	if _panel != null:
+		_panel.visible = true
+	_refresh()
+
+func hide_lobby() -> void:
+	if _panel != null:
+		_panel.visible = false
 
 
 func _build_ui() -> void:

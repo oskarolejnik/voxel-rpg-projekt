@@ -1128,7 +1128,26 @@ func _setup_coop() -> void:
 # IDENTYCZNA u kazdego peera. Godotowy @rpc routuje po NodePath, wiec ten sam logiczny gracz musi miec
 # ten sam path (/root/Main/Player_<peer>) na hoscie i u klienta — inaczej _submit_input/_ack_position/
 # sync HP trafialyby w zly wezel. W SP ta funkcja nie jest wolana (nazwa "Player" zostaje bez zmian).
+## Menu główne: „Multiplayer (Co-op)" — pokaż LobbyUI (Host/Join/IP) NAD menu. Drzewo zostaje
+## spauzowane (świat-tło stoi); po nawiązaniu sesji _on_session_started wchodzi do gry.
+func _on_multiplayer_requested() -> void:
+	if _lobby != null and is_instance_valid(_lobby) and _lobby.has_method("show_lobby"):
+		_lobby.show_lobby()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
 func _on_session_started(_is_host: bool) -> void:
+	# BUGFIX co-op z menu: jeśli sesja ruszyła PRZY MENU (Host/Join z ekranu głównego), wejdź do gry —
+	# schowaj menu+lobby, złap kursor, odpauzuj. (Mid-game co-op przez F1 ma menu schowane => no-op.)
+	if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.visible:
+		if _lobby != null and is_instance_valid(_lobby) and _lobby.has_method("hide_lobby"):
+			_lobby.hide_lobby()
+		_main_menu.hide_menu()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		var am := _audio_manager()
+		if am != null:
+			am.play_music(&"explore")
+		_was_in_combat = false
 	if _player_ref == null:
 		return
 	var my_peer := NetManager.local_peer_id()
@@ -1478,6 +1497,8 @@ func _setup_menus() -> void:
 		_main_menu.new_game_requested.connect(_on_new_game)
 	if _main_menu.has_signal("continue_requested"):
 		_main_menu.continue_requested.connect(_on_continue)
+	if _main_menu.has_signal("multiplayer_requested"):
+		_main_menu.multiplayer_requested.connect(_on_multiplayer_requested)
 
 	# Po reloadzie z "Nowa gra": auto-start świeżej gry (pomiń menu). Flaga przeżyła reload sceny
 	# (GameState autoload). Świat+postać są już świeże (zbudowane w tym _ready), więc wystarczy ukryć
