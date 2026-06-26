@@ -99,6 +99,13 @@ var _elite_aura_phase: float = 0.0
 # Aktywny telegraf bieżącego ciosu (HazardZone preview). Zwalniany po zadaniu ciosu / przerwaniu.
 var _telegraph: HazardZone = null
 
+# ART OVERHAUL: PERSYSTENTNY ZNACZNIK KLASY ZAGROŻENIA (elite/boss). Unoszący się marker nad głową
+# (emisyjny) — delikatnie pulsuje/bobuje w _process, by groźba czytała się z daleka. Pierścień u stóp
+# jest statyczny (część _model). Kolor wg tier (elite=bursztyn, boss=czerwień) + element. Tani: same
+# emisyjne meshe (ZERO świateł — nie obciąża budżetu always-on lights z Art Bible). null = trash.
+var _threat_marker: Node3D = null
+var _threat_marker_phase: float = 0.0
+
 # ============================================================================
 #  #11 — BOSS: UNIKATOWA MECHANIKA (ENRAGE poniżej 50% HP)
 # ============================================================================
@@ -307,6 +314,10 @@ var _arm_l: Node3D
 var _arm_r: Node3D
 var _leg_l: Node3D
 var _leg_r: Node3D
+# Czworonóg (beast): zmienia interpretację pivotów na 4 NOGI (przód = _arm_*, tył = _leg_*) i pozę ataku
+# (zwierzę nie unosi "ręki" jak humanoid — robi krótki przedni wymach/szarpnięcie pyskiem). Ustawiane w
+# _build_silhouette_beast; reszta rigu (chód, flinch, błysk) działa bez zmian (te same 4 pivoty).
+var _is_beast: bool = false
 
 # Materiały + bazowe kolory do błysku trafienia (TYPOWANE — pułapka "Cannot infer type").
 var _mats: Array[StandardMaterial3D] = []
@@ -415,19 +426,33 @@ func _build_body() -> void:
 
 	_build_voxel_enemy()
 
-## FEEL 3: ROZRÓŻNIONE SYLWETKI — Goblin/Brute/Slinger czytają się Z DALEKA jako inne archetypy
+## FEEL 3: ROZRÓŻNIONE SYLWETKI — Goblin/Brute/Slinger/Beast czytają się Z DALEKA jako inne archetypy
 ## (readability hordy), nie ten sam model w 3 rozmiarach. Wspólna paleta + reskin biomowy; różni się
 ## PROPORCJA/SYLWETKA/AKCENT. Wszystkie tworzą TE SAME pivoty (_arm_l/_arm_r/_leg_l/_leg_r + _model),
 ## więc rig/animacja (_animate_legs, swing ramion, flinch) działa bez zmian. Kind z variant_id:
 ##   goblin  — krępy, duża głowa, długie szpony, żółte oczy (trash, szybki).
 ##   brute   — masywny, zgarbiony, ogromne bary, mała głowa, ŚWIECĄCY rdzeń na piersi + maczuga (elite).
 ##   slinger — smukły, wysoki, kaptur, świecąca KULA pocisku w dłoni (ranged, czytelny "rzucacz").
+##   beast   — POZIOMY czworonóg: wydłużony tułów wzdłuż osi patrzenia, głowa/pysk z przodu, 4 nogi
+##             (przód _arm_l/_arm_r + tył _leg_l/_leg_r). BUGFIX: dzik/jeleń/wilk renderowały się jako
+##             humanoidalny goblin — teraz mają sylwetkę zwierzęcia (kłus diagonalny: tył o π względem przodu).
+# Lista "rdzeni" wariantów-czworonogów (po podłańcuchu, by ember_/frost_/dire_ prefiksy i _herd sufiksy
+# też trafiały). Ekosystem (GDD Świat §4) zna: wilk, niedźwiedź, jeleń, dzik, kozioł, owca, bawół, lis,
+# jaszczur. Dorzucam je wszystkie, by każdy czworonóg dostał sylwetkę zwierzęcia, nie humanoida.
+const _BEAST_VARIANTS: PackedStringArray = [
+	"boar", "deer", "wolf", "goat", "sheep", "bear", "fox", "buffalo",
+	"lizard", "beast",
+]
 func _enemy_kind() -> StringName:
 	var v := String(variant_id)
 	if v.ends_with("brute"):
 		return &"brute"
 	if v.ends_with("slinger"):
 		return &"slinger"
+	# BUGFIX czworonogi: dopasowanie po PODŁAŃCUCHU (frost_wolf/dire_wolf/ice_wolf/ember_boar... → beast).
+	for core in _BEAST_VARIANTS:
+		if v.find(core) != -1:
+			return &"beast"
 	return &"goblin"
 
 # Wspólna paleta wariantu (z reskinem biomowym). Zwraca [skin, skin_d, eyes, mouth, loin, accent].
@@ -461,12 +486,20 @@ func _build_voxel_enemy() -> void:
 			_build_silhouette_brute()
 		&"slinger":
 			_build_silhouette_slinger()
+		&"beast":
+			_build_silhouette_beast()
 		_:
 			_build_silhouette_goblin()
 	# FAZA 5: ROAMING ELITE — emisyjna AURA (OmniLight pulsujacy) czytelna z daleka jako "cel". Kolor
 	# wg elementu (ogien/mroz) lub zloty (neutralny). Tani: jedno swiatlo bez cieni + distance fade.
 	if _is_roaming_elite:
 		_build_elite_aura()
+	# ART OVERHAUL: CZYTELNOŚĆ KLASY ZAGROŻENIA — elite/boss dostają PERSYSTENTNY, tani, co-op-safe
+	# znacznik (emisyjny pierścień u stóp + unoszący się marker nad głową), by groźba czytała się
+	# NATYCHMIAST z daleka, zanim padnie cios. Czysto wizualne (zero światła = brak kosztu always-on
+	# lights; mesh emisyjny zamiast OmniLight), deterministyczne (te same dane na wszystkich klientach).
+	if threat_tier == &"elite" or threat_tier == &"boss":
+		_build_threat_marker()
 
 
 # FAZA 5: aura roaming-elite — OmniLight3D pulsujacy nad torsem. Bez cieni (tanio), distance fade
@@ -491,6 +524,75 @@ func _build_elite_aura() -> void:
 	l.position = Vector3(0.0, 1.1, 0.0)
 	add_child(l)
 	_elite_aura = l
+
+# ART OVERHAUL: kolor klasy zagrożenia. Element ma priorytet (ognisty elite świeci pomarańczem,
+# lodowy błękitem); inaczej tier: elite=bursztyn (mini-cel), boss=czerwień (śmiertelne zagrożenie).
+func _threat_tint() -> Color:
+	if element == &"fire":
+		return Color(1.0, 0.5, 0.18)
+	if element == &"frost":
+		return Color(0.45, 0.78, 1.0)
+	if element == &"poison":
+		return Color(0.55, 1.0, 0.4)
+	if threat_tier == &"boss":
+		return Color(1.0, 0.22, 0.16)        # boss: groźna czerwień
+	return Color(1.0, 0.72, 0.2)             # elite: królewski bursztyn
+
+# ART OVERHAUL: PERSYSTENTNY ZNACZNIK KLASY ZAGROŻENIA (elite/boss). Dwie czytelne z daleka rzeczy,
+# obie CZYSTO EMISYJNE (zero świateł — nie obciąża budżetu always-on lights z Art Bible):
+#   1) PIERŚCIEŃ U STÓP — wieniec niskich emisyjnych kostek na ziemi (radialnie wokół wroga). Statyczny
+#      (część _model), natychmiast komunikuje "to nie zwykły trash".
+#   2) UNOSZĄCY SIĘ MARKER nad głową — diament (elite) lub korona z 3 kolców (boss). Bobuje/pulsuje w
+#      _process (_threat_marker_phase). Wysokość markera zależna od sylwetki (czworonóg jest niski).
+# Wszystko deterministyczne (te same dane → identyczny wygląd na każdym kliencie; co-op-safe, zero RNG).
+func _build_threat_marker() -> void:
+	if _threat_marker != null or _model == null:
+		return
+	var col := _threat_tint()
+	var is_boss := threat_tier == &"boss"
+
+	# 1) PIERŚCIEŃ U STÓP — wieniec emisyjnych kostek na poziomie ziemi (y≈0.04, w lokalu _model).
+	var ring_r := 0.62 if not is_boss else 0.80
+	var seg := 10 if not is_boss else 12
+	for i in seg:
+		var a := TAU * float(i) / float(seg)
+		var px := cos(a) * ring_r
+		var pz := sin(a) * ring_r
+		_cube(_model, Vector3(0.12, 0.05, 0.12), Vector3(px, 0.04, pz), col, true)
+
+	# 2) UNOSZĄCY SIĘ MARKER — osobny węzeł nad głową (bob/pulsacja w _process). Wysokość wg sylwetki:
+	#    czworonóg jest niski (grzbiet ~0.85), humanoid wysoki (głowa ~1.7).
+	var top_y := 1.25 if _is_beast else 2.05
+	var m := Node3D.new()
+	m.name = "ThreatMarker"
+	m.position = Vector3(0.0, top_y, 0.0)
+	_model.add_child(m)
+	if is_boss:
+		# BOSS: korona z 3 kolców (środkowy wyższy) — sylwetka "władcy lochu".
+		_cube(m, Vector3(0.10, 0.30, 0.10), Vector3(0.0, 0.0, 0.0), col, true)
+		_cube(m, Vector3(0.09, 0.20, 0.09), Vector3(-0.16, -0.04, 0.0), col, true)
+		_cube(m, Vector3(0.09, 0.20, 0.09), Vector3(0.16, -0.04, 0.0), col, true)
+	else:
+		# ELITE: diament (kostka obrócona o 45° wokół Z i Y → romb czytelny z każdej strony).
+		var dm := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.22, 0.22, 0.22)
+		dm.mesh = bm
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = col
+		mat.roughness = 1.0
+		mat.metallic = 0.0
+		mat.emission_enabled = true
+		mat.emission = col
+		mat.emission_energy_multiplier = 2.2
+		dm.material_override = mat
+		dm.rotation = Vector3(0.0, deg_to_rad(45.0), deg_to_rad(45.0))
+		m.add_child(dm)
+	_threat_marker = m
+
+# Bazowa wysokość markera zagrożenia (wokół niej bobuje w _process). Czworonóg niski → marker niżej.
+func _threat_marker_base_y() -> float:
+	return 1.25 if _is_beast else 2.05
 
 # --- GOBLIN — krępy, duża głowa, długie szpony (sylwetka bazowa, szybki trash) ---
 func _build_silhouette_goblin() -> void:
@@ -593,6 +695,53 @@ func _build_silhouette_slinger() -> void:
 		_cube(arm, Vector3(0.16, 0.12, 0.18), Vector3(0.0, -0.54, 0.0), skin_d)     # dłoń
 	# ŚWIECĄCA KULA POCISKU w lewej dłoni (uniesiona, gotowa do rzutu) — emisyjny akcent ranged.
 	_cube(_arm_l, Vector3(0.22, 0.22, 0.22), Vector3(0.0, -0.64, -0.06), accent, true)
+
+# --- BEAST — POZIOMY CZWORONÓG (dzik/jeleń/wilk/kozioł...). BUGFIX: te warianty renderowały się jako
+# pionowy humanoid (goblin). Teraz: wydłużony TUŁÓW wzdłuż osi patrzenia (przód = -Z), GŁOWA/PYSK z przodu,
+# 4 NOGI. Mapowanie pivotów pod ISTNIEJĄCY rig (zero nowego systemu animacji):
+#   _arm_l/_arm_r = przednia para nóg (pivoty z PRZODU, przy -Z)
+#   _leg_l/_leg_r = tylna para nóg   (pivoty z TYŁU, przy +Z)
+# Chód (_process) daje wtedy KŁUS DIAGONALNY: w ścieżce chodu _arm_l = +swing, _leg_l = -swing → przód i
+# tył tej samej strony są o π w przeciwfazie; a _arm_l/_arm_r oraz _leg_l/_leg_r są wzajemnie w opozycji →
+# para FL+BR i FR+BL pracuje razem (poprawny trucht zwierzęcia). Nogi obracają się na X (przód/tył wzdłuż
+# -Z), więc wymach jest zgodny z kierunkiem ruchu. Sylwetka pozioma czyta się z daleka jako ZWIERZĘ.
+func _build_silhouette_beast() -> void:
+	_is_beast = true
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]
+
+	# --- TUŁÓW POZIOMY: wydłużony wzdłuż Z (głębokość > szerokość/wysokość). Niski grzbiet ~y=0.62. ---
+	_cube(_model, Vector3(0.44, 0.40, 0.86), Vector3(0.0, 0.62, 0.06), skin)        # główny korpus
+	_cube(_model, Vector3(0.40, 0.30, 0.30), Vector3(0.0, 0.66, -0.30), skin)       # bark/kłąb (przód masywniejszy)
+	_cube(_model, Vector3(0.34, 0.26, 0.26), Vector3(0.0, 0.60, 0.42), skin_d)      # zad (tył węższy, ciemniejszy)
+
+	# --- SZYJA + GŁOWA/PYSK z przodu (-Z), pochylone nisko (sylwetka pasącego się/szarżującego zwierza). ---
+	_cube(_model, Vector3(0.24, 0.24, 0.26), Vector3(0.0, 0.60, -0.52), skin)       # szyja
+	_cube(_model, Vector3(0.30, 0.28, 0.34), Vector3(0.0, 0.54, -0.74), skin)       # głowa
+	_cube(_model, Vector3(0.18, 0.16, 0.22), Vector3(0.0, 0.48, -0.94), skin_d)     # pysk/ryj
+	_cube(_model, Vector3(0.16, 0.06, 0.05), Vector3(0.0, 0.44, -1.04), mouth)      # nozdrza/morda
+	# Uszy (sterczą do góry-tyłu) — pomagają sylwetce głowy zwierzęcia.
+	_cube(_model, Vector3(0.08, 0.16, 0.08), Vector3(-0.12, 0.70, -0.66), skin_d)   # ucho L
+	_cube(_model, Vector3(0.08, 0.16, 0.08), Vector3(0.12, 0.70, -0.66), skin_d)    # ucho R
+	# Oczy po BOKACH głowy (zwierzęce, świecące — czytelne z daleka).
+	_cube(_model, Vector3(0.05, 0.08, 0.10), Vector3(-0.16, 0.58, -0.74), eyes, true)  # oko L
+	_cube(_model, Vector3(0.05, 0.08, 0.10), Vector3(0.16, 0.58, -0.74), eyes, true)   # oko R
+
+	# --- OGON z tyłu (+Z) — drobny akcent sylwetki. ---
+	_cube(_model, Vector3(0.08, 0.10, 0.20), Vector3(0.0, 0.62, 0.58), skin_d)
+
+	# --- 4 NOGI: pivoty na wysokości brzucha (y=0.46), nogi zwisają w dół. Przód z -Z, tył z +Z. ---
+	# PRZEDNIA para = _arm_l/_arm_r (ścieżka "ramion" w _process je animuje). Pivoty przy barku (-Z).
+	_arm_l = _make_pivot(_model, Vector3(-0.16, 0.46, -0.28))
+	_arm_r = _make_pivot(_model, Vector3(0.16, 0.46, -0.28))
+	# TYLNA para = _leg_l/_leg_r (ścieżka "nóg"). Pivoty przy zadzie (+Z).
+	_leg_l = _make_pivot(_model, Vector3(-0.15, 0.46, 0.34))
+	_leg_r = _make_pivot(_model, Vector3(0.15, 0.46, 0.34))
+	for leg in [_arm_l, _arm_r, _leg_l, _leg_r]:
+		_cube(leg, Vector3(0.16, 0.46, 0.18), Vector3(0.0, -0.23, 0.0), skin_d)     # noga
+		_cube(leg, Vector3(0.17, 0.10, 0.20), Vector3(0.0, -0.44, 0.0), mouth)      # kopyto/łapa (ciemna)
+
 
 func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:
 	var p := Node3D.new()
@@ -1021,6 +1170,13 @@ func _process(delta: float) -> void:
 		_enrage_aura_phase += delta * 5.0
 		_enrage_aura.light_energy = ENRAGE_AURA_BASE_ENERGY * (0.85 + 0.4 * (0.5 + 0.5 * sin(_enrage_aura_phase)))
 
+	# ART OVERHAUL: ZNACZNIK KLASY ZAGROŻENIA (elite/boss) — marker nad głową delikatnie BOBUJE w górę/dół
+	# i powoli obraca się wokół osi pionowej (czytelny "żywy" akcent celu z daleka). Czysto wizualne, tanie.
+	if _threat_marker != null:
+		_threat_marker_phase += delta
+		_threat_marker.position.y = _threat_marker_base_y() + 0.08 * sin(_threat_marker_phase * 2.2)
+		_threat_marker.rotation.y = _threat_marker_phase * 1.2
+
 	# Obrót modelu w stronę _face_dir (przód = -Z), płynnie.
 	if _face_dir.length() > 0.01:
 		var target_yaw := atan2(-_face_dir.x, -_face_dir.z)
@@ -1029,14 +1185,21 @@ func _process(delta: float) -> void:
 	# Animacja: zamach (gdy _attacking) ma priorytet na PRAWEJ ręce; reszta = chód.
 	var hspeed := Vector2(velocity.x, velocity.z).length()
 	if _attacking:
-		# Unieś prawą rękę do przodu — szybki, czytelny "zamach szponem".
 		var t := 1.0
 		if attack_windup > 0.0:
 			t = clampf(1.0 - (_windup_timer / attack_windup), 0.0, 1.0)
-		_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -1.6 * t, 14.0 * delta)
-		_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.0, 10.0 * delta)
-		# Nogi nadal mogą się kołysać, jeśli (rzadko) idzie; tu zwykle stoi → spoczynek.
-		_animate_legs(delta, hspeed)
+		if _is_beast:
+			# CZWORONÓG: zwierzę nie unosi "ręki" — robi krótki SZARŻOWY wymach przedniej pary nóg
+			# do przodu (paw/ryj w dół-przód), reszta sylwetki napiera. Tył kołysze się jeśli idzie.
+			_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.7 * t, 14.0 * delta)
+			_arm_r.rotation.x = lerpf(_arm_r.rotation.x, 0.7 * t, 14.0 * delta)
+			_animate_legs(delta, hspeed)
+		else:
+			# Unieś prawą rękę do przodu — szybki, czytelny "zamach szponem".
+			_arm_r.rotation.x = lerpf(_arm_r.rotation.x, -1.6 * t, 14.0 * delta)
+			_arm_l.rotation.x = lerpf(_arm_l.rotation.x, 0.0, 10.0 * delta)
+			# Nogi nadal mogą się kołysać, jeśli (rzadko) idzie; tu zwykle stoi → spoczynek.
+			_animate_legs(delta, hspeed)
 	elif hspeed > 0.3:
 		_walk_phase += delta * hspeed * 2.2
 		var swing := sin(_walk_phase) * 0.6
