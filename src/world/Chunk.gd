@@ -154,6 +154,43 @@ const SALT_LEAF_WARM: int = 160          # ciepło sub-voxela:  +sub_i (rezerwuj
 const LEAF_FLAG_SURFACE: int = 1
 const LEAF_FLAG_ANCHORED: int = 2
 
+# --- FINE-TRUNK: drobne sub-voxele zaokrąglonego pnia (tylko NEAR, tylko skorupa pnia) ---
+# Voxel WOOD POWIERZCHNIOWY (≥1 sąsiad AIR/WATER) renderujemy NIE jako kostkę 0,5 m
+# (czytaną jako „kwadratowy słupek"), lecz jako klaster TRUNK_SUB³ sub-voxeli z RADIALNYM
+# CULLINGIEM (okrągły przekrój pnia), lekką ROZSZERZAJĄCĄ SIĘ NASADĄ (root flare u podstawy)
+# i subtelną wariacją koloru kory per sub-voxel. Voxel WOOD WEWNĘTRZNY (otoczony, niewidoczny)
+# pomijamy całkiem (0 geometrii) — dokładnie jak liść wewnętrzny. WOOD zostaje w _voxels
+# (kolizja + kotwiczenie liści w _classify_leaf) — zmieniamy WYŁĄCZNIE sposób RENDEROWANIA.
+# Wszystko OFF-THREAD-safe: czysta arytmetyka + world.feature_hash + lokalny VoxelDef +
+# VoxelModel.emit_to_static (A=0 => pień się NIE kołysze w shaderze terenu). Mirror _emit_leaf_cluster.
+const TRUNK_SUB: int = 3                   # podział na sub-voxele (3 -> ~0,167 m). NIE 2: przy SUB=2
+# cienki pień 1×1 ma TYLKO 4 narożne sub-kolumny (wszystkie równo odległe od osi) => cull albo
+# zostawia kwadrat, albo kasuje cały słup => brak zaokrąglenia. SUB=3 daje kolumnę ŚRODKOWĄ +
+# boki (zachowane) i 4 NAROŻNE (ścinane) => realnie okrągły przekrój nawet dla pnia 0,5 m.
+# RADIALNY CULLING: sub-voxel poza promieniem (od osi ZGRUPOWANEGO pnia w XZ) wycinamy => okrągły
+# przekrój zamiast kwadratu. r jako UŁAMEK znormalizowanego dystansu (narożnik footprintu ~√0,5):
+# 0,42 ścina 4 narożne kolumny (dystans² ~0,22 dla 1×1 / ~0,35 dla 2×2) zostawiając środek+boki.
+const TRUNK_RADIAL: float = 0.42
+# ROOT FLARE: u podstawy pnia (voxel WOOD stojący na terenie) promień radialnego cullingu rośnie,
+# więc nasada jest SZERSZA (rozłożyste „korzenie"). Flare zanika ku górze w ciągu FLARE_HEIGHT
+# voxeli WOOD nad gruntem. Dodatek do TRUNK_RADIAL w najniższym voxelu nasady (0,42+0,20=0,62 =>
+# r²=0,384 > dystans² narożnika => narożniki ZOSTAJĄ => pełny, kwadratowy/rozłożysty dół = flare).
+const TRUNK_FLARE_ADD: float = 0.20
+const TRUNK_FLARE_HEIGHT: int = 3          # przez tyle voxeli WOOD nad gruntem flare zanika do 0
+const TRUNK_BARK_AMP: float = 0.05         # ±jasność kory per sub-voxel (pod AGX+glow: bezpiecznie < knee)
+const TRUNK_BARK_WARM: float = 0.025       # ±ciepło/chłód kory (R↑/B↓ vs R↓/B↑) — żyłkowanie drewna
+# Twardy bezpiecznik tri/chunk (4GB): budżet w EMITOWANYCH ŚCIANACH (mirror LEAF_FACE_BUDGET). Po
+# wyczerpaniu pnie wracają do kostki 0,5 m (degradacja zamiast dziur). Pień ma WŁASNY budżet (nie
+# dzieli z liśćmi): drzewo ma ~8-14 voxeli pnia POWIERZCHNIOWYCH; klaster SUB=3 po radial-cullingu
+# + skorupowym cullingu emituje ~30-60 ścian => ~400-800 ścian/drzewo. 9000 starczy na gęsty las.
+const TRUNK_FACE_BUDGET: int = 9000
+# Salty fine-trunk (rozłączne okna 200+; +sub_i tylko dla bark/warm). KAŻDA decyzja DEKORELUJE
+# WARSTWY Y mnożnikami pierwszymi w coords hasha (NIE salt+y, NIE wz+y) — ten sam fold co fine-leaf,
+# żeby nie powstały ukośne wzory żyłkowania wzdłuż pnia. Indeks sub-voxela 0..TRUNK_SUB³-1 (max 26
+# dla SUB=3) dodajemy do bazy bark/warm => okna 200..226 / 230..256 rozłączne.
+const SALT_TRUNK_BARK: int = 200           # jasność kory sub-voxela: +sub_i (rezerwuje 200..226)
+const SALT_TRUNK_WARM: int = 230           # ciepło kory sub-voxela:  +sub_i (rezerwuje 230..256)
+
 # 6 kierunków sąsiadów dla face cullingu (kolejność: +X,-X,+Y,-Y,+Z,-Z).
 const NEIGHBORS: Array[Vector3i] = [
 	Vector3i( 1, 0, 0), Vector3i(-1, 0, 0),
@@ -874,6 +911,14 @@ func _build_mesh(world: VoxelWorld) -> void:
 	# w ścianach, nie sub-voxelach — odporne na zmianę SUB/dapple). _build_mesh biegnie wyłącznie
 	# dla NEAR (lod_step<=1), więc fine-leaf jest tu zawsze "włączony".
 	var leaf_face_budget := LEAF_FACE_BUDGET
+	# Budżet ŚCIAN pni (fine-trunk) — WŁASNY, niezależny od liści (mirror leaf_face_budget). Po
+	# wyczerpaniu pień degraduje do kostki 0,5 m (NIE znika). Pnie idą do st_leaf (ten sam mesh
+	# statyczny A=0 co liście — solid_material, BEZ kolizji; WOOD w _voxels nadal niesie kolizję).
+	# UWAGA (review COLLISION): pnie ida do st_solid (NIE st_leaf!), bo to st_solid jest zrodlem
+	# trimesh kolizji w finalize. Liscie moga byc bezkolizyjne (st_leaf), ale pien MUSI kolidowac —
+	# gracz odbija sie od drzewa jak dotad. Pien jest RZADKI (~8-14 voxeli powierzchniowych/drzewo
+	# => ~400-800 scian) — w przeciwienstwie do lisci (tysiace) nie wysadza create_trimesh_shape.
+	var trunk_face_budget := TRUNK_FACE_BUDGET
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
@@ -904,6 +949,23 @@ func _build_mesh(world: VoxelWorld) -> void:
 						leaf_face_budget -= faces
 						if faces > 0:
 							leaf_count += 1
+						continue
+					# Budżet wyczerpany => fallback do zwykłej kostki (degradacja, NIE continue).
+
+				# --- FINE-TRUNK (NEAR): pień WOOD nie jako kostka 0,5 m (czytany jako kwadratowy słupek) ---
+				# Tylko POWIERZCHNIOWY (≥1 sąsiad AIR/WATER); voxel WOOD WEWNĘTRZNY (otoczony) pomijamy
+				# całkiem (0 geometrii) — jak liść wewnętrzny. WOOD zostaje w _voxels (kolizja + kotwiczenie
+				# liści): zmieniamy WYŁĄCZNIE render. Klaster do st_solid (A=0 jak liscie, ale w meshu KOLIZJI -> pien koliduje jak dotad).
+				if t == Blocks.Type.WOOD:
+					if not _is_wood_surface(world, x, y, z):
+						continue   # pień WEWNĘTRZNY (otoczony solid) => 0 geometrii (oszczędność)
+					if trunk_face_budget > 0:
+						var tc := _solid_color(world, t, x, y, z)   # baza koloru pnia (biom/tint, reuse)
+						# Klaster do st_solid (NIE st_leaf): zaokrąglony pień WCHODZI w trimesh kolizji
+						# => gracz koliduje z drzewem jak dotąd (WOOD nadal w _voxels dla kotwiczenia liści).
+						var faces2 := _emit_trunk_cluster(st_solid, world, x, y, z, tc)
+						trunk_face_budget -= faces2
+						solid_count += faces2   # st_solid ma geometrię => _has_solid + kolizja
 						continue
 					# Budżet wyczerpany => fallback do zwykłej kostki (degradacja, NIE continue).
 
@@ -1038,6 +1100,126 @@ func _emit_leaf_cluster(st: SurfaceTool, world: VoxelWorld, x: int, y: int, z: i
 		return 0
 	# Osadzenie: dolny-lewy róg klastra == pozycja voxela liścia w metrach (BEZ recentrowania!).
 	# Bok sub-voxela = VOXEL_SIZE/sub => klaster dokładnie wypełnia sześcian voxela liścia.
+	# emit_to_static robi culling skorupy klastra + CW winding (NIE pełne 6·sub³ ścian) i A=0.
+	var origin := Vector3(x, y, z) * VOXEL_SIZE
+	return VoxelModel.emit_to_static(st, d, origin, VOXEL_SIZE / float(sub))
+
+
+# --- FINE-TRUNK: helpery (tylko NEAR; wołane z _build_mesh) ---
+
+## Czy voxel WOOD jest POWIERZCHNIOWY (≥1 sąsiad AIR/WATER => odsłonięty, renderujemy klaster).
+## Mirror logiki bit0 z _classify_leaf, ale dla pnia nie potrzebujemy flagi „zakotwiczony"
+## (pień NIE jest poddawany dapple — nie znika), więc zwracamy proste bool. get_voxel poza
+## zakresem zwraca AIR => brzeg chunku liczy się jako odsłonięty (pnie mają margines
+## TREE_MARGIN=7 i nie dotykają szwu — w praktyce sąsiad zawsze jest w obrębie tego chunku).
+func _is_wood_surface(_world: VoxelWorld, x: int, y: int, z: int) -> bool:
+	for n in NEIGHBORS:
+		var nt := get_voxel(x + n.x, y + n.y, z + n.z)
+		if nt == Blocks.Type.AIR or nt == Blocks.Type.WATER:
+			return true
+	return false
+
+
+## Wysokość voxela WOOD nad gruntem (w voxelach WOOD), capowana do TRUNK_FLARE_HEIGHT.
+## Idziemy w DÓŁ licząc kolejne WOOD; pierwszy nie-WOOD = grunt. 0 = voxel stojący na ziemi
+## (najszersza nasada flare), rosnące => flare zanika. Tani lokalny lookup (≤FLARE_HEIGHT kroków).
+func _wood_height_above_ground(x: int, y: int, z: int) -> int:
+	var h := 0
+	while h <= TRUNK_FLARE_HEIGHT:
+		if get_voxel(x, y - 1 - h, z) != Blocks.Type.WOOD:
+			return h            # pod (y-1-h) jest grunt/powietrze => to h-ta warstwa nad ziemią
+		h += 1
+	return TRUNK_FLARE_HEIGHT   # głęboko w pniu — flare i tak już zanikł
+
+
+## Renderuje POWIERZCHNIOWY voxel WOOD jako klaster sub-voxeli z RADIALNYM CULLINGIEM (okrągły
+## przekrój pnia), ROOT FLARE u nasady i wariacją koloru kory — mirror _emit_leaf_cluster, ale:
+##  - BEZ dapple (pień jest lity, nie prześwituje),
+##  - culling jest RADIALNY od WSPÓLNEJ OSI ZGRUPOWANEGO PNIA w XZ (1×1 lub 2×2 WOOD), nie losowy
+##    => deterministyczne zaokrąglenie słupa, a fat-trunk 2×2 zaokrągla się jako JEDEN walec,
+##  - nasada (root flare) ma WIĘKSZY promień => sub-voxele narożne ZOSTAJĄ tylko nisko, dając
+##    rozłożysty dół; wyżej narożniki są ścinane => okrąglejszy słup.
+## KLUCZ (review): przy SUB=2 pojedynczy voxel ma TYLKO narożne sub-kolumny (wszystkie równo
+## odległe od własnego środka), więc cull względem ŚRODKA VOXELA albo zostawia kwadrat, albo
+## kasuje cały słup. Dlatego mierzymy odległość od OSI CAŁEGO ZGRUPOWANIA WOOD (wykrytego po
+## sąsiadach +X/−X/+Z/−Z): 1×1 => oś w środku voxela (połowa boku = 0,5), 2×2 => oś na wspólnej
+## krawędzi (promień footprintu = 1,0). Tak narożniki ZEWNĘTRZNE słupa są ścinane, a wnętrze lite.
+## Zwraca liczbę WYEMITOWANYCH ŚCIAN (do odjęcia z budżetu). Determinizm/thread-safety jak w
+## _emit_leaf_cluster: tylko world.feature_hash (czysta arytmetyka) + lokalny VoxelDef + static emit
+## (A=0 => pień się NIE kołysze). WOOD pozostaje w _voxels (kolizja + kotwiczenie liści) — to RENDER.
+func _emit_trunk_cluster(st: SurfaceTool, world: VoxelWorld, x: int, y: int, z: int,
+		base_col: Color) -> int:
+	# Współrzędne świata tego voxela pnia — STABILNA kotwica determinizmu per voxel.
+	var wx := _coord.x * CHUNK_SIZE + x
+	var wz := _coord.y * CHUNK_SIZE + z
+	var sub := TRUNK_SUB
+
+	# --- OŚ ZGRUPOWANEGO PNIA (footprint 1×1 lub 2×2) — środek w jednostkach voxela ---
+	# Wykrywamy, czy ten voxel WOOD ma sąsiada WOOD w danej osi (fat-trunk 2×2 z _place_tree ma
+	# parę w +X i/lub +Z względem rogu, ale tu pytamy w OBIE strony, więc działa dla KAŻDEGO rogu).
+	# axis_cx/axis_cz: środek footprintu mierzony od dolnego-lewego rogu TEGO voxela (w voxelach).
+	# half_x/half_z: promień footprintu w danej osi (0,5 dla 1×1, 1,0 dla 2×2) — normalizujemy nim dystans.
+	var wood_px := get_voxel(x + 1, y, z) == Blocks.Type.WOOD
+	var wood_mx := get_voxel(x - 1, y, z) == Blocks.Type.WOOD
+	var wood_pz := get_voxel(x, y, z + 1) == Blocks.Type.WOOD
+	var wood_mz := get_voxel(x, y, z - 1) == Blocks.Type.WOOD
+	var axis_cx := 0.5
+	var half_x := 0.5
+	if wood_px:
+		axis_cx = 1.0; half_x = 1.0          # oś na krawędzi +X (footprint sięga do x+1)
+	elif wood_mx:
+		axis_cx = 0.0; half_x = 1.0          # oś na krawędzi −X (footprint sięga do x−1)
+	var axis_cz := 0.5
+	var half_z := 0.5
+	if wood_pz:
+		axis_cz = 1.0; half_z = 1.0
+	elif wood_mz:
+		axis_cz = 0.0; half_z = 1.0
+
+	# ROOT FLARE: dodatek do promienia radialnego, malejący liniowo z wysokością nad gruntem.
+	# h=0 (nasada) => pełny TRUNK_FLARE_ADD; h>=FLARE_HEIGHT => 0. Pień u dołu rozłożysty, wyżej okrągły.
+	var h_above := _wood_height_above_ground(x, y, z)
+	var flare_t := 1.0 - float(h_above) / float(maxi(1, TRUNK_FLARE_HEIGHT))
+	var radius := TRUNK_RADIAL + TRUNK_FLARE_ADD * maxf(0.0, flare_t)
+	# Promień ≥ 0,5 (połowa boku) => brak cullingu (pełny kwadrat). Tak NASADA zostaje LITA i pełna.
+	var r2 := radius * radius
+
+	var d := VoxelModel.VoxelDef.new()
+	var placed := 0
+	for sx in sub:
+		for sy in sub:
+			for sz in sub:
+				# RADIALNY CULLING w XZ od OSI ZGRUPOWANIA. Pozycja środka sub-voxela od rogu voxela
+				# (w voxelach): (sx+0,5)/sub. Dystans do osi normalizujemy promieniem footprintu (half_*),
+				# więc narożnik footprintu ma znormalizowany dystans ~√0,5 niezależnie od 1×1 vs 2×2 —
+				# ten sam próg r2 zaokrągla jednakowo cienki i gruby pień (review: spójna krzywizna).
+				var px := (float(sx) + 0.5) / float(sub)
+				var pz := (float(sz) + 0.5) / float(sub)
+				var nx := (px - axis_cx) / (2.0 * half_x)
+				var nz := (pz - axis_cz) / (2.0 * half_z)
+				if nx * nx + nz * nz > r2:
+					continue
+				# Lokalny indeks sub-voxela 0..sub³-1 (rozłączne okno saltów bark/warm).
+				var sub_i := sx + sub * (sy + sub * sz)
+				# Współrzędne hasha unikalne per sub-voxel W ŚWIECIE (sąsiednie klastry niezależne).
+				# Y DEKORELOWANY: mieszamy go w X i Z różnymi mnożnikami pierwszymi (NIE wz+y, NIE salt+y),
+				# żeby żyłkowanie kory nie tworzyło ukośnych wzorów wzdłuż pnia (ten sam fold co fine-leaf).
+				var hx := (wx * sub + sx) * 31 + y * 17
+				var hz := (wz * sub + sz) * 17 - y * 13
+				# Wariacja koloru kory: jasność ± oraz ciepło ± (R↑/B↓ vs R↓/B↑) — drobne żyłkowanie drewna.
+				var lv := (world.feature_hash(hx, hz, SALT_TRUNK_BARK + sub_i) - 0.5) * 2.0 * TRUNK_BARK_AMP
+				var wv := (world.feature_hash(hx + 101, hz + 53, SALT_TRUNK_WARM + sub_i) - 0.5) * 2.0 * TRUNK_BARK_WARM
+				var c := Color(
+					clampf(base_col.r + lv + wv, 0.0, 1.0),
+					clampf(base_col.g + lv,      0.0, 1.0),
+					clampf(base_col.b + lv - wv, 0.0, 1.0),
+					0.0)   # A=0 nominalnie; emit_to_static i tak wymusza A=0 (pień bez sway)
+				d.set_voxel(Vector3i(sx, sy, sz), c)
+				placed += 1
+	if placed == 0:
+		return 0
+	# Osadzenie: dolny-lewy róg klastra == pozycja voxela pnia w metrach (BEZ recentrowania, jak liść).
+	# Bok sub-voxela = VOXEL_SIZE/sub => klaster dokładnie wypełnia (po cullingu) sześcian voxela WOOD.
 	# emit_to_static robi culling skorupy klastra + CW winding (NIE pełne 6·sub³ ścian) i A=0.
 	var origin := Vector3(x, y, z) * VOXEL_SIZE
 	return VoxelModel.emit_to_static(st, d, origin, VOXEL_SIZE / float(sub))
