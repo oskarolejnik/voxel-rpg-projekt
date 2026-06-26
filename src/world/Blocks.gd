@@ -94,6 +94,17 @@ const BIOME_EMBER_TINT: Color = Color(1.16, 0.92, 0.70)     # rdzawo-pomarańczo
 const BIOME_EMBER_SAT: float = 1.18                          # wysoki kontrast/nasycenie (spiek)
 const BIOME_FROST_TINT: Color = Color(0.88, 0.94, 1.05)     # chłodny błękitny przesyp (B zbity 1.10->1.05: review #minor — SNOW.b 0.99 ze starym 1.10 przebijał próg glow w południe na płaskich szczytach śniegu, gdzie biome-tint + value_peak + key light się sumują; 1.05 wciąż czyta zimno, B>R zachowane, margines pod AGX+glow)
 const BIOME_FROST_SAT: float = 0.78                          # desaturacja (wyblakły mróz)
+# ART OVERHAUL (Storybook Voxel — "biome jako MIEJSCE"): 4 biomy z BIOME #9 czytały dotąd verdant
+# tint (brak gałęzi w biome_modulate). Wartości z Art Direction Bible (docs/ART-DIRECTION-BIBLE.md).
+# clampf na końcu chroni próg glow; R*sat wulkanu zbity świadomie pod AGX. NIE rusza verdant (anchor).
+const BIOME_PLAINS_TINT: Color = Color(1.05, 1.04, 0.86)    # złocista, słoneczna łąka (cieplejsza od verdant)
+const BIOME_PLAINS_SAT: float = 1.10
+const BIOME_SWAMP_TINT: Color = Color(0.80, 0.92, 0.74)     # mętna, przygaszona zieleń (toksyczny, wilgotny)
+const BIOME_SWAMP_SAT: float = 0.85                          # desaturacja => duszny, ponury klimat
+const BIOME_MOUNTAINS_TINT: Color = Color(0.92, 0.93, 0.97) # chłodny szary kamień, rzadkie powietrze
+const BIOME_MOUNTAINS_SAT: float = 0.92
+const BIOME_VOLCANIC_TINT: Color = Color(1.10, 0.74, 0.66)  # popielaty czerwono-czarny (R zbity vs ember, cap pod glow)
+const BIOME_VOLCANIC_SAT: float = 1.15
 
 ## Moduluje kolor terenu wg ID biomu (StringName z VoxelWorld.get_biome). Zwraca NOWY Color.
 ## Tint = mnożnik RGB; nasycenie liniowo wokół luminancji (sat>1 podbija, <1 wypłukuje). Mnożniki
@@ -105,6 +116,14 @@ static func biome_modulate(c: Color, biome: StringName) -> Color:
 		tint = BIOME_EMBER_TINT; sat = BIOME_EMBER_SAT
 	elif biome == &"frosthelm":
 		tint = BIOME_FROST_TINT; sat = BIOME_FROST_SAT
+	elif biome == &"plains":
+		tint = BIOME_PLAINS_TINT; sat = BIOME_PLAINS_SAT
+	elif biome == &"swamp":
+		tint = BIOME_SWAMP_TINT; sat = BIOME_SWAMP_SAT
+	elif biome == &"mountains":
+		tint = BIOME_MOUNTAINS_TINT; sat = BIOME_MOUNTAINS_SAT
+	elif biome == &"volcanic":
+		tint = BIOME_VOLCANIC_TINT; sat = BIOME_VOLCANIC_SAT
 	var r := c.r * tint.r
 	var g := c.g * tint.g
 	var b := c.b * tint.b

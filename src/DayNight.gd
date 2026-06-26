@@ -73,9 +73,21 @@ const _SKY_HORIZON: Array[Color] = [
 	Color(0.06, 0.07, 0.16),   # NOC
 ]
 
-# (f) AMBIENT – energia światła otoczenia. Min 0.12 nocą, by scena nie zgasła do czerni
+# (f) AMBIENT – energia światła otoczenia. ART OVERHAUL: nocny floor 0.12->0.16, by „księżycowa"
+# noc była realnie NAWIGOWALNA (mniej martwej czerni), nie tylko ciemnoniebieska pustka.
 # (działa TYLKO przy ambient_light_sky_contribution < 1.0 — ustawia to Main).
-const _AMBIENT: Array[float] = [ 0.12, 0.20, 0.25, 0.18, 0.12 ]
+const _AMBIENT: Array[float] = [ 0.16, 0.20, 0.25, 0.18, 0.16 ]
+
+# (f2) AMBIENT KOLOR — ART OVERHAUL „Moonlit Navigable Night" (Art Direction Bible). Przy
+# ambient_light_sky_contribution=0.6 (Main) 0.4 wagi ambientu bierze się z TEGO koloru, więc nocą
+# niebieski księżycowy tint realnie barwi scenę zamiast gasić ją do granatu. Dzień = ciepła biel.
+const _AMBIENT_COLOR: Array[Color] = [
+	Color(0.30, 0.38, 0.62),   # NOC    – chłodny księżycowy błękit (czytelna, klimatyczna noc)
+	Color(0.70, 0.60, 0.58),   # ŚWIT   – ciepło-chłodny poranek
+	Color(1.00, 0.97, 0.90),   # DZIEŃ  – ciepła biel
+	Color(0.74, 0.56, 0.50),   # ZACHÓD – ciepły zmierzch
+	Color(0.30, 0.38, 0.62),   # NOC
+]
 
 # (g) Kolor mgły wolumetrycznej (volumetric_fog_albedo).
 const _FOG: Array[Color] = [
@@ -92,6 +104,12 @@ const _FOG_DENSITY: Array[float] = [ 0.0030, 0.0050, 0.0015, 0.0050, 0.0030 ]
 const _FOG_ANISO: Array[float] = [ 0.20, 0.75, 0.35, 0.75, 0.20 ]
 # (j) NASYCENIE (color grade) — soczyściej o złotej godzinie, spokojniej nocą.
 const _SATURATION: Array[float] = [ 1.05, 1.22, 1.12, 1.25, 1.05 ]
+
+# (j2) FOG SUN SCATTER — ART OVERHAUL „Golden-Hour God-Rays". Rozprasza kolor słońca w mgle
+# dystansowej wokół kierunku słońca => ciepła łuna/promienie o świcie i zachodzie. Działa na
+# DARMOWEJ mgle depth (BEZ volumetryka), więc god-rays wracają nawet na presecie LOW. Wysoko o
+# złotej godzinie (0.34), nisko w dzień/nocą (słońce wysoko/wygaszone => bez halo).
+const _FOG_SUN_SCATTER: Array[float] = [ 0.06, 0.34, 0.08, 0.34, 0.06 ]
 
 # --- Atmospheric perspective (Faza 2B): osobne keyframe DEPTH FOG (mgła dystansowa) ---
 # UWAGA: _FOG / _FOG_DENSITY / _FOG_ANISO powyżej sterują WOLUMETRYKIEM (bliska atmosfera,
@@ -191,8 +209,9 @@ func _apply(t: float) -> void:
 	_sky.sky_horizon_color = horiz
 	_sky.ground_horizon_color = horiz   # spójny horyzont góra/dół
 
-	# (e) ambient.
+	# (e) ambient — energia + KOLOR (ART OVERHAUL: księżycowy nocny tint przez sky_contribution<1).
 	_env.ambient_light_energy = lerpf(_AMBIENT[i], _AMBIENT[j], f)
+	_env.ambient_light_color = _AMBIENT_COLOR[i].lerp(_AMBIENT_COLOR[j], f)
 
 	# (f) mgła wolumetryczna — kolor + gęstość + anizotropia (god rays o złotej godzinie).
 	_env.volumetric_fog_albedo = _FOG[i].lerp(_FOG[j], f)
@@ -208,6 +227,9 @@ func _apply(t: float) -> void:
 	# w Main) trzymają bliż czystą — tu animujemy tylko KOLOR i SUFIT krycia na krawędzi.
 	_env.fog_light_color = _FOG_LIGHT[i].lerp(_FOG_LIGHT[j], f)
 	_env.fog_density = lerpf(_FOG_DENSITY_DEPTH[i], _FOG_DENSITY_DEPTH[j], f)
+	# (j2) FOG SUN SCATTER — ART OVERHAUL „Golden-Hour God-Rays": ciepła łuna słońca w mgle depth o
+	# świcie/zachodzie (darmowe, bez volumetryka => działa też na presecie LOW).
+	_env.fog_sun_scatter = lerpf(_FOG_SUN_SCATTER[i], _FOG_SUN_SCATTER[j], f)
 
 	# (g) color grade — nasycenie zależne od pory doby (Faza 1D). FEEL 3: zapisz BAZĘ do pola, a
 	# samego _env.adjustment_saturation NIE pisz tu na sztywno — Main._update_biome_post liczy finalną
