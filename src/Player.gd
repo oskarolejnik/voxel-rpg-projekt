@@ -996,6 +996,8 @@ func _build_voxel_character() -> void:
 	_head = _make_pivot(_torso, Vector3(0.0, float(_SHOULDER_Y - _HIP_Y) * VS, 0.0))
 	var head := VoxelModel.VoxelDef.new()
 	_sculpt_head(head)
+	var hcls: StringName = GameState.class_id if GameState != null else &"wojownik"
+	_sculpt_headgear(head, hcls)   # ART OVERHAUL: per-klasowe nakrycie głowy (hełm/kaptur/kapelusz/diadem)
 	_add_model_mesh(_head, head, mat, Vector3i(0, _SHOULDER_Y, 0))
 	# FEEL 3: EMISYJNY AKCENT OCZU — dwa malutkie świecące voxele na tęczówkach (osobne meshe, bo
 	# głowa to jeden vertex-color mesh bez emisji per-voxel). Subtelny "żywy" błysk spojrzenia,
@@ -1189,6 +1191,65 @@ const _C_EAR     := _C_SKIN
 # Cała geometria liczona z parametrów: czaszka zajmuje y[_NECK_TOP.._HEAD_TOP), szer. P_HEAD_W,
 # głęb. P_HEAD_D. Twarz to „naklejka" na froncie (-Z). Oczy PROPORCJONALNE (małe), nie gigantyczne.
 # NIE: wielka kula głowy, oczy na pół twarzy, sterczący ahoge — to dawało „pokraczny" chibi-look.
+## ART OVERHAUL — typ nakrycia głowy wg klasy (sylwetka głowy = szybki read klasy z dystansu).
+func _headgear_kind(cls: StringName) -> StringName:
+	match cls:
+		&"wojownik", &"paladyn", &"berserker": return &"helm"      # metalowy hełm (ciężki bojownik)
+		&"lucznik", &"lotrzyk", &"zabojca", &"nekromanta": return &"hood"  # kaptur (skrytobójca/łowca/mrok)
+		&"mag": return &"hat"                                      # spiczasty kapelusz maga
+		&"kaplan", &"druid": return &"circlet"                     # diadem z klejnotem
+		&"mnich": return &"band"                                   # opaska na czoło
+	return &"band"
+
+
+## ART OVERHAUL — per-klasowe NAKRYCIE GŁOWY (Storybook Voxel: silhouette read). Bake'owane do mesha
+## głowy (ten sam pivot _head). Wszystko TRZYMA SIĘ POWYŻEJ linii brwi (brow = eye_y+2), więc twarz/oczy
+## zostają odsłonięte i czytelne. hw/hd/y1 jak w _sculpt_head; kolory z palety klasy (_C_TRIM metal,
+## _C_TUNIC tkanina, _C_ACCENT klejnot).
+func _sculpt_headgear(d: VoxelModel.VoxelDef, cls: StringName) -> void:
+	var hw := P_HEAD_W / 2
+	var hd := P_HEAD_D / 2
+	var y0 := _NECK_TOP
+	var y1 := _HEAD_TOP
+	var eye_y := y0 + (P_HEAD_H * 11) / 20
+	var brow := eye_y + 2                          # bezpiecznie NAD oczami (twarz zostaje odsłonięta)
+	match _headgear_kind(cls):
+		&"helm":
+			# Metalowa kopuła nad czołem + opaska/nosal. Grzebień dla paladyna/berserkera.
+			for yy in range(brow + 1, y1 + maxi(1, P_HAIR_TOP)):
+				d.fill_box(Vector3i(-hw - 1, yy, -hd - 1), Vector3i(hw + 2, yy + 1, hd + 2), _C_TRIM)
+			d.fill_box(Vector3i(-hw - 1, brow, -hd - 2), Vector3i(hw + 2, brow + 1, hd + 2), _C_TRIM)
+			d.set_voxel(Vector3i(0, brow - 1, -hd - 2), _C_TRIM)   # nosal (mały ochraniacz nosa)
+			if cls == &"paladyn" or cls == &"berserker":
+				var crest := _C_ACCENT if cls == &"paladyn" else _C_CAPE
+				for cy in range(brow + 1, y1 + P_HAIR_TOP + 2):
+					d.set_voxel(Vector3i(0, cy, -1), crest)        # grzebień na szczycie
+		&"hood":
+			# Kaptur: pełna czasza od linii brwi w górę (przód nad brwią też kryty), twarz poniżej odsłonięta.
+			for yy in range(brow, y1 + 2):
+				d.fill_box(Vector3i(-hw - 1, yy, -hd, ), Vector3i(hw + 2, yy + 1, hd + 2), _C_TUNIC)
+			d.fill_box(Vector3i(-hw - 1, brow, -hd - 1), Vector3i(hw + 2, brow + 1, -hd), _C_TUNIC_SH)  # brzeg wokół twarzy (cień)
+			d.fill_box(Vector3i(-1, y1, 1), Vector3i(2, y1 + 3, hd + 2), _C_TUNIC_SH)                    # spiczasty czubek z tyłu
+		&"hat":
+			# Kapelusz maga: rondo na czole + zwężający się stożek (czubek świeci kolorem klasy).
+			d.fill_box(Vector3i(-hw - 2, brow, -hd - 2), Vector3i(hw + 3, brow + 1, hd + 3), _C_TUNIC)
+			var w := hw + 1
+			var hy := brow + 1
+			while w >= 0:
+				d.fill_box(Vector3i(-w, hy, -w), Vector3i(w + 1, hy + 1, w + 1), _C_TUNIC)
+				if w == 0:
+					d.set_voxel(Vector3i(0, hy, 0), _C_ACCENT)
+				w -= 1
+				hy += 1
+		&"circlet":
+			# Cienki diadem na czole + klejnot z przodu (kolor klasy).
+			d.fill_box(Vector3i(-hw - 1, brow, -hd - 1), Vector3i(hw + 2, brow + 1, hd + 2), _C_TRIM)
+			d.set_voxel(Vector3i(0, brow, -hd - 1), _C_ACCENT)
+		&"band":
+			# Opaska na czoło (tkanina).
+			d.fill_box(Vector3i(-hw - 1, brow, -hd - 1), Vector3i(hw + 2, brow + 1, hd + 2), _C_CAPE)
+
+
 func _sculpt_head(d: VoxelModel.VoxelDef) -> void:
 	var hw := P_HEAD_W / 2                       # półszerokość (np. 7/2=3 => x[-3..3])
 	var hd := P_HEAD_D / 2                       # półgłębokość
