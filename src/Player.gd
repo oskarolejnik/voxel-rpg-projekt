@@ -795,6 +795,10 @@ func write_progression_to_save(sd: SaveData) -> void:
 	if sd == null:
 		return
 	sd.class_id = GameState.class_id if GameState != null else &"wojownik"
+	# BUGFIX „ciągle ten sam świat": utrwal SEED świata w zapisie postaci, by „Kontynuuj" odtworzyło
+	# TEN SAM świat (Main._ready czyta sd.world_seed i seeduje VoxelWorld). Bez tego autosave zerował seed.
+	if RNGService != null:
+		sd.world_seed = RNGService.world_seed()
 	sd.level = get_level()
 	sd.xp = get_xp()
 	if _tree != null:

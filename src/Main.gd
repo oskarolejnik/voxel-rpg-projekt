@@ -119,6 +119,28 @@ func _ready() -> void:
 	# _spawn_player(), bo to tam buduje się model z palety klasy.
 	if OS.get_environment("PROBE_CLASS") != "" and GameState != null:
 		GameState.class_id = StringName(OS.get_environment("PROBE_CLASS"))
+
+	# BUGFIX „ciągle ten sam świat": ustal SEED świata PRZED _setup_world (VoxelWorld._ready czyta go w
+	# _setup_noise). Źródło: (a) reload po „Nowa gra" -> wylosowany GameState.pending_world_seed;
+	# (b) zwykły boot z istniejącym zapisem -> seed z zapisu (Continue trafia w TEN SAM świat);
+	# (c) inaczej domyślny. randomize() raz, by randi() dawał różne światy między uruchomieniami.
+	randomize()
+	var _ws := VoxelWorld.FEATURE_SEED
+	if GameState != null and GameState.pending_new_game and GameState.pending_world_seed != 0:
+		_ws = GameState.pending_world_seed
+		GameState.pending_world_seed = 0       # zużyte — kolejna „Nowa gra" wylosuje świeży seed
+	elif SaveManager != null:
+		var _sd = SaveManager.load_character()
+		if _sd != null:
+			if _sd.world_seed != 0:
+				_ws = _sd.world_seed           # boot z zapisem -> TEN SAM świat (żeby Continue trafiło w zapis)
+			if _sd.class_id != &"" and GameState != null:
+				GameState.class_id = _sd.class_id   # ...i ta sama KLASA: model/zasób/drzewko budują się z zapisu
+	if OS.get_environment("PROBE_SEED") != "":
+		_ws = int(OS.get_environment("PROBE_SEED"))   # DEBUG (sonda): wymuś seed świata do zrzutów porównawczych
+	if RNGService != null:
+		RNGService.seed_session(_ws)
+
 	# KOLEJNOŚĆ (Faza 2B): świat PRZED środowiskiem — _setup_environment liczy zasięg mgły
 	# (fog_depth_end) z RZECZYWISTEGO far_dist instancji VoxelWorld (review #minor: wcześniej
 	# far_m był zahardkodowanym literałem 112 m i NIE śledził zmiany far_dist w inspektorze).
@@ -887,6 +909,10 @@ func _setup_world() -> void:
 	# Tworzymy menedżera świata. Materiały i szum konfiguruje sam w _ready().
 	_world = VoxelWorldScript.new()
 	_world.name = "VoxelWorld"
+	# BUGFIX seed: wstrzyknij world_seed PRZED add_child (czyli przed _ready/_setup_noise VoxelWorld),
+	# żeby cały szum (teren/biom/jaskinie) + feature_hash policzyły się z aktualnym seedem świata.
+	if RNGService != null:
+		_world.world_seed = RNGService.world_seed()
 	add_child(_world)
 	# add_child uruchamia _ready() VoxelWorld synchronicznie, więc szum/materiały
 	# są już gotowe — można od razu pytać o height_at() i wołać prime().
@@ -1171,10 +1197,16 @@ func _apply_roster(roster: Array) -> void:
 		if not want.has(int(pid)):
 			_despawn_remote_player(int(pid))
 
-# KLIENT: dostał seed świata od hosta -> przeseeduj RNG (już robi to NetManager) i odśwież świat
-# z tego samego ziarna. VoxelWorld generuje teren z FEATURE_SEED (stałe) — deterministyczny u każdego.
-func _on_world_seed_received(_seed: int) -> void:
-	pass    # teren jest deterministyczny z FEATURE_SEED; seed steruje loot/combat (RNGService już ustawiony)
+# KLIENT: dostał seed świata od hosta -> PRZEBUDUJ teren z TEGO ziarna. BUGFIX co-op: odkąd seedy są
+# losowane per świat (nie stałe FEATURE_SEED), klient budował własny teren w _ready i DESYNCHRONIZOWAŁ się
+# z hostem (pozycja/HP/loot zakładają identyczny lokalny teren). NetManager już przeseedował RNGService;
+# tu doganiamy VoxelWorld: regenerate_with_seed zrzuca chunki i re-prime'uje z seeda hosta. Klient robi to
+# PRZED rozgrywką (świeże dołączenie), więc bezpieczne (nie w trakcie streamingu pod biegnącym graczem).
+func _on_world_seed_received(seed_value: int) -> void:
+	if RNGService != null:
+		RNGService.seed_session(seed_value)        # idempotentne (NetManager już to zrobił) — pewność spójności
+	if _world != null and is_instance_valid(_world):
+		_world.regenerate_with_seed(seed_value)
 
 # Tworzy zdalną postać gracza (peer_id) w świecie. Owner = peer_id; host symuluje ją z inputu RPC,
 # inni klienci ją interpolują. NAZWA STABILNA "Player_<peer>" — IDENTYCZNA na wszystkich peerach
@@ -1491,8 +1523,14 @@ func _show_character_creator() -> void:
 		ui.character_created.connect(_on_character_created)
 	if ui.has_signal("cancelled"):
 		ui.cancelled.connect(_on_creator_cancelled)
-	# Menu chowamy, ale NIE odpauzowujemy (świat pod spodem ma stać). Kursor z powrotem widoczny —
-	# klik "Nowa gra" w menu przełączył go w CAPTURED.
+	# BUGFIX: MainMenu.hide_menu() ODPAUZOWUJE drzewo PRZED wyemitowaniem new_game_requested, więc świat
+	# tykał POD kreatorem (gracz spadał, wrogowie atakowali, czerwone flashe) — kreator wyglądał na zepsuty.
+	# Wymuszamy pauzę z powrotem: świat pod spodem ma STAĆ, dopóki gracz wybiera postać.
+	if GameState != null and GameState.has_method("set_paused"):
+		GameState.set_paused(true)
+	else:
+		get_tree().paused = true
+	# Menu chowamy (wizualnie) bez odpauzowania. Kursor z powrotem widoczny (menu przełączył go w CAPTURED).
 	if _main_menu != null and is_instance_valid(_main_menu):
 		_main_menu.visible = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -1524,6 +1562,9 @@ func _begin_new_game_reload() -> void:
 		NetManager.leave()
 	if GameState != null:
 		GameState.pending_new_game = true
+		# BUGFIX „ciągle ten sam świat": wylosuj ŚWIEŻY seed -> po reloadzie _ready zbuduje INNY świat.
+		# randi() 32-bit (< 2^53, bezpieczne w JSON zapisu). Przeżywa reload (autoload GameState).
+		GameState.pending_world_seed = randi()
 	get_tree().reload_current_scene()
 
 
@@ -1538,6 +1579,10 @@ func _enter_new_game() -> void:
 	if am != null:
 		am.play_music(&"explore")
 	_was_in_combat = false
+	# BUGFIX trwałość postaci: zapisz BAZĘ nowej postaci od razu (klasa + world_seed), żeby „Kontynuuj"
+	# przywróciło TĘ postać i TEN świat, nawet jeśli gracz wyjdzie natychmiast. write_progression_to_save
+	# zapisuje GameState.class_id + RNGService.world_seed().
+	_save_progression()
 
 
 ## START: Kontynuuj — wczytaj zapis postaci (poziom/xp/drzewko/waluty) na istniejącą postać, potem graj.

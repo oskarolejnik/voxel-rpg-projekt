@@ -97,7 +97,13 @@ const _HEIGHT_BLEND_FRAC: float = 0.18
 const KILL_PLANE_Y: float = -8.0         # poniżej tego Y „ratujemy” gracza
 
 # --- Deterministyczny hash pozycji świata -> [0,1). Stały seed => stabilny świat. ---
-const FEATURE_SEED: int = 0x9E37  # stały „ziarno” roślinności
+const FEATURE_SEED: int = 0x9E37  # bazowe „ziarno” roślinności (domyślny world_seed)
+
+# BUGFIX „ciągle ten sam świat": seed CAŁEGO świata w RUNTIME. _setup_noise wyprowadza z niego seedy
+# wszystkich szumów (teren/tint/biom/wilgotność/jaskinie), a feature_hash miesza go w roślinność/rudy/
+# propy — więc inny world_seed == INNY świat. Main ustawia go z RNGService PRZED add_child (czyli przed
+# _ready/_setup_noise). Domyślnie FEATURE_SEED, żeby tryb headless/probe (bez Main) miał stabilny świat.
+var world_seed: int = FEATURE_SEED
 
 # --- JASKINIE (worm-tunnels) + RUDY. Parametry w VOXELACH; czyste, deterministyczne (co-op-safe). ---
 const CAVE_MIN_DEPTH: int = 5            # nie drążymy płycej niż 5 voxeli pod powierzchnią (chroni skórę terenu)
@@ -186,7 +192,7 @@ func _ready() -> void:
 func _setup_noise() -> void:
 	_noise = FastNoiseLite.new()
 	_noise.noise_type = FastNoiseLite.TYPE_PERLIN
-	_noise.seed = 1337
+	_noise.seed = world_seed   # BUGFIX „ciągle ten sam świat": seed terenu z runtime world_seed (nie stała 1337)
 	# /2 względem 0.014: indeksy voxeli są 2× gęstsze na ten sam metr (VOXEL_SIZE=0.5),
 	# więc dzielimy częstotliwość, by wzgórza miały ten sam REALNY rozmiar.
 	_noise.frequency = 0.007
@@ -197,13 +203,13 @@ func _setup_noise() -> void:
 
 	_tint_noise = FastNoiseLite.new()
 	_tint_noise.noise_type = FastNoiseLite.TYPE_PERLIN
-	_tint_noise.seed = 9001
+	_tint_noise.seed = world_seed + 7766
 	# /2 względem 0.35: ziarno ma przypadać „na voxel”, a voxele są 2× gęstsze.
 	_tint_noise.frequency = 0.175
 
 	_biome_noise = FastNoiseLite.new()
 	_biome_noise.noise_type = FastNoiseLite.TYPE_PERLIN
-	_biome_noise.seed = 4242
+	_biome_noise.seed = world_seed + 2905
 	_biome_noise.frequency = 0.0025   # duże strefy biomów koloru (anty-powtarzalność) == TEMPERATURA
 
 	# ETAP 4: drugi niskoczęstotliwościowy szum = WILGOTNOŚĆ. Inny seed => niezależny od temperatury,
@@ -211,7 +217,7 @@ func _setup_noise() -> void:
 	# co _biome_noise (duże, czytelne strefy). Deterministyczny: stały seed -> stały podział z mapy.
 	_humid_noise = FastNoiseLite.new()
 	_humid_noise.noise_type = FastNoiseLite.TYPE_PERLIN
-	_humid_noise.seed = 2024
+	_humid_noise.seed = world_seed + 9134
 	_humid_noise.frequency = 0.0025
 
 	# --- JASKINIE: dwa zdekorelowane pola ridged. Karzemy tam, gdzie OBA |n| < próg (przecięcie
@@ -276,6 +282,44 @@ func _setup_materials() -> void:
 ## Podaje referencję gracza (woła Main.gd po spawnie).
 func set_player(p: Node3D) -> void:
 	_player = p
+
+
+## BUGFIX seed: ustawia world_seed; jeśli szum już skonfigurowany (_ready przeszedł), przelicza go.
+## Wołać PRZED add_child (Main._setup_world) lub przez regenerate_with_seed (przebudowa w locie).
+func set_world_seed(s: int) -> void:
+	world_seed = s
+	if _noise != null:
+		_setup_noise()
+
+
+## BUGFIX co-op + świeży świat: ustawia nowy seed i PRZEBUDOWUJE świat (zrzuca chunki + re-prime wokół
+## gracza). TYLKO główny wątek, w bezpiecznym momencie (init / Continue / dołączenie klienta co-op —
+## NIE w trakcie streamingu pod biegnącym graczem). Czeka na ukończenie zadań puli przed free (anty-UAF).
+func regenerate_with_seed(s: int) -> void:
+	set_world_seed(s)
+	# 1) Chunki w drzewie (sfinalizowane) — bezpieczny queue_free.
+	for coord in _loaded:
+		var ch: Node = _loaded[coord]
+		if is_instance_valid(ch):
+			ch.queue_free()
+	_loaded.clear()
+	# 2) Chunki z zadaniami w locie (poza drzewem) — dokończ zadanie (krótkie) i free uchwytu (anty-UAF).
+	for dict in [_pending, _abandoned, _rebuild]:
+		for coord in dict:
+			var entry: Dictionary = dict[coord]
+			if entry.has("task"):
+				WorkerThreadPool.wait_for_task_completion(entry["task"])
+			var node = entry.get("chunk")
+			if node != null and is_instance_valid(node):
+				node.free()
+		dict.clear()
+	# 3) Wymuś pełen re-streaming od zera.
+	_build_queue.clear()
+	_last_center = Vector2i(2147483647, 2147483647)
+	# 4) Odbuduj teren startowy wokół gracza (jeśli znany).
+	if _player != null and is_instance_valid(_player):
+		prime(world_to_chunk(_player.global_position), 1)
+
 
 ## Liczba aktualnie załadowanych chunków (diagnostyka).
 func get_loaded_count() -> int:
@@ -359,7 +403,7 @@ func tint_at(world_x: int, world_y: int, world_z: int) -> float:
 func feature_hash(wx: int, wz: int, salt: int = 0) -> float:
 	var h: int = wx * 73856093
 	h ^= wz * 19349663
-	h ^= (FEATURE_SEED + salt) * 83492791
+	h ^= (world_seed + salt) * 83492791   # world_seed (nie stała) => roślinność/rudy/propy też zależą od świata
 	h = (h ^ (h >> 13)) * 1274126177
 	h ^= (h >> 16)
 	# Maska do 30 bitów (dodatnie) i normalizacja do [0,1).

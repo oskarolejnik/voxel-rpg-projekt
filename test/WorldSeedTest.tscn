@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://test/WorldSeedTest.gd" id="1_seed"]
+
+[node name="WorldSeedTest" type="Node"]
+script = ExtResource("1_seed")

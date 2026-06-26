@@ -13,6 +13,10 @@ var paused: bool = false
 ## wie, że ma od razu wejść do świeżej gry (pominąć menu). Konsumowana w Main._setup_menus.
 var pending_new_game: bool = false
 
+## BUGFIX „ciągle ten sam świat": seed świeżego świata wylosowany na „Nowa gra". PRZEŻYWA reload
+## (autoload), więc po przeładowaniu Main wyprowadza z niego RNGService/VoxelWorld. 0 = brak (użyj zapisu).
+var pending_world_seed: int = 0
+
 ## TRUE gdy modalne UI (np. ekwipunek) lapie input — gracz NIE chodzi/skacze/sprintuje wtedy.
 ## Ustawiane przez InventoryUI._set_open(). Player.gd zeruje lokomocje, gdy to jest true. Jedno
 ## zrodlo prawdy "czy UI ma fokus", zeby ruch i kursor nie walczyly o input (Etap 2 review #4/#5).
