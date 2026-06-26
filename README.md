@@ -13,12 +13,14 @@ i właścicielem praw autorskich**.
 
 🟢 **W aktywnym rozwoju — grywalny szkielet action-RPG.** Silnik: **Godot 4.7 / GDScript**.
 Architektura **single-player-first** z trybem **co-op do 4 graczy** (listen-server).
-Projekt urósł daleko poza prototyp „Hello 3D": działa świat z biomami, progresja postaci,
-walka ze status-effectami, proceduralne lochy z bossami oraz trwały zapis gry.
+Projekt urósł daleko poza prototyp „Hello 3D": działa świat z biomami i podziemnymi
+jaskiniami, progresja postaci, walka ze status-effectami, proceduralne lochy z bossami
+oraz trwały zapis gry.
 
 ## ✨ Co już działa
 
 - **Świat i biomy** — voxelowy świat z 7 biomami i progresją trudności opartą o dystans od startu.
+- **Jaskinie i rudy** — proceduralnie drążone, połączone tunele i komory pod powierzchnią (deterministyczny szum 3D, w pełni chodliwe z kolizją) oraz żyły rud — miedź, żelazo, złoto — w pasmach głębokości o rosnącej rzadkości.
 - **Klasy i rozwój** — 11 klas postaci, każda z własnym drzewkiem umiejętności, plus kreator postaci.
 - **Walka** — system status-effectów (podpalenie, trucizna, krwawienie, spowolnienie, ogłuszenie, osłabienie) oraz „game feel" (hitstop, przerwanie postawy / poise-break, strafe).
 - **Lochy** — proceduralnie generowane lochy z mechanikami bossów (enrage / miniboss) i lootem z pomieszczeń.
