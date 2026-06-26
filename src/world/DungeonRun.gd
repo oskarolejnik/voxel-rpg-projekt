@@ -211,6 +211,7 @@ func _on_build_finished() -> void:
 		return
 	_spawned_content = true
 	_spawn_boss_door()
+	_spawn_torches()      # ART OVERHAUL: cieple pochodnie (atmosfera wnetrza), capped count
 	_spawn_enemies()
 	build_finished.emit()
 
@@ -313,6 +314,65 @@ func collect_key() -> void:
 ## Czy klucz zebrany (drzwi otwarte). Test/Main czytaja stan zamka.
 func has_key() -> bool:
 	return _has_key
+
+
+# ============================================================================
+#  ATMOSFERA — POCHODNIE (ART OVERHAUL)
+# ============================================================================
+
+## Maks. liczba pochodni w runie — TWARDY cap (budzet 4GB: OmniLight3D bez cieni jest tani,
+## ale nie chcemy dziesiatek punktowek w duzym ukladzie). Pierwszych N pokoi dostaje pochodnie.
+const MAX_TORCHES: int = 10
+
+## ART OVERHAUL: stawia kilka cieplych OmniLight3D w pokojach (atmosfera lochu — migotliwy bursztyn
+## kontra zimny voxel scian). CAPPED (MAX_TORCHES) + BEZ cieni (tanie na 4GB). Pochodnia = swiecaca
+## kostka + punktowe swiatlo nad podloga. Deterministyczne (kolejnosc pokoi z layoutu), wiec co-op-safe
+## (czysto wizualne — zero wplywu na stan/spawny). Pokoj bossa pomijamy (tam wlasna czerwona brama/aura).
+func _spawn_torches() -> void:
+	var rooms: Array = _layout["rooms"]
+	var placed := 0
+	for r in rooms:
+		if placed >= MAX_TORCHES:
+			break
+		if int(r["type"]) == RoomType_BOSS():
+			continue   # pokoj bossa ma wlasny akcent swietlny (brama/enrage aura)
+		var center := _room_floor_center(r)
+		# Pochodnia przy scianie (-X) pokoju, na wysokosci ~1.8 m (kinkiet), by oswietlala wnetrze.
+		var wall_off := Vector3(-float(DungeonGen.ROOM_W) * DungeonGen.VOXEL_SIZE * 0.35, 1.8, 0.0)
+		_make_torch(center + wall_off)
+		placed += 1
+
+
+## Tworzy jedna pochodnie: swiecaca kostka (kremowo-bursztynowy emiter) + cieple OmniLight3D bez cieni.
+## Pozycja LOKALNA (dziedziczy DUNGEON_ORIGIN rodzica). Tania: maly range, brak cieni, brak procesu.
+func _make_torch(local_pos: Vector3) -> void:
+	var holder := Node3D.new()
+	holder.name = "Torch"
+	holder.position = local_pos
+
+	# Wizualny "plomien": mala swiecaca kostka (unshaded-ish przez mocny emit).
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.18, 0.30, 0.18)
+	mi.mesh = bm
+	var fm := StandardMaterial3D.new()
+	fm.albedo_color = Color(1.0, 0.72, 0.34)
+	fm.emission_enabled = true
+	fm.emission = Color(1.0, 0.62, 0.26)
+	fm.emission_energy_multiplier = 3.0
+	mi.material_override = fm
+	holder.add_child(mi)
+
+	# Cieple swiatlo punktowe — BEZ cieni (tanie), umiarkowany zasieg (oswietla pokoj, nie caly run).
+	var light := OmniLight3D.new()
+	light.light_color = Color(1.0, 0.66, 0.34)
+	light.light_energy = 2.2
+	light.omni_range = 7.0
+	light.omni_attenuation = 1.4
+	light.shadow_enabled = false   # cap budzetu 4GB: pochodnie nie rzucaja cieni
+	holder.add_child(light)
+
+	add_child(holder)
 
 
 # ============================================================================

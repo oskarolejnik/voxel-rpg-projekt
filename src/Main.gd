@@ -37,6 +37,9 @@ var _player_ref: CharacterBody3D
 # Referencje środowiska — trzymane jako pola, bo DayNight je animuje co klatkę.
 var _sun: DirectionalLight3D
 var _sky_mat: ProceduralSkyMaterial
+# ART OVERHAUL: stylizowane niebo (chmury/gwiazdy/ksiezyc) z sky.gdshader. To ONO renderuje;
+# ProceduralSkyMaterial zostaje utworzone (kompatybilnosc DayNight), ale Sky uzywa shadera.
+var _sky_shader_mat: ShaderMaterial
 var _environment: Environment
 var _day_night: DayNight
 
@@ -734,14 +737,34 @@ func _setup_environment() -> void:
 	add_child(fill)
 
 	# --- Niebo proceduralne. Materiał w polu _sky_mat (DayNight zmienia kolory). ---
+	# UWAGA (ART OVERHAUL): ProceduralSkyMaterial TWORZYMY nadal (DayNight nadal je animuje —
+	# wsteczna zgodnosc + fallback), ale wlasciwym materialem Sky bedzie ShaderMaterial nizej.
 	_sky_mat = ProceduralSkyMaterial.new()
 	_sky_mat.sky_top_color = Color(0.18, 0.42, 0.78)
 	_sky_mat.sky_horizon_color = Color(0.72, 0.84, 0.95)
 	_sky_mat.ground_horizon_color = Color(0.72, 0.84, 0.95)
 	_sky_mat.ground_bottom_color = Color(0.22, 0.25, 0.28)
 	_sky_mat.sun_angle_max = 12.0
+
+	# ART OVERHAUL — stylizowane niebo z sky.gdshader (chmury + gwiazdy + ksiezyc). Budujemy
+	# ShaderMaterial defensywnie: jesli shader nie zaladuje sie (brak/blad importu), wracamy do
+	# ProceduralSkyMaterial => gra ZAWSZE bootuje z poprawnym niebem. DayNight._apply ustawia
+	# uniformy (top_color/horizon_color/night/sun_dir/moon_dir) jesli ten material istnieje.
 	var sky := Sky.new()
-	sky.sky_material = _sky_mat
+	var sky_shader: Shader = load("res://src/sky.gdshader") as Shader
+	if sky_shader != null:
+		_sky_shader_mat = ShaderMaterial.new()
+		_sky_shader_mat.shader = sky_shader
+		# Wartosci startowe (dzienne) — DayNight.setup() nadpisze je w klatce 0.
+		_sky_shader_mat.set_shader_parameter("top_color", Color(0.18, 0.42, 0.78))
+		_sky_shader_mat.set_shader_parameter("horizon_color", Color(0.72, 0.84, 0.95))
+		_sky_shader_mat.set_shader_parameter("night", 0.0)
+		_sky_shader_mat.set_shader_parameter("sun_dir", Vector3(0.0, 0.3, -1.0))
+		_sky_shader_mat.set_shader_parameter("moon_dir", Vector3(0.0, 0.4, 1.0))
+		sky.sky_material = _sky_shader_mat
+	else:
+		# Fallback boot-safe: brak shadera -> klasyczne proceduralne niebo (jak dotad).
+		sky.sky_material = _sky_mat
 
 	# --- Środowisko: oświetlenie globalne + atmosfera + kolor filmowy. Pole _environment. ---
 	_environment = Environment.new()
@@ -852,7 +875,8 @@ func _setup_environment() -> void:
 	_day_night = DayNightScript.new()
 	_day_night.name = "DayNight"
 	add_child(_day_night)
-	_day_night.setup(_sun, _environment, _sky_mat)
+	# ART OVERHAUL: przekazujemy tez ShaderMaterial nieba (moze byc null — DayNight to obsluzy).
+	_day_night.setup(_sun, _environment, _sky_mat, _sky_shader_mat)
 
 func _setup_world() -> void:
 	# Tworzymy menedżera świata. Materiały i szum konfiguruje sam w _ready().

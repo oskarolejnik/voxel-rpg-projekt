@@ -26,6 +26,10 @@ var time_of_day: float = 0.42
 var _sun: DirectionalLight3D
 var _env: Environment
 var _sky: ProceduralSkyMaterial
+# ART OVERHAUL: opcjonalny ShaderMaterial stylizowanego nieba (sky.gdshader). Gdy != null,
+# _apply ustawia tez jego uniformy (top_color/horizon_color/night/sun_dir/moon_dir). Gdy null —
+# stara sciezka (tylko ProceduralSkyMaterial), wiec brak shadera NIE psuje cyklu doby.
+var _sky_shader: ShaderMaterial = null
 
 # Cache stanu cieni — przełączamy shadow_enabled tylko przy realnej zmianie,
 # zamiast pisać tę samą wartość co klatkę. (-1 = nieznane, wymusza pierwsze ustawienie.)
@@ -137,10 +141,13 @@ const _FOG_DENSITY_DEPTH: Array[float] = [ 1.00, 0.96, 0.92, 0.96, 1.00 ]
 
 ## Wstrzykuje referencje, ustawia porę startową i robi pierwszy _apply,
 ## żeby scena była poprawna już w klatce 0 (bez „mignięcia” wartości z Main).
-func setup(sun: DirectionalLight3D, environment: Environment, sky_material: ProceduralSkyMaterial) -> void:
+## sky_shader (opcjonalny): ShaderMaterial z sky.gdshader. Gdy podany, _apply steruje tez jego
+## uniformami. Domyslnie null => wsteczna zgodnosc (tylko ProceduralSkyMaterial).
+func setup(sun: DirectionalLight3D, environment: Environment, sky_material: ProceduralSkyMaterial, sky_shader: ShaderMaterial = null) -> void:
 	_sun = sun
 	_env = environment
 	_sky = sky_material
+	_sky_shader = sky_shader
 	time_of_day = fposmod(start_time, 1.0)
 	_apply(time_of_day)
 
@@ -180,6 +187,28 @@ func _sun_azimuth_deg(t: float) -> float:
 	return lerpf(-40.0, -220.0, t)
 
 
+## ART OVERHAUL: czynnik nocy 0..1 dla shadera nieba. 1 okolo polnocy (t≈0/1 — keyframe NOC),
+## 0 w dzien (t≈0.5). Plynne wstanie gwiazd/ksiezyca o zmierzchu; spojne z keyframe'ami doby
+## (NOC=0.0, ŚWIT=0.22, DZIEŃ=0.50, ZACHÓD=0.78). smoothstep'y daja miekkie progi.
+func _night_factor(t: float) -> float:
+	# Odleglosc fazowa od polnocy (t=0) po petli doby: 0 o polnocy, 0.5 w poludnie.
+	var d := minf(t, 1.0 - t)   # 0 przy t=0/1, 0.5 przy t=0.5
+	# Pelna noc dla d <= 0.08 (gleboka noc, gwiazdy+ksiezyc), pelny dzien dla d >= 0.20 (przed ŚWIT 0.22
+	# i po ZACHÓD 0.78, gdzie d≈0.22). Dzieki temu probe "gold" (t=0.76, d=0.24) ma night≈0 (czyste,
+	# cieple niebo z chmurami), a probe "night" (t=0.0, d=0) ma night=1 (gwiazdy + ksiezyc).
+	return 1.0 - smoothstep(0.08, 0.20, d)
+
+
+## ART OVERHAUL: kierunek jednostkowy z elewacji (stopnie nad horyzontem) i azymutu (stopnie wokol Y).
+## Uzywany do sun_dir/moon_dir w sky.gdshader. Spojne z osiami sceny (przod = -Z): wektor patrzenia
+## ku zrodlu swiatla, znormalizowany. Tani (kilka trig na klatke).
+func _dir_from_angles(elev_deg: float, azim_deg: float) -> Vector3:
+	var el := deg_to_rad(elev_deg)
+	var az := deg_to_rad(azim_deg)
+	var ce := cos(el)
+	return Vector3(ce * sin(az), sin(el), -ce * cos(az)).normalized()
+
+
 ## Cała interpolacja i przypisanie do sun/env/sky.
 func _apply(t: float) -> void:
 	var seg := _segment(t)
@@ -204,10 +233,24 @@ func _apply(t: float) -> void:
 		_shadow_state = want_shadow
 
 	# (d) niebo.
-	_sky.sky_top_color = _SKY_TOP[i].lerp(_SKY_TOP[j], f)
+	var top_c := _SKY_TOP[i].lerp(_SKY_TOP[j], f)
 	var horiz := _SKY_HORIZON[i].lerp(_SKY_HORIZON[j], f)
+	_sky.sky_top_color = top_c
 	_sky.sky_horizon_color = horiz
 	_sky.ground_horizon_color = horiz   # spójny horyzont góra/dół
+
+	# (d2) ART OVERHAUL — STYLIZOWANE NIEBO: te same kolory pory doby + night/sun_dir/moon_dir lecą
+	# do uniformow sky.gdshader (chmury/gwiazdy/ksiezyc). Gated na _sky_shader != null => brak shadera
+	# nie psuje niczego. night liczone z time_of_day (1 okolo polnocy, 0 w dzien) — patrz _night_factor.
+	if _sky_shader != null:
+		_sky_shader.set_shader_parameter("top_color", top_c)
+		_sky_shader.set_shader_parameter("horizon_color", horiz)
+		_sky_shader.set_shader_parameter("night", _night_factor(t))
+		# Kierunek slonca z elewacji+azymutu (jednostkowy). rotation_degrees.x = -elev (patrz wyzej),
+		# wiec kierunek "do slonca" odbudowujemy z tych samych katow. azim w stopniach (wokol Y).
+		_sky_shader.set_shader_parameter("sun_dir", _dir_from_angles(elev, azim))
+		# Ksiezyc PRZECIWNIE do slonca (po drugiej stronie nieba) => widoczny noca, gdy slonce pod ziemia.
+		_sky_shader.set_shader_parameter("moon_dir", _dir_from_angles(-elev, azim + 180.0))
 
 	# (e) ambient — energia + KOLOR (ART OVERHAUL: księżycowy nocny tint przez sky_contribution<1).
 	_env.ambient_light_energy = lerpf(_AMBIENT[i], _AMBIENT[j], f)
