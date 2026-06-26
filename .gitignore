@@ -29,3 +29,7 @@ Cargo.lock
 
 # --- Pliki źródłowe assetów: TRZYMAMY w repo (dowód autorstwa) ---
 # NIE ignorujemy .vox / .blend / projektów audio — to nasz łańcuch praw.
+
+# Probe/screenshot artifacts (debug renders)
+_shot*.png
+_hud_shot.png

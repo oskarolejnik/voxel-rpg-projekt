@@ -19,6 +19,7 @@ oraz trwały zapis gry.
 
 ## ✨ Co już działa
 
+- **Tożsamość wizualna „Storybook Voxel"** — spójny, stylizowany look (malarska bryła bez tekstur, tożsamość przez sylwetkę + kolor + blask): 11 klas z odrębną paletą + naramiennikami wg pancerza + nakryciem głowy (hełm/kaptur/kapelusz maga) + świecącym akcentem; atmosferyczne światło (księżycowa noc, złota godzina z god-rays, paleta per biom); szum nieba z chmurami/gwiazdami/księżycem; mikro-voxelowe pnie; juice walki (iskry flash-to-fade, efektowne zgony). Pełny kierunek w [`docs/ART-DIRECTION-BIBLE.md`](docs/ART-DIRECTION-BIBLE.md).
 - **Świat i biomy** — voxelowy świat z 7 biomami i progresją trudności opartą o dystans od startu.
 - **Jaskinie i rudy** — proceduralnie drążone, połączone tunele i komory pod powierzchnią (deterministyczny szum 3D, w pełni chodliwe z kolizją) oraz żyły rud — miedź, żelazo, złoto — w pasmach głębokości o rosnącej rzadkości.
 - **Klasy i rozwój** — 11 klas postaci, każda z własnym drzewkiem umiejętności, plus kreator postaci.
