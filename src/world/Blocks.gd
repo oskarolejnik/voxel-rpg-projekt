@@ -12,7 +12,9 @@ extends RefCounted
 # zgodność bajtów wstecz (AIR=0..LEAVES=8 bez zmian; nowe = 9,10).
 #   LEAVES_AUTUMN — jesienne, ciepłe drzewa (~10% lasu)
 #   ROCK_MOSSY    — głazy z porostem (~20% kamieni)
-enum Type { AIR, WATER, SAND, GRASS, DIRT, ROCK, SNOW, WOOD, LEAVES, LEAVES_AUTUMN, ROCK_MOSSY }
+#   ORE_COPPER/IRON/GOLD — rudy w skale jaskiń (dosypane NA KOŃCU: bajty 11,12,13; saved
+#   PackedByteArray AIR..ROCK_MOSSY bez zmian). Renderowane jak skała z odcieniem minerału.
+enum Type { AIR, WATER, SAND, GRASS, DIRT, ROCK, SNOW, WOOD, LEAVES, LEAVES_AUTUMN, ROCK_MOSSY, ORE_COPPER, ORE_IRON, ORE_GOLD }
 
 # Bazowe kolory bloków. Albedo bierzemy z koloru wierzchołka (vertex_color_use_as_albedo),
 # więc tu definiujemy „bazę”, a drobne wariacje (mikro-szum, pseudo-AO) dokładamy przy meshowaniu.
@@ -35,6 +37,10 @@ const COLORS: Dictionary = {
 	# --- Warianty propów (Cube World) ---
 	Type.LEAVES_AUTUMN: Color(0.62, 0.36, 0.12),  # jesienne liście — ciepły bursztyn/miedź
 	Type.ROCK_MOSSY:    Color(0.36, 0.42, 0.34),  # głaz z porostem — szarozielony
+	# --- Rudy jaskiniowe (mineralne plamki w szarej skale ROCK 0.46/0.46/0.50; przygaszone < glow knee) ---
+	Type.ORE_COPPER:    Color(0.55, 0.42, 0.30),  # rdzawo-miedziany akcent w skale
+	Type.ORE_IRON:      Color(0.52, 0.50, 0.47),  # blady stalowo-szary, ledwie cieplejszy od ROCK (częsty, subtelny)
+	Type.ORE_GOLD:      Color(0.74, 0.62, 0.30),  # przygaszone antyczne złoto, zdesaturowane (rzadkie, głębokie)
 }
 
 # --- Kolory kotwiczne gradientu trawy (nizina -> wyżyna). Cube World mocno różnicuje
@@ -115,6 +121,10 @@ static func biome_modulate(c: Color, biome: StringName) -> Color:
 ## Nowe warianty (LEAVES_AUTUMN, ROCK_MOSSY) automatycznie zwracają true.
 static func is_solid(t: int) -> bool:
 	return t != Type.AIR and t != Type.WATER
+
+## Czy typ to ruda jaskiniowa (renderowana własnym kolorem minerału, BEZ modulacji biomu/trawy).
+static func is_ore(t: int) -> bool:
+	return t == Type.ORE_COPPER or t == Type.ORE_IRON or t == Type.ORE_GOLD
 
 ## Kolor bazowy danego typu (z bezpiecznym fallbackiem na biel, gdyby ktoś podał AIR).
 static func color_of(t: int) -> Color:

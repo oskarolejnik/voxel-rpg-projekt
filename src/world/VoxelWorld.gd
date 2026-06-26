@@ -99,6 +99,17 @@ const KILL_PLANE_Y: float = -8.0         # poniżej tego Y „ratujemy” gracza
 # --- Deterministyczny hash pozycji świata -> [0,1). Stały seed => stabilny świat. ---
 const FEATURE_SEED: int = 0x9E37  # stały „ziarno” roślinności
 
+# --- JASKINIE (worm-tunnels) + RUDY. Parametry w VOXELACH; czyste, deterministyczne (co-op-safe). ---
+const CAVE_MIN_DEPTH: int = 5            # nie drążymy płycej niż 5 voxeli pod powierzchnią (chroni skórę terenu)
+const CAVE_BEDROCK_TOP: int = 3          # voxele 0..3 NIGDY nie wycinane => ciągła płyta bedrock (anty-kill-plane)
+const CAVE_TUNNEL_T: float = 0.12        # półszerokość izopasma {|n|<T} każdego pola FBM; przecięcie dwóch => kręte korytarze ~3-6 voxeli (chodliwe)
+const CAVE_CHAMBER_T: float = 0.86       # próg cellular dla komór (rzadkie); wyżej => rzadsze/mniejsze
+const CAVE_CHAMBER_FALLOFF_BIAS: float = 0.10  # komory zwężają się szybciej niż tunele przy skórze/bedrock
+# Disjunktywne sole rudy (świeży zakres 210+; niezależne od soli roślinności/propów).
+const SALT_ORE_COPPER: int = 210
+const SALT_ORE_IRON: int = 211
+const SALT_ORE_GOLD: int = 212
+
 # --- ETAP 4: identyfikatory biomów (StringName). Spójne z BiomeResource.id i loot_biome wroga.
 #   verdant   = Verdant Hollow (umiarkowany, tier 1, start)
 #   emberwaste= Emberwaste     (pustynia/ogień, tier 2, mid)
@@ -121,6 +132,12 @@ var _noise: FastNoiseLite
 var _tint_noise: FastNoiseLite
 var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C) == temperatura (Etap 4)
 var _humid_noise: FastNoiseLite   # ETAP 4: wilgotność (drugi wymiar podziału biomów)
+# JASKINIE: dwa zdekorelowane pola ridged (przecięcie izopowierzchni ~0 = tunele) + cellular na komory.
+# Konfigurowane RAZ w _setup_noise, potem TYLKO odczyt (is_cave/ore_at) z wątku roboczego — ten sam
+# kontrakt thread-safe co _noise/_biome_noise (żadnych mutacji po starcie).
+var _cave_a: FastNoiseLite
+var _cave_b: FastNoiseLite
+var _cave_chamber: FastNoiseLite
 
 # Słownik załadowanych (W DRZEWIE + sfinalizowanych) chunków: Vector2i -> VoxelChunk.
 var _loaded: Dictionary = {}
@@ -196,6 +213,41 @@ func _setup_noise() -> void:
 	_humid_noise.noise_type = FastNoiseLite.TYPE_PERLIN
 	_humid_noise.seed = 2024
 	_humid_noise.frequency = 0.0025
+
+	# --- JASKINIE: dwa zdekorelowane pola ridged. Karzemy tam, gdzie OBA |n| < próg (przecięcie
+	# izopowierzchni ~0 daje krzywe 1D w 3D => długie, rozgałęzione, POŁĄCZONE tunele — nie bąble).
+	# Seedy pochodne od _noise.seed (1337) przez stałe offsety prime => zmiana seeda świata propaguje,
+	# determinizm zachowany. Voxele 2× gęstsze (VOXEL_SIZE=0.5) => freq już „połowiona” vs siatka 1 m.
+	# FBM (NIE ridged): FBM jest wyśrodkowane na 0, więc izopowierzchnia {n~0} realnie istnieje, a
+	# przecięcie DWÓCH takich (oba |n|<próg) daje krzywą 1D = kręty tunel. Ridged jest „prostowane"
+	# ku ekstremom => |n|<próg prawie nigdy nie zachodzi (świat wychodził lity — 0% wyciętych).
+	_cave_a = FastNoiseLite.new()
+	_cave_a.noise_type = FastNoiseLite.TYPE_PERLIN
+	_cave_a.seed = _noise.seed + 7001
+	_cave_a.frequency = 0.018
+	_cave_a.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_cave_a.fractal_octaves = 2
+	_cave_a.fractal_lacunarity = 2.0
+	_cave_a.fractal_gain = 0.5
+
+	_cave_b = FastNoiseLite.new()
+	_cave_b.noise_type = FastNoiseLite.TYPE_PERLIN
+	_cave_b.seed = _noise.seed + 7919     # inny prime => pole zdekorelowane od _cave_a
+	_cave_b.frequency = 0.021             # lekko inna freq łamie wyrównanie do osi
+	_cave_b.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_cave_b.fractal_octaves = 2
+	_cave_b.fractal_lacunarity = 2.0
+	_cave_b.fractal_gain = 0.5
+
+	# Komory: rzadkie, niskoczęstotliwościowe pole cellular (RETURN_DISTANCE ~[0,1]; wysokie = pokój).
+	# OR-owane z tunelami => każda komora łączy się z tunelem, który przez nią przechodzi.
+	_cave_chamber = FastNoiseLite.new()
+	_cave_chamber.noise_type = FastNoiseLite.TYPE_CELLULAR
+	_cave_chamber.seed = _noise.seed + 5113
+	_cave_chamber.frequency = 0.012
+	_cave_chamber.cellular_distance_function = FastNoiseLite.DISTANCE_EUCLIDEAN
+	_cave_chamber.cellular_return_type = FastNoiseLite.RETURN_DISTANCE
+	_cave_chamber.fractal_type = FastNoiseLite.FRACTAL_NONE
 
 
 # --- Konfiguracja materiałów ---
@@ -312,6 +364,62 @@ func feature_hash(wx: int, wz: int, salt: int = 0) -> float:
 	h ^= (h >> 16)
 	# Maska do 30 bitów (dodatnie) i normalizacja do [0,1).
 	return float(h & 0x3FFFFFFF) / float(0x40000000)
+
+
+## JASKINIE: czy podpowierzchniowy voxel (wx,wy,wz) pod surface_y ma być wycięty na AIR.
+## Czysty, deterministyczny odczyt niemutowanych szumów (jak surface_height) — bezpieczny z wątku
+## roboczego chunku i co-op-safe. Karzemy tam, gdzie OBA pola ridged są ~0 (kręty tunel) LUB rzadka
+## komora cellular. Bramki (głębokość/bedrock/falloff) jako TANIE early-outy PRZED próbkowaniem szumu.
+func is_cave(wx: int, wy: int, wz: int, surface_y: int) -> bool:
+	var depth := surface_y - wy
+	if depth < CAVE_MIN_DEPTH:
+		return false                       # chroń skórę powierzchni (5 voxeli)
+	if wy <= CAVE_BEDROCK_TOP:
+		return false                       # podłoga bedrock nigdy nie wycinana (y<=3)
+	var fall := _cave_falloff(wy, surface_y)   # [0,1], 0 przy skórze/bedrock, 1 w środku pasma
+	if fall <= 0.0:
+		return false
+	var fwy := float(wy)
+	var a := absf(_cave_a.get_noise_3d(float(wx), fwy, float(wz)))
+	var t := CAVE_TUNNEL_T * fall          # efektywna półszerokość, zwężana przez falloff
+	if a < t:
+		var b := absf(_cave_b.get_noise_3d(float(wx), fwy, float(wz)))
+		if b < t:
+			return true                    # oba grzbiety ~0 => korytarz
+	# Komora tylko gdy NIE jest już tunelem (early-out trzyma koszt nisko).
+	var ch := _cave_chamber.get_noise_3d(float(wx), fwy, float(wz))   # cellular ~[0,1]
+	if ch > (CAVE_CHAMBER_T + (1.0 - fall) * CAVE_CHAMBER_FALLOFF_BIAS):
+		return true                        # rzadka komora; OR z tunelami => pokoje są połączone
+	return false
+
+
+## Trójkątny falloff pionowy: 0 przy linii min-depth i przy bedrock, narasta do 1 w środku pasma.
+## Skaluje próg tunelu i biasuje próg komory => jaskinie ZWĘŻAJĄ się ku górze i dołowi (bez płaskich
+## wyciętych sufitów/podłóg). Czysta funkcja (wy, surface_y).
+func _cave_falloff(wy: int, surface_y: int) -> float:
+	var top := surface_y - CAVE_MIN_DEPTH
+	var bot := CAVE_BEDROCK_TOP
+	if top - bot < 4:
+		return 0.0                         # kolumna za płytka na jaskinię
+	var span := float(top - bot)
+	var d_top := float(top - wy) / span
+	var d_bot := float(wy - bot) / span
+	return clampf(minf(d_top, d_bot) * 2.2, 0.0, 1.0)
+
+
+## RUDY: zwraca typ rudy (Blocks.Type) dla zachowanego voxela skały albo -1. Deterministyczny
+## integer feature_hash (BEZ czwartego szumu) — Y złożone w 2. argument (feature_hash jest 2D) dla
+## dekorelacji per-voxel. Rzadkość rosnąca: gold > iron > copper (najrzadszy sprawdzany pierwszy).
+func ore_at(wx: int, wy: int, wz: int, surface_y: int) -> int:
+	var depth := surface_y - wy
+	if wy >= CAVE_BEDROCK_TOP + 1 and wy <= CAVE_BEDROCK_TOP + 14 and depth >= 20 \
+			and feature_hash(wx, wz * 7 + wy, SALT_ORE_GOLD) < 0.006:
+		return Blocks.Type.ORE_GOLD
+	if depth >= 12 and depth <= 40 and feature_hash(wx, wz * 5 + wy, SALT_ORE_IRON) < 0.022:
+		return Blocks.Type.ORE_IRON
+	if depth >= 6 and depth <= 24 and feature_hash(wx, wz * 3 + wy, SALT_ORE_COPPER) < 0.040:
+		return Blocks.Type.ORE_COPPER
+	return -1
 
 
 ## Wysokość (Y wierzchu terenu, w metrach) dla pozycji w metrach — do spawnu gracza.

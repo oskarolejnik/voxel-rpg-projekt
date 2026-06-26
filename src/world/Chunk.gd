@@ -366,12 +366,24 @@ func _generate_data(world: VoxelWorld) -> void:
 			_heightmap[x + CHUNK_SIZE * z] = sy
 			_biomemap[x + CHUNK_SIZE * z] = _biome_to_byte(world.get_biome(wx, wz))
 
-			# Kolumna stałych bloków od 0 do sy włącznie.
+			# Kolumna stałych bloków od 0 do sy włącznie. JASKINIE: w warstwie SKAŁY (ROCK) wycinamy
+			# AIR wg world.is_cave (drążenie tylko ROCK => skóra DIRT/powierzchni i propy nietknięte),
+			# a pozostałą skałę okazjonalnie zamieniamy w rudę (ore_at). Kolumny POD WODĄ (sy<SEA_LEVEL)
+			# NIE drążymy => żadna kieszeń powietrza pod taflą (woda nie wlewa się do jaskiń).
+			var submerged := sy < SEA_LEVEL
 			for y in range(0, sy + 1):
-				_set_voxel(x, y, z, _block_for(y, sy))
+				var t := _block_for(y, sy)
+				if t == Blocks.Type.ROCK and not submerged:
+					if world.is_cave(wx, y, wz, sy):
+						t = Blocks.Type.AIR                  # wytnij korytarz/komorę
+					else:
+						var o := world.ore_at(wx, y, wz, sy)  # ruda tylko w zachowanej skale (ściany tuneli)
+						if o != -1:
+							t = o
+				_set_voxel(x, y, z, t)
 
 			# Woda: jeśli powierzchnia jest poniżej poziomu morza, zalewamy puste warstwy.
-			if sy < SEA_LEVEL:
+			if submerged:
 				for y in range(sy + 1, SEA_LEVEL + 1):
 					_set_voxel(x, y, z, Blocks.Type.WATER)
 
@@ -1288,6 +1300,13 @@ func _solid_color(world: VoxelWorld, t: int, x: int, y: int, z: int) -> Color:
 	var wx := _coord.x * CHUNK_SIZE + x
 	var wz := _coord.y * CHUNK_SIZE + z
 	var base := Blocks.color_of(t)
+
+	# RUDA: własny kolor minerału + tylko lokalny mikro-tint. BEZ gradientu trawy, BEZ biome_modulate
+	# (żyła rudy ma być czytelna pod ziemią niezależnie od biomu POWIERZCHNI kolumny — inaczej miedź
+	# robiłaby się błękitna we Frosthelm / pomarańczowa w Emberwaste).
+	if Blocks.is_ore(t):
+		var ov := world.tint_at(wx, y, wz)   # ~[-0.055, 0.055]
+		return Color(clampf(base.r + ov, 0.0, 1.0), clampf(base.g + ov, 0.0, 1.0), clampf(base.b + ov, 0.0, 1.0), base.a)
 
 	# Gradient trawy nizina -> wyżyna (kotwice z Blocks; progi z JEDNEGO źródła prawdy).
 	if t == Blocks.Type.GRASS:
