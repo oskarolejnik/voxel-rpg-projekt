@@ -17,6 +17,13 @@ var pending_new_game: bool = false
 ## (autoload), więc po przeładowaniu Main wyprowadza z niego RNGService/VoxelWorld. 0 = brak (użyj zapisu).
 var pending_world_seed: int = 0
 
+## ROSTER postaci: aktywny slot (== nazwa postaci) i nazwa wyświetlana. PRZEŻYWAJĄ reload (autoload),
+## więc SaveManager.current_char_path() i Main._ready czytają TEN slot po przeładowaniu. Puste => legacy.
+var current_character: String = ""
+var char_name: String = ""
+## Wybór postaci z rostera: po reloadzie wejdź do gry tej postaci (wczytaj progresję), pomijając menu.
+var pending_continue: bool = false
+
 ## TRUE gdy modalne UI (np. ekwipunek) lapie input — gracz NIE chodzi/skacze/sprintuje wtedy.
 ## Ustawiane przez InventoryUI._set_open(). Player.gd zeruje lokomocje, gdy to jest true. Jedno
 ## zrodlo prawdy "czy UI ma fokus", zeby ruch i kursor nie walczyly o input (Etap 2 review #4/#5).

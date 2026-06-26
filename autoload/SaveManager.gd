@@ -32,19 +32,62 @@ func _ensure_dir() -> void:
 #  POSTAC
 # ============================================================================
 
-## Zapisuje POSTAC z SaveData do JSON. Zwraca true przy sukcesie.
-func save_character(data: SaveData, path: String = CHAR_PATH) -> bool:
-	return _write_json(path, _character_dict(data))
+## ROSTER: slug nazwy -> bezpieczny identyfikator slotu (folder). Puste => "postac".
+func slot_slug(name: String) -> String:
+	var s := name.strip_edges().to_lower().replace(" ", "_")
+	var out := ""
+	for ch in s:
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "_" or ch == "-":
+			out += ch
+	return out if out != "" else "postac"
+
+
+## ROSTER: ścieżka zapisu AKTYWNEJ postaci. Slot z GameState.current_character (per-postać świat);
+## gdy brak (legacy / pierwsze uruchomienie) -> pojedynczy CHAR_PATH (wstecz-kompatybilność).
+func current_char_path() -> String:
+	if GameState != null and GameState.current_character != "":
+		return "%s/%s/character.json" % [SAVE_DIR, slot_slug(GameState.current_character)]
+	return CHAR_PATH
+
+
+## Zapisuje POSTAC z SaveData do JSON. Zwraca true przy sukcesie. path="" => slot aktywnej postaci.
+func save_character(data: SaveData, path: String = "") -> bool:
+	var p := path if path != "" else current_char_path()
+	return _write_json(p, _character_dict(data))
 
 
 ## Wczytuje POSTAC. Zwraca SaveData albo null gdy brak pliku. Przy uszkodzeniu pliku próbuje .bak
-## (zamiast cichego startu nowej postaci) — patrz _read_json_or_backup.
-func load_character(path: String = CHAR_PATH) -> SaveData:
-	var d := _read_json_or_backup(path)
+## (zamiast cichego startu nowej postaci) — patrz _read_json_or_backup. path="" => slot aktywnej postaci.
+func load_character(path: String = "") -> SaveData:
+	var p := path if path != "" else current_char_path()
+	var d := _read_json_or_backup(p)
 	if d.is_empty():
 		return null
 	d = _migrate(d)
 	return SaveData.from_dict(d)
+
+
+## ROSTER: lista wszystkich zapisanych postaci (SaveData z char_name/class_id/level/world_seed).
+## Skanuje podfoldery user://saves/<slot>/character.json + ewentualny legacy user://saves/character.json.
+func list_characters() -> Array:
+	var out: Array = []
+	var dir := DirAccess.open(SAVE_DIR)
+	if dir != null:
+		dir.list_dir_begin()
+		var entry := dir.get_next()
+		while entry != "":
+			if dir.current_is_dir() and entry != "." and entry != "..":
+				var sd := load_character("%s/%s/character.json" % [SAVE_DIR, entry])
+				if sd != null:
+					out.append(sd)
+			entry = dir.get_next()
+		dir.list_dir_end()
+	# Legacy pojedynczy slot (sprzed rostera) — dołącz, jeśli istnieje i nie zdublowany.
+	if FileAccess.file_exists(CHAR_PATH):
+		var leg := load_character(CHAR_PATH)
+		if leg != null:
+			out.append(leg)
+	return out
 
 
 # ============================================================================
@@ -73,7 +116,9 @@ func load_world(path: String = WORLD_PATH) -> SaveData:
 ## Pelny dict z SaveData, ale TYLKO pola postaci (+ version). Swiat pomijamy (przenosnosc postaci).
 func _character_dict(data: SaveData) -> Dictionary:
 	var full := data.to_dict()
-	for world_key in ["world_seed", "world_changes", "discovered_chunks", "world_entities", "play_time"]:
+	# BUGFIX: world_seed ZOSTAJE w zapisie postaci — każda postać ma SWÓJ świat (roster + „Kontynuuj"
+	# wraca do tego samego świata). Ciężki stan świata (zmiany/odkryte chunki) nadal pomijamy.
+	for world_key in ["world_changes", "discovered_chunks", "world_entities", "play_time"]:
 		full.erase(world_key)
 	return full
 
@@ -88,6 +133,10 @@ func _world_dict(data: SaveData) -> Dictionary:
 ## stary albo .bak), zamiast — jak dawniej — zostawić obciętą połówkę po truncate-in-place.
 func _write_json(path: String, dict: Dictionary) -> bool:
 	_ensure_dir()
+	# ROSTER: utwórz katalog SLOTU (np. user://saves/<slug>/) jeśli zapis idzie do podfolderu postaci.
+	var base := path.get_base_dir()
+	if base != "" and not DirAccess.dir_exists_absolute(base):
+		DirAccess.make_dir_recursive_absolute(base)
 	var tmp := path + ".tmp"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:

@@ -795,6 +795,9 @@ func write_progression_to_save(sd: SaveData) -> void:
 	if sd == null:
 		return
 	sd.class_id = GameState.class_id if GameState != null else &"wojownik"
+	# ROSTER: nazwa wyświetlana postaci (do ekranu wyboru). Z GameState (ustawiona przez kreator).
+	if GameState != null and GameState.char_name != "":
+		sd.char_name = GameState.char_name
 	# BUGFIX „ciągle ten sam świat": utrwal SEED świata w zapisie postaci, by „Kontynuuj" odtworzyło
 	# TEN SAM świat (Main._ready czyta sd.world_seed i seeduje VoxelWorld). Bez tego autosave zerował seed.
 	if RNGService != null:

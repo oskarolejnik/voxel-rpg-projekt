@@ -146,10 +146,10 @@ func _on_new_game() -> void:
 	new_game_requested.emit()
 
 
+## „Kontynuuj" -> ROSTER postaci (Main pokazuje CharacterSelectUI NAD menu). NIE chowamy menu ani nie
+## odpauzowujemy — wejście do gry następuje dopiero po wybraniu postaci.
 func _on_continue() -> void:
 	_click()
-	hide_menu()
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	continue_requested.emit()
 
 

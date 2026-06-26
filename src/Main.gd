@@ -29,6 +29,7 @@ const LobbyUIScript := preload("res://src/LobbyUI.gd")
 const MainMenuScript := preload("res://src/MainMenu.gd")
 const PauseMenuScript := preload("res://src/PauseMenu.gd")
 const CharacterCreatorUIScript := preload("res://src/CharacterCreatorUI.gd")
+const CharacterSelectUIScript := preload("res://src/CharacterSelectUI.gd")
 
 # Referencje przechowywane jako pola — VoxelWorld potrzebuje gracza do streamingu.
 var _world: VoxelWorld
@@ -95,6 +96,7 @@ var _remote_players: Dictionary = {}        # int(peer) -> CharacterBody3D (zdal
 var _main_menu: CanvasLayer
 var _pause_menu: CanvasLayer
 var _creator: CanvasLayer        # nakładka kreatora postaci (nad HUD), pokazywana na "Nowa gra"
+var _char_select: CanvasLayer    # ROSTER: nakładka wyboru postaci, pokazywana na "Kontynuuj"
 var _was_in_combat: bool = false            # do przelaczania muzyki explore<->combat
 var _music_check_accum: float = 0.0         # throttling sprawdzania kontekstu muzyki
 
@@ -1506,6 +1508,18 @@ func _setup_menus() -> void:
 	if GameState != null and GameState.pending_new_game:
 		GameState.pending_new_game = false
 		_enter_new_game()
+	# ROSTER: po reloadzie z wyboru postaci — wczytaj jej progresję i wejdź do gry (świat już zbudowany
+	# z seeda tej postaci w _ready). Pomija menu.
+	elif GameState != null and GameState.pending_continue:
+		GameState.pending_continue = false
+		_load_character_save()
+		if _main_menu != null and is_instance_valid(_main_menu) and _main_menu.has_method("hide_menu"):
+			_main_menu.hide_menu()
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		var am := _audio_manager()
+		if am != null:
+			am.play_music(&"explore")
+		_was_in_combat = false
 
 
 ## START: Nowa gra — ŚWIEŻY start. Świat i postać są budowane RAZ w _ready i NIE są resetowane, więc
@@ -1559,7 +1573,12 @@ func _show_character_creator() -> void:
 
 ## Kreator: "Stwórz postać" — klasa już zapisana w GameState.class_id przez CharacterCreatorUI.
 ## Sprzątamy nakładkę i robimy świeży start (reload), który podchwyci wybraną klasę.
-func _on_character_created(_def) -> void:
+func _on_character_created(def) -> void:
+	# ROSTER: nowa postać dostaje WŁASNY slot (== jej nazwa) — zapisy idą do user://saves/<slug>/, więc
+	# nie nadpisuje innych postaci. class_id ustawił już CharacterCreatorUI.
+	if GameState != null and def != null:
+		GameState.char_name = def.char_name
+		GameState.current_character = def.char_name
 	if _creator != null and is_instance_valid(_creator):
 		_creator.queue_free()
 	_creator = null
@@ -1607,12 +1626,75 @@ func _enter_new_game() -> void:
 
 
 ## START: Kontynuuj — wczytaj zapis postaci (poziom/xp/drzewko/waluty) na istniejącą postać, potem graj.
+## „Kontynuuj" -> ROSTER: pokaż ekran wyboru postaci (każda = własny świat). Wybór -> reload do jej świata.
 func _on_continue() -> void:
-	_load_character_save()
-	var am := _audio_manager()
-	if am != null:
-		am.play_music(&"explore")
-	_was_in_combat = false
+	_show_character_select()
+
+
+## Nakładka wyboru postaci (CanvasLayer, jak kreator). Drzewo zostaje spauzowane (świat-tło stoi).
+func _show_character_select() -> void:
+	if _char_select != null and is_instance_valid(_char_select):
+		return
+	if GameState != null and GameState.has_method("set_paused"):
+		GameState.set_paused(true)
+	else:
+		get_tree().paused = true
+	_char_select = CharacterSelectUIScript.new()
+	_char_select.name = "CharacterSelect"
+	add_child(_char_select)
+	if _char_select.has_signal("character_chosen"):
+		_char_select.character_chosen.connect(_on_character_chosen)
+	if _char_select.has_signal("new_requested"):
+		_char_select.new_requested.connect(_on_select_new)
+	if _char_select.has_signal("cancelled"):
+		_char_select.cancelled.connect(_on_select_cancelled)
+	if _main_menu != null and is_instance_valid(_main_menu):
+		_main_menu.visible = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _free_char_select() -> void:
+	if _char_select != null and is_instance_valid(_char_select):
+		_char_select.queue_free()
+	_char_select = null
+
+
+## Wybrano postać z rostera -> ustaw aktywny slot + tożsamość i przeładuj do JEJ świata (seed z zapisu).
+func _on_character_chosen(sd) -> void:
+	if GameState != null and sd != null:
+		GameState.current_character = sd.char_name
+		GameState.char_name = sd.char_name
+		if sd.class_id != &"":
+			GameState.class_id = sd.class_id
+	_free_char_select()
+	_begin_continue_reload()
+
+
+## Roster: „+ Nowa postać" -> zamknij roster, otwórz kreator.
+func _on_select_new() -> void:
+	_free_char_select()
+	_show_character_creator()
+
+
+## Roster: „Wstecz" -> wróć do menu (pauza trwa).
+func _on_select_cancelled() -> void:
+	_free_char_select()
+	if _main_menu != null and is_instance_valid(_main_menu):
+		_main_menu.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+## Świeży start wybranej postaci: zrzuć co-op, ustaw flagę pending_continue (przeżyje reload) i przeładuj —
+## _ready zbuduje świat z seeda zapisu (przez current_character) + model z klasy zapisu; _setup_menus wczyta
+## progresję i wejdzie do gry. NIE losujemy nowego seeda (to nie „Nowa gra").
+func _begin_continue_reload() -> void:
+	if NetManager != null:
+		NetManager.leave()
+	if GameState != null:
+		GameState.pending_new_game = false
+		GameState.pending_world_seed = 0
+		GameState.pending_continue = true
+	get_tree().reload_current_scene()
 
 
 ## ETAP 3 (wydzielone w 8): wczytuje progresję postaci z zapisu, jeśli istnieje. Świeży start = brak
