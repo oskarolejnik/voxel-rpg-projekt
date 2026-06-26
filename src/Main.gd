@@ -111,6 +111,11 @@ var _fps_label: Label
 @export var respawn_delay: float = 1.6
 
 func _ready() -> void:
+	# DEBUG (sonda): PROBE_CLASS=<id> wymusza klasę gracza dla zrzutów per-klasa (weryfikacja palet
+	# stroju). Tylko gdy ustawione — normalna gra bierze GameState.class_id z kreatora. MUSI być PRZED
+	# _spawn_player(), bo to tam buduje się model z palety klasy.
+	if OS.get_environment("PROBE_CLASS") != "" and GameState != null:
+		GameState.class_id = StringName(OS.get_environment("PROBE_CLASS"))
 	# KOLEJNOŚĆ (Faza 2B): świat PRZED środowiskiem — _setup_environment liczy zasięg mgły
 	# (fog_depth_end) z RZECZYWISTEGO far_dist instancji VoxelWorld (review #minor: wcześniej
 	# far_m był zahardkodowanym literałem 112 m i NIE śledził zmiany far_dist w inspektorze).

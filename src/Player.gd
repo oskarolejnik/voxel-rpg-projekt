@@ -902,10 +902,53 @@ func _build_body() -> void:
 
 # Buduje voxelową postać. Tułów+głowa na _torso/_head (anim bob/lean/twist + stabilizacja głowy);
 # ręce i nogi jako 2-segmentowe łańcuchy pivotów (bark->łokieć, biodro->kolano).
+## ART OVERHAUL — per-klasowa paleta stroju (Storybook Voxel: „identity through color + silhouette").
+## Ustawia POLA koloru stroju PRZED sculptem, więc każda z 11 klas ContentDB ma odrębną tożsamość
+## kolorystyczną czytelną z dystansu (dawniej wszystkie = zielony kaftan + czerwona peleryna).
+## Klasa z GameState.class_id (replikowany stan => deterministyczne i co-op-safe). Cienie liczone
+## z barw bazowych (darkened/lightened), więc spójne value-contrast zostaje zachowane.
+func _apply_class_palette() -> void:
+	var cls: StringName = &"wojownik"
+	if GameState != null:
+		cls = GameState.class_id
+	var prim := Color(0.20, 0.52, 0.36)    # tunika (prymarna barwa klasy)
+	var trim := Color(0.86, 0.78, 0.42)    # lamówka/naramiennik (akcent — sygnaturowy hue klasy)
+	var cape := Color(0.62, 0.20, 0.22)    # peleryna
+	var pants := Color(0.28, 0.32, 0.50)   # nogawice
+	var boots := Color(0.26, 0.18, 0.12)   # buty
+	var leather := Color(0.45, 0.30, 0.18) # karwasze/rękawice
+	match cls:
+		&"wojownik":   prim = Color(0.46, 0.13, 0.14); trim = Color(0.78, 0.81, 0.85); cape = Color(0.56, 0.14, 0.16); pants = Color(0.30, 0.30, 0.34); boots = Color(0.24, 0.18, 0.14); leather = Color(0.40, 0.28, 0.18)  # stal + szkarłat (ciężki rycerz)
+		&"paladyn":    prim = Color(0.82, 0.81, 0.74); trim = Color(0.88, 0.72, 0.30); cape = Color(0.17, 0.26, 0.54); pants = Color(0.36, 0.36, 0.42); boots = Color(0.40, 0.36, 0.28); leather = Color(0.66, 0.60, 0.42)  # kość słoniowa + złoto + błękit (święty tank)
+		&"berserker":  prim = Color(0.32, 0.21, 0.15); trim = Color(0.74, 0.50, 0.26); cape = Color(0.50, 0.13, 0.11); pants = Color(0.27, 0.21, 0.16); boots = Color(0.22, 0.16, 0.12); leather = Color(0.42, 0.28, 0.16)  # futro + brąz + krwawa czerwień (dziki)
+		&"lucznik":    prim = Color(0.22, 0.36, 0.21); trim = Color(0.72, 0.52, 0.28); cape = Color(0.20, 0.31, 0.17); pants = Color(0.36, 0.29, 0.18); boots = Color(0.28, 0.20, 0.13); leather = Color(0.44, 0.32, 0.18)  # leśna skóra + zieleń (łowca)
+		&"lotrzyk":    prim = Color(0.17, 0.17, 0.21); trim = Color(0.56, 0.36, 0.72); cape = Color(0.22, 0.14, 0.27); pants = Color(0.14, 0.14, 0.18); boots = Color(0.12, 0.12, 0.15); leather = Color(0.28, 0.24, 0.30)  # węgiel + fiolet (łotrzyk)
+		&"zabojca":    prim = Color(0.13, 0.13, 0.16); trim = Color(0.74, 0.17, 0.19); cape = Color(0.30, 0.07, 0.09); pants = Color(0.11, 0.11, 0.13); boots = Color(0.10, 0.10, 0.12); leather = Color(0.26, 0.12, 0.13)  # czerń + szkarłat (zabójca)
+		&"mag":        prim = Color(0.23, 0.21, 0.48); trim = Color(0.46, 0.86, 1.00); cape = Color(0.17, 0.15, 0.39); pants = Color(0.19, 0.19, 0.35); boots = Color(0.18, 0.16, 0.28); leather = Color(0.30, 0.30, 0.50)  # arkana granat + cyjan (mag)
+		&"nekromanta": prim = Color(0.19, 0.15, 0.23); trim = Color(0.52, 0.82, 0.42); cape = Color(0.12, 0.09, 0.17); pants = Color(0.15, 0.14, 0.17); boots = Color(0.12, 0.11, 0.14); leather = Color(0.28, 0.26, 0.30)  # mrok + trupia zieleń (nekromanta)
+		&"kaplan":     prim = Color(0.86, 0.84, 0.78); trim = Color(0.90, 0.76, 0.36); cape = Color(0.42, 0.52, 0.68); pants = Color(0.64, 0.60, 0.52); boots = Color(0.50, 0.44, 0.34); leather = Color(0.72, 0.66, 0.52)  # biel + złoto (kapłan)
+		&"druid":      prim = Color(0.29, 0.39, 0.23); trim = Color(0.74, 0.58, 0.28); cape = Color(0.25, 0.35, 0.19); pants = Color(0.31, 0.25, 0.17); boots = Color(0.27, 0.21, 0.14); leather = Color(0.46, 0.34, 0.20)  # ziemista zieleń + bursztyn (druid)
+		&"mnich":      prim = Color(0.72, 0.47, 0.19); trim = Color(0.64, 0.19, 0.15); cape = Color(0.56, 0.17, 0.15); pants = Color(0.44, 0.31, 0.17); boots = Color(0.34, 0.24, 0.15); leather = Color(0.54, 0.38, 0.20)  # szafran/ochra + czerwień (mnich)
+	_C_TUNIC = prim
+	_C_TUNIC_SH = prim.darkened(0.28)
+	_C_TRIM = trim
+	_C_BUCKLE = trim.darkened(0.12)
+	_C_CAPE = cape
+	_C_CAPE_SH = cape.darkened(0.22)
+	_C_PANTS = pants
+	_C_PANTS_SH = pants.darkened(0.22)
+	_C_BOOTS = boots
+	_C_BOOTS_HI = boots.lightened(0.18)
+	_C_LEATHER = leather
+	_C_BELT = boots.darkened(0.18)
+
+
 func _build_voxel_character() -> void:
 	_model = Node3D.new()
 	_model.name = "Model"
 	add_child(_model)
+
+	_apply_class_palette()   # ART OVERHAUL: per-klasowe kolory stroju ustawione PRZED sculptem
 
 	var mat := _make_char_material()
 
@@ -1069,19 +1112,22 @@ const _C_EYE_W   := Color(0.97, 0.97, 0.98)
 const _C_IRIS    := Color(0.20, 0.46, 0.72)
 const _C_PUPIL   := Color(0.05, 0.05, 0.07)
 const _C_MOUTH   := Color(0.62, 0.34, 0.34)
-const _C_TUNIC   := Color(0.20, 0.52, 0.36)
-const _C_TUNIC_SH := Color(0.15, 0.40, 0.28)
-const _C_TRIM    := Color(0.86, 0.78, 0.42)   # złota lamówka/naramiennik
-const _C_BELT    := Color(0.34, 0.22, 0.12)
-const _C_BUCKLE  := Color(0.82, 0.72, 0.34)
-const _C_PANTS   := Color(0.28, 0.32, 0.50)
-const _C_PANTS_SH := Color(0.22, 0.25, 0.40)
-const _C_BOOTS   := Color(0.26, 0.18, 0.12)
-const _C_BOOTS_HI := Color(0.36, 0.26, 0.17)
-const _C_SOLE    := Color(0.16, 0.12, 0.09)   # ciemna podeszwa (czytelny styk z ziemią)
-const _C_CAPE    := Color(0.62, 0.20, 0.22)   # peleryna (akcent koloru z tyłu)
-const _C_CAPE_SH := Color(0.48, 0.14, 0.16)
-const _C_LEATHER := Color(0.45, 0.30, 0.18)   # rękawice/naramiennik skórzany
+# ART OVERHAUL (Storybook Voxel — „identity through color"): kolory STROJU to teraz POLA (var),
+# nadpisywane per-klasa w _apply_class_palette() PRZED sculptem. Dawniej WSZYSTKIE 11 klas
+# renderowały ten sam zielony kaftan + czerwoną pelerynę. Wartości tu = domyślne (fallback).
+var _C_TUNIC   := Color(0.20, 0.52, 0.36)
+var _C_TUNIC_SH := Color(0.15, 0.40, 0.28)
+var _C_TRIM    := Color(0.86, 0.78, 0.42)   # lamówka/naramiennik (akcent — metal/magia per klasa)
+var _C_BELT    := Color(0.34, 0.22, 0.12)
+var _C_BUCKLE  := Color(0.82, 0.72, 0.34)
+var _C_PANTS   := Color(0.28, 0.32, 0.50)
+var _C_PANTS_SH := Color(0.22, 0.25, 0.40)
+var _C_BOOTS   := Color(0.26, 0.18, 0.12)
+var _C_BOOTS_HI := Color(0.36, 0.26, 0.17)
+const _C_SOLE    := Color(0.16, 0.12, 0.09)   # ciemna podeszwa (uniwersalna — zostaje const)
+var _C_CAPE    := Color(0.62, 0.20, 0.22)   # peleryna (akcent koloru z tyłu)
+var _C_CAPE_SH := Color(0.48, 0.14, 0.16)
+var _C_LEATHER := Color(0.45, 0.30, 0.18)   # rękawice/karwasz skórzany
 const _C_EAR     := _C_SKIN
 
 # GŁOWA — UMIARKOWANA (NIE chibi): owalna czaszka + schludne włosy + uszy + CZYTELNA twarz.
