@@ -698,6 +698,11 @@ func _probe_shot() -> void:
 				spring.spring_length = (6.0 if mode == "water" else 7.0)
 				spring.rotation.x = deg_to_rad(-28.0 if mode == "water" else -20.0)
 				if pivot is Node3D: (pivot as Node3D).rotation.y = deg_to_rad(water_yaw_deg)
+	# DEBUG (sonda): VOXEL_PROBE=inv otwiera EKWIPUNEK przed zrzutem (weryfikacja motywu UI drewno-złoto).
+	if mode == "inv" and _inv_ui != null and is_instance_valid(_inv_ui):
+		_inv_ui._set_open(true)
+		await get_tree().process_frame
+		await get_tree().process_frame
 	await get_tree().create_timer(0.6).timeout
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")
