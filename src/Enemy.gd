@@ -318,6 +318,8 @@ var _leg_r: Node3D
 # (zwierzę nie unosi "ręki" jak humanoid — robi krótki przedni wymach/szarpnięcie pyskiem). Ustawiane w
 # _build_silhouette_beast; reszta rigu (chód, flinch, błysk) działa bez zmian (te same 4 pivoty).
 var _is_beast: bool = false
+var _is_floating: bool = false   # ART OVERHAUL: stwory latające (wywern/żywiołak) — hover w _process
+var _float_phase: float = 0.0
 
 # Materiały + bazowe kolory do błysku trafienia (TYPOWANE — pułapka "Cannot infer type").
 var _mats: Array[StandardMaterial3D] = []
@@ -450,6 +452,25 @@ func _enemy_kind() -> StringName:
 	if v.ends_with("slinger"):
 		return &"slinger"
 	# BUGFIX czworonogi: dopasowanie po PODŁAŃCUCHU (frost_wolf/dire_wolf/ice_wolf/ember_boar... → beast).
+	# ART OVERHAUL — roster stworów: routing po PODŁAŃCUCHU variant_id (przed generycznym czworonogiem).
+	if v.find("spider") != -1 or v.find("widow") != -1 or v.find("arachnid") != -1 or v.find("weaver") != -1 or v.find("broodmother") != -1 or v.find("tarantula") != -1:
+		return &"spider"
+	if v.find("scorpion") != -1 or v.find("scorpio") != -1 or v.find("stinger") != -1 or v.find("sandstinger") != -1 or v.find("deathstalker") != -1:
+		return &"scorpion"
+	if v.find("serpent") != -1 or v.find("snake") != -1 or v.find("viper") != -1 or v.find("cobra") != -1 or v.find("naga") != -1 or v.find("adder") != -1 or v.find("python") != -1:
+		return &"serpent"
+	if v.find("frog") != -1 or v.find("toad") != -1:
+		return &"frog"
+	if v.find("treant") != -1 or v.find("tree") != -1 or v.find("oak") != -1 or v.find("grove") != -1:
+		return &"treant"
+	if v.find("golem") != -1 or v.find("giant") != -1 or v.find("colossus") != -1:
+		return &"golem"
+	if v.find("wyvern") != -1 or v.find("drake") != -1 or v.find("wyrm") != -1:
+		return &"wyvern"
+	if v.find("spirit") != -1 or v.find("elemental") != -1 or v.find("wisp") != -1 or v.find("demon") != -1 or v.find("magma") != -1 or v.find("lava") != -1 or v.find("ifrit") != -1:
+		return &"spirit"
+	if v.find("worm") != -1 or v.find("sandworm") != -1 or v.find("burrow") != -1:
+		return &"worm"
 	for core in _BEAST_VARIANTS:
 		if v.find(core) != -1:
 			return &"beast"
@@ -488,6 +509,24 @@ func _build_voxel_enemy() -> void:
 			_build_silhouette_slinger()
 		&"beast":
 			_build_silhouette_beast()
+		&"spider":
+			_build_silhouette_spider()
+		&"scorpion":
+			_build_silhouette_scorpion()
+		&"serpent":
+			_build_silhouette_serpent()
+		&"frog":
+			_build_silhouette_frog()
+		&"treant":
+			_build_silhouette_treant()
+		&"golem":
+			_build_silhouette_golem()
+		&"wyvern":
+			_build_silhouette_wyvern()
+		&"spirit":
+			_build_silhouette_spirit()
+		&"worm":
+			_build_silhouette_worm()
 		_:
 			_build_silhouette_goblin()
 	# FAZA 5: ROAMING ELITE — emisyjna AURA (OmniLight pulsujacy) czytelna z daleka jako "cel". Kolor
@@ -741,6 +780,560 @@ func _build_silhouette_beast() -> void:
 	for leg in [_arm_l, _arm_r, _leg_l, _leg_r]:
 		_cube(leg, Vector3(0.16, 0.46, 0.18), Vector3(0.0, -0.23, 0.0), skin_d)     # noga
 		_cube(leg, Vector3(0.17, 0.10, 0.20), Vector3(0.0, -0.44, 0.0), mouth)      # kopyto/łapa (ciemna)
+
+
+# ============================================================================
+#  ART OVERHAUL — ROSTER STWORÓW (9 sylwetek): spider/scorpion/serpent/frog/treant/golem/wyvern/spirit/worm.
+#  Każdy ustawia _arm_l/_arm_r/_leg_l/_leg_r (kontrakt animacji _process). Wywern/żywiołak: _is_floating.
+# ============================================================================
+
+
+# --- SPIDER — niski, SZEROKI pełzacz (lodowe/bagienne pająki). Sylwetka: bulwiasty ODWŁOK z tyłu (+Z),
+# mniejszy GŁOWOTUŁÓW z przodu (-Z), 8 RADIALNYCH nóg (zginają się w górę-potem-w-dół), klaster
+# świecących oczu z przodu. Czyta się NATYCHMIAST jako pająk: pozioma, przysadzista, „pajęcza gwiazda" nóg.
+# Mapowanie pivotów pod ISTNIEJĄCY rig (zero nowej animacji): przednia para nóg = _arm_l/_arm_r,
+# środkowo-tylna para = _leg_l/_leg_r → ścieżka chodu daje DIAGONALNY skitter (FL+BR / FR+BL w przeciwfazie).
+# Pozostałe 4 nogi STATYCZNE (wprost na _model). _is_beast=true: niski znacznik zagrożenia + szarżowy
+# wymach przedniej pary zamiast humanoidalnego „ciosu ręką" (pasuje do drapieżnego rzutu pająka).
+func _build_silhouette_spider() -> void:
+	_is_beast = true
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]
+
+	# --- ODWŁOK: duży, BULWIASTY, niesiony z tyłu (+Z) i lekko uniesiony — dominanta sylwetki. ---
+	_cube(_model, Vector3(0.62, 0.50, 0.66), Vector3(0.0, 0.50, 0.34), skin)        # bulwa odwłoka
+	_cube(_model, Vector3(0.50, 0.36, 0.30), Vector3(0.0, 0.58, 0.66), skin_d)      # tylny garb odwłoka
+	# Świecące znamię na grzbiecie odwłoka (akcent „jadowitego/lodowego" pająka, czytelny z góry/z daleka).
+	_cube(_model, Vector3(0.14, 0.06, 0.22), Vector3(0.0, 0.76, 0.40), eyes, true)
+
+	# --- GŁOWOTUŁÓW: mniejszy, niżej, z PRZODU (-Z) — łączy odwłok z głową/nogami. ---
+	_cube(_model, Vector3(0.42, 0.30, 0.40), Vector3(0.0, 0.40, -0.18), skin)       # głowotułów
+	# Szczękoczułki/kły z przodu (ciemne) — drapieżny pysk pająka.
+	_cube(_model, Vector3(0.10, 0.12, 0.10), Vector3(-0.09, 0.30, -0.42), mouth)    # kieł L
+	_cube(_model, Vector3(0.10, 0.12, 0.10), Vector3(0.09, 0.30, -0.42), mouth)     # kieł R
+
+	# --- KLASTER ŚWIECĄCYCH OCZU z przodu (-Z): 4 oka (2 duże + 2 małe) — pajęcza „twarz" z daleka. ---
+	_cube(_model, Vector3(0.10, 0.09, 0.05), Vector3(-0.11, 0.46, -0.38), eyes, true)  # duże oko L
+	_cube(_model, Vector3(0.10, 0.09, 0.05), Vector3(0.11, 0.46, -0.38), eyes, true)   # duże oko R
+	_cube(_model, Vector3(0.06, 0.06, 0.05), Vector3(-0.05, 0.52, -0.38), eyes, true)  # małe oko L
+	_cube(_model, Vector3(0.06, 0.06, 0.05), Vector3(0.05, 0.52, -0.38), eyes, true)   # małe oko R
+
+	# --- 4 ANIMOWANE NOGI (skitter). Każda: udo (skos w GÓRĘ-na zewnątrz) + goleń (w DÓŁ do stopy ~y=0).
+	#     Pivoty na wysokości głowotułowia (y=0.42), rozstawione radialnie. Obrót na X = pełzanie. ---
+	# PRZEDNIA para = _arm_l/_arm_r (pivoty z przodu, -Z).
+	_arm_l = _make_pivot(_model, Vector3(-0.26, 0.42, -0.12))
+	_arm_r = _make_pivot(_model, Vector3(0.26, 0.42, -0.12))
+	# ŚRODKOWO-TYLNA para = _leg_l/_leg_r (pivoty z tyłu, +Z).
+	_leg_l = _make_pivot(_model, Vector3(-0.26, 0.42, 0.16))
+	_leg_r = _make_pivot(_model, Vector3(0.26, 0.42, 0.16))
+	# Lewe nogi wychylone w lewo (-x), prawe w prawo (+x); zgięcie „kolanowe" w górę, potem goleń w dół.
+	var anim_legs := [
+		[_arm_l, -1.0, -0.30],   # przednia L: w lewo i lekko do przodu
+		[_arm_r,  1.0, -0.30],   # przednia R
+		[_leg_l, -1.0,  0.20],   # tylna L: w lewo i lekko do tyłu
+		[_leg_r,  1.0,  0.20],   # tylna R
+	]
+	for entry in anim_legs:
+		var leg: Node3D = entry[0]
+		var sx: float = entry[1]
+		var sz: float = entry[2]
+		# udo: unosi się w GÓRĘ i na zewnątrz (pajęczy „łuk" stawu).
+		_cube(leg, Vector3(0.30, 0.10, 0.10), Vector3(sx * 0.18, 0.10, sz), skin_d)
+		# goleń: opada w DÓŁ do stopy przy ziemi.
+		_cube(leg, Vector3(0.09, 0.34, 0.09), Vector3(sx * 0.34, -0.18, sz), skin_d)
+		# stopa (ciemny czubek dotykający ziemi).
+		_cube(leg, Vector3(0.10, 0.08, 0.10), Vector3(sx * 0.36, -0.38, sz), mouth)
+
+	# --- 4 STATYCZNE NOGI (wprost na _model, bez pivota): druga przednia i druga tylna para,
+	#     przesunięte w Z, by 8 nóg tworzyło pełną pajęczą „gwiazdę". Ta sama geometria łuku. ---
+	var static_legs := [
+		[-1.0, -0.40],  # przednia-zewn. L
+		[ 1.0, -0.40],  # przednia-zewn. R
+		[-1.0,  0.42],  # tylna-zewn. L
+		[ 1.0,  0.42],  # tylna-zewn. R
+	]
+	for s in static_legs:
+		var sx: float = s[0]
+		var sz: float = s[1]
+		# udo (w górę-na zewnątrz) — barki nóg na wysokości stawu y≈0.52.
+		_cube(_model, Vector3(0.30, 0.10, 0.10), Vector3(sx * 0.36, 0.52, sz), skin_d)
+		# goleń (w dół do ziemi).
+		_cube(_model, Vector3(0.09, 0.34, 0.09), Vector3(sx * 0.52, 0.24, sz), skin_d)
+		# stopa.
+		_cube(_model, Vector3(0.10, 0.08, 0.10), Vector3(sx * 0.54, 0.04, sz), mouth)
+
+
+# --- SCORPION — niski, OPANCERZONY, POZIOMY drapieżnik pustyni. Sylwetka czyta się NATYCHMIAST:
+# płaski segmentowany odwłok, DWIE wielkie przednie SZCZYPCE (pincery) wyniesione do przodu, oraz
+# SEGMENTOWANY OGON wygięty w łuk nad grzbietem zakończony ŚWIECĄCYM ŻĄDŁEM. Mapowanie pivotów pod
+# istniejący rig (zero nowej animacji), tak jak BEAST:
+#   _arm_l/_arm_r = przednie SZCZYPCE (ścieżka "ramion" je animuje — w ataku robią SZARŻOWY wymach
+#                   do przodu przez gałąź _is_beast w _process; w chodzie lekko kołyszą jak para nóg)
+#   _leg_l/_leg_r = animowana para nóg KROCZĄCYCH (trucht diagonalny jak u zwierzęcia)
+# Dodatkowe nogi (środkowa + tylna para) są STATYCZNE — wypełniają sylwetkę wieloodnóża, bez ruchu.
+# Sylwetka POZIOMA + uniesiony łuk ogona = jednoznaczny SKORPION, odróżnialny od goblin/brute/slinger/beast.
+func _build_silhouette_scorpion() -> void:
+	_is_beast = true  # niski poziomy potwór: gait diagonalny + niżej marker zagrożenia + szarżowy atak
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+
+	# --- ODWŁOK/CEFALOTORAKS: płaski, segmentowany, wydłużony wzdłuż Z. Niski grzbiet ~y=0.30. ---
+	_cube(_model, Vector3(0.50, 0.24, 0.46), Vector3(0.0, 0.30, -0.30), skin)        # głowotułów (przód, szerszy)
+	_cube(_model, Vector3(0.44, 0.22, 0.30), Vector3(0.0, 0.30, 0.04), skin_d)       # segment odwłoka 1
+	_cube(_model, Vector3(0.38, 0.20, 0.26), Vector3(0.0, 0.30, 0.32), skin)         # segment odwłoka 2
+	_cube(_model, Vector3(0.30, 0.18, 0.22), Vector3(0.0, 0.30, 0.56), skin_d)       # segment odwłoka 3 (zwęża się)
+	# Oczy świecące na przedzie głowotułowia (drapieżny akcent czytelny z daleka).
+	_cube(_model, Vector3(0.07, 0.07, 0.05), Vector3(-0.12, 0.38, -0.52), eyes, true)  # oko L
+	_cube(_model, Vector3(0.07, 0.07, 0.05), Vector3(0.12, 0.38, -0.52), eyes, true)   # oko R
+
+	# --- OGON: SEGMENTOWANY ŁUK wznoszący się od zadu (+Z) w górę i wracający do przodu nad grzbietem,
+	#     zakończony ŻĄDŁEM ze ŚWIECĄCYM rdzeniem jadu. Czysto statyczny, ale to DOMINANTA sylwetki. ---
+	_cube(_model, Vector3(0.18, 0.18, 0.18), Vector3(0.0, 0.44, 0.66), skin_d)       # nasada ogona (wznosi się)
+	_cube(_model, Vector3(0.16, 0.18, 0.16), Vector3(0.0, 0.66, 0.70), skin)         # segment 1
+	_cube(_model, Vector3(0.15, 0.18, 0.15), Vector3(0.0, 0.88, 0.64), skin_d)       # segment 2
+	_cube(_model, Vector3(0.14, 0.16, 0.14), Vector3(0.0, 1.06, 0.48), skin)         # segment 3 (łuk nad grzbietem)
+	_cube(_model, Vector3(0.13, 0.16, 0.13), Vector3(0.0, 1.16, 0.26), skin_d)       # segment 4 (przegina do przodu)
+	_cube(_model, Vector3(0.12, 0.14, 0.12), Vector3(0.0, 1.16, 0.04), skin)         # segment 5
+	_cube(_model, Vector3(0.13, 0.13, 0.13), Vector3(0.0, 1.10, -0.16), mouth)       # bańka jadowa (ciemna)
+	_cube(_model, Vector3(0.07, 0.20, 0.07), Vector3(0.0, 0.96, -0.26), accent, true)  # ŻĄDŁO świecące (kolec w dół-przód)
+
+	# --- PRZEDNIE SZCZYPCE = _arm_l/_arm_r. Pivoty przy przodzie głowotułowia (-Z), wyniesione do przodu.
+	#     Ramię odnóża + klejnotowate PINCERY (dwie szczęki) — wielkie, groźne, czytelne. Animowane: w
+	#     ataku robią szarżowy wymach przez gałąź _is_beast; w chodzie lekko kołyszą się. ---
+	_arm_l = _make_pivot(_model, Vector3(-0.28, 0.30, -0.46))
+	_arm_r = _make_pivot(_model, Vector3(0.28, 0.30, -0.46))
+	for arm in [_arm_l, _arm_r]:
+		_cube(arm, Vector3(0.14, 0.13, 0.34), Vector3(0.0, 0.0, -0.18), skin_d)      # przedramię szczypiec (do przodu)
+		_cube(arm, Vector3(0.26, 0.18, 0.20), Vector3(0.0, 0.0, -0.40), skin)        # dłoń/klejnot szczypiec
+		_cube(arm, Vector3(0.08, 0.10, 0.22), Vector3(-0.08, 0.04, -0.58), skin_d)   # szczęka górna pincera
+		_cube(arm, Vector3(0.08, 0.10, 0.22), Vector3(0.06, -0.04, -0.58), skin_d)   # szczęka dolna pincera
+
+	# --- KROCZĄCA para nóg (animowana) = _leg_l/_leg_r. Środek tułowia, zwisają na boki-w dół. ---
+	_leg_l = _make_pivot(_model, Vector3(-0.24, 0.30, 0.0))
+	_leg_r = _make_pivot(_model, Vector3(0.24, 0.30, 0.0))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.30, 0.07, 0.08), Vector3(-0.14, -0.02, 0.0), skin_d)    # udo (wystaje na bok)
+		_cube(leg, Vector3(0.07, 0.26, 0.07), Vector3(-0.26, -0.16, 0.0), mouth)     # goleń (w dół do ziemi)
+	# Lustro dla prawej (pivot odbity automatycznie przez X, więc dodajemy drugie odnóże po przeciwnej stronie).
+	# Uwaga: _leg_l ma odnóże w -X, _leg_r też w -X względem własnego pivota → wizualnie L sięga w lewo,
+	# R sięga „do środka". By obie szły NA ZEWNĄTRZ, dokładamy lustrzane odnóże na prawym pivocie:
+	_cube(_leg_r, Vector3(0.30, 0.07, 0.08), Vector3(0.28, -0.02, 0.0), skin_d)      # udo prawe (na zewnątrz, +X)
+	_cube(_leg_r, Vector3(0.07, 0.26, 0.07), Vector3(0.40, -0.16, 0.0), mouth)       # goleń prawa
+	_cube(_leg_l, Vector3(0.30, 0.07, 0.08), Vector3(-0.16, -0.02, 0.0), skin_d)     # (wzmocnienie L — spójna grubość)
+
+	# --- STATYCZNE dodatkowe nogi (środkowa + tylna para) — wypełniają wieloodnóże, bez animacji. ---
+	# Każda: udo wystające na bok + goleń do ziemi. Po obu stronach, na różnych z.
+	for z in [0.24, 0.46]:
+		for sx in [-1.0, 1.0]:
+			_cube(_model, Vector3(0.28, 0.07, 0.08), Vector3(sx * 0.30, 0.28, z), skin_d)   # udo
+			_cube(_model, Vector3(0.07, 0.24, 0.07), Vector3(sx * 0.42, 0.14, z), mouth)     # goleń
+	# Przednia statyczna para (tuż za szczypcami) — dopełnia 8 odnóży skorpiona.
+	for sx2 in [-1.0, 1.0]:
+		_cube(_model, Vector3(0.26, 0.07, 0.08), Vector3(sx2 * 0.30, 0.28, -0.18), skin_d)   # udo
+		_cube(_model, Vector3(0.07, 0.24, 0.07), Vector3(sx2 * 0.42, 0.14, -0.18), mouth)     # goleń
+
+
+# --- SERPENT — bagienny WĄŻ. Brak nóg: gruby SERPENTYNOWY tułów ze złożonych segmentów wijących się
+# nisko po ziemi w esicę (S-curve przez naprzemienny offset w X), z PRZODU (-Z) uniesiona GŁOWA/KAPTUR
+# z świecącymi oczami + kłami. Sylwetka POZIOMA, falująca — czyta się NATYCHMIAST jako wąż, inna niż
+# pionowe humanoidy (goblin/brute/slinger) i niż czworonóg (beast). Mapowanie pivotów pod ISTNIEJĄCY
+# rig (zero nowej animacji): cztery pivoty = SEGMENTY-falowniki tułowia. W ścieżce chodu _arm_l=+swing,
+# _arm_r=-swing, _leg_l=-swing, _leg_r=+swing → sąsiednie segmenty obracają się w przeciwfazie, więc
+# wymach na X unosi/opuszcza kolejne garby ciała = SLITHER (przetaczająca się fala). Każdy segment ma
+# geometrię wysuniętą do TYŁU (+Z) od swojego pivotu, by obrót.x czytelnie podnosił/opuszczał garb.
+func _build_silhouette_serpent() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+	var belly := skin_d.lightened(0.12)   # jaśniejszy brzuch — czytelny spód węża
+
+	# --- ESICA TUŁOWIA: naprzemienny offset w X buduje statyczny kształt S, a pivoty dodają falę. ---
+	# Niski grzbiet ~y=0.30 (gruby wąż leżący na ziemi). Przód = -Z.
+
+	# Segment 1 (najbliżej głowy) = _arm_l. Pivot z przodu, geometria wysunięta do tyłu (+Z).
+	_arm_l = _make_pivot(_model, Vector3(0.12, 0.30, -0.30))
+	_cube(_arm_l, Vector3(0.44, 0.42, 0.46), Vector3(-0.04, 0.0, 0.22), skin)
+	_cube(_arm_l, Vector3(0.34, 0.10, 0.40), Vector3(-0.04, -0.18, 0.22), belly)   # brzuch
+
+	# Segment 2 = _arm_r (przeciwny offset w X — wygięcie S).
+	_arm_r = _make_pivot(_model, Vector3(-0.12, 0.30, 0.18))
+	_cube(_arm_r, Vector3(0.42, 0.40, 0.46), Vector3(0.06, 0.0, 0.22), skin_d)
+	_cube(_arm_r, Vector3(0.32, 0.10, 0.40), Vector3(0.06, -0.17, 0.22), belly)
+
+	# Segment 3 = _leg_l (z powrotem w +X).
+	_leg_l = _make_pivot(_model, Vector3(0.10, 0.30, 0.66))
+	_cube(_leg_l, Vector3(0.36, 0.34, 0.44), Vector3(-0.06, 0.0, 0.20), skin)
+	_cube(_leg_l, Vector3(0.26, 0.09, 0.38), Vector3(-0.06, -0.14, 0.20), belly)
+
+	# Segment 4 = _leg_r (ogon — zwęża się, lekki akcent w -X).
+	_leg_r = _make_pivot(_model, Vector3(-0.06, 0.30, 1.10))
+	_cube(_leg_r, Vector3(0.26, 0.26, 0.42), Vector3(0.03, 0.0, 0.18), skin_d)
+	_cube(_leg_r, Vector3(0.14, 0.14, 0.34), Vector3(0.03, -0.02, 0.40), skin_d)   # czubek ogona
+	_cube(_leg_r, Vector3(0.07, 0.10, 0.18), Vector3(0.03, 0.0, 0.58), accent, true) # świecący kolec ogona
+
+	# --- SZYJA uniesiona + GŁOWA/KAPTUR z PRZODU (-Z) — statyczne (nie na pivocie, mocna sylwetka). ---
+	_cube(_model, Vector3(0.30, 0.34, 0.30), Vector3(0.14, 0.46, -0.46), skin)      # szyja wznosząca się
+	_cube(_model, Vector3(0.36, 0.40, 0.30), Vector3(0.10, 0.70, -0.62), skin)      # podstawa głowy uniesiona
+	# KAPTUR kobry (rozłożysty kołnierz — natychmiast czyta się jako wąż) po bokach głowy.
+	_cube(_model, Vector3(0.66, 0.30, 0.10), Vector3(0.10, 0.70, -0.52), skin_d)    # rozłożony kaptur
+	# Pysk wysunięty do przodu (-Z).
+	_cube(_model, Vector3(0.30, 0.24, 0.30), Vector3(0.10, 0.66, -0.84), skin)      # głowa/pysk
+	_cube(_model, Vector3(0.22, 0.10, 0.14), Vector3(0.10, 0.58, -0.98), mouth)     # paszcza
+	# KŁY (jasne, sterczące w dół z przodu paszczy).
+	_cube(_model, Vector3(0.05, 0.12, 0.05), Vector3(0.03, 0.50, -0.96), belly)     # kieł L
+	_cube(_model, Vector3(0.05, 0.12, 0.05), Vector3(0.17, 0.50, -0.96), belly)     # kieł R
+	# OCZY świecące po bokach uniesionej głowy — czytelny groźny akcent z daleka.
+	_cube(_model, Vector3(0.06, 0.10, 0.08), Vector3(-0.02, 0.72, -0.78), eyes, true)  # oko L
+	_cube(_model, Vector3(0.06, 0.10, 0.08), Vector3(0.22, 0.72, -0.78), eyes, true)   # oko R
+
+
+# --- FROG — TRUJĄCA ŻABA (bagno). Sylwetka NISKA i SZEROKA: przysadzisty, rozlany tułów tuż nad ziemią,
+# OGROMNA linia paszczy przez cały przód, dwa wielkie WYBAŁUSZONE świecące oczy na czubku głowy, krótkie
+# przednie łapki + potężne ZŁOŻONE tylne nogi gotowe do skoku. Brodawki w kolorze accent (toksyczny look).
+# Mapowanie pivotów pod istniejący rig (zero nowego systemu animacji):
+#   _arm_l/_arm_r = krótkie PRZEDNIE łapki (delikatny wymach X — "podpieranie się")
+#   _leg_l/_leg_r = wielkie TYLNE nogi (wymach X czyta się jak napinanie/luz przed skokiem)
+# Chód (_process) daje wtedy żywą, niską pulsację kończyn — żaba "drży" gotowa do hopu.
+func _build_silhouette_frog() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+
+	# --- TUŁÓW: bardzo SZEROKI i niski, lekko spłaszczony (rozlana ropuszla sylwetka tuż nad ziemią). ---
+	_cube(_model, Vector3(0.92, 0.42, 0.66), Vector3(0.0, 0.30, 0.06), skin)         # główny korpus (szeroki)
+	_cube(_model, Vector3(0.78, 0.20, 0.52), Vector3(0.0, 0.14, 0.04), skin_d)       # podbrzusze (ciemniejsze)
+	# Brodawki/grzbiet trujący — emisyjne plamy accent rozsiane po grzbiecie (czytelny "toksyczny" znak).
+	_cube(_model, Vector3(0.12, 0.08, 0.12), Vector3(-0.26, 0.50, 0.12), accent, true)  # brodawka L
+	_cube(_model, Vector3(0.12, 0.08, 0.12), Vector3(0.26, 0.50, 0.12), accent, true)   # brodawka R
+	_cube(_model, Vector3(0.10, 0.07, 0.10), Vector3(0.0, 0.52, 0.22), accent, true)    # brodawka środkowa-tył
+
+	# --- GŁOWA: szeroka, zlana z tułowiem, wysunięta do przodu (-Z). OGROMNA linia paszczy przez cały przód. ---
+	_cube(_model, Vector3(0.86, 0.34, 0.40), Vector3(0.0, 0.34, -0.36), skin)        # czoło/głowa (szeroka)
+	_cube(_model, Vector3(0.84, 0.08, 0.06), Vector3(0.0, 0.22, -0.55), mouth)       # gigantyczna linia paszczy
+	_cube(_model, Vector3(0.20, 0.06, 0.05), Vector3(-0.20, 0.27, -0.55), mouth)     # kącik paszczy L (uśmiech w górę)
+	_cube(_model, Vector3(0.20, 0.06, 0.05), Vector3(0.20, 0.27, -0.55), mouth)      # kącik paszczy R
+
+	# --- OCZY: dwa WIELKIE wybałuszone bąble na CZUBKU głowy (kopuły) + świecące źrenice. Sylwetka żaby. ---
+	_cube(_model, Vector3(0.26, 0.26, 0.26), Vector3(-0.24, 0.58, -0.30), skin_d)    # gałka oczna L (bąbel)
+	_cube(_model, Vector3(0.26, 0.26, 0.26), Vector3(0.24, 0.58, -0.30), skin_d)     # gałka oczna R (bąbel)
+	_cube(_model, Vector3(0.14, 0.14, 0.10), Vector3(-0.24, 0.60, -0.42), eyes, true)  # świecąca źrenica L
+	_cube(_model, Vector3(0.14, 0.14, 0.10), Vector3(0.24, 0.60, -0.42), eyes, true)   # świecąca źrenica R
+
+	# --- PRZEDNIE łapki (krótkie) = _arm_l/_arm_r. Pivoty z przodu-boku, łapki wsparte o ziemię. ---
+	_arm_l = _make_pivot(_model, Vector3(-0.34, 0.20, -0.26))
+	_arm_r = _make_pivot(_model, Vector3(0.34, 0.20, -0.26))
+	for arm in [_arm_l, _arm_r]:
+		_cube(arm, Vector3(0.12, 0.20, 0.14), Vector3(0.0, -0.10, 0.0), skin_d)      # cienka łapka
+		_cube(arm, Vector3(0.18, 0.06, 0.20), Vector3(0.0, -0.20, -0.04), skin_d)    # rozłożysta dłoń (palce)
+
+	# --- TYLNE nogi (wielkie, ZŁOŻONE w "Z" — gotowe do skoku) = _leg_l/_leg_r. Pivoty z tyłu-boku, wysoko. ---
+	_leg_l = _make_pivot(_model, Vector3(-0.42, 0.34, 0.28))
+	_leg_r = _make_pivot(_model, Vector3(0.42, 0.34, 0.28))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.22, 0.26, 0.30), Vector3(0.0, 0.02, 0.10), skin)        # masywne udo (wystaje w górę-tył)
+		_cube(leg, Vector3(0.16, 0.30, 0.16), Vector3(0.0, -0.18, 0.04), skin_d)     # podudzie (w dół)
+		_cube(leg, Vector3(0.26, 0.06, 0.32), Vector3(0.0, -0.32, -0.06), skin_d)    # wielka błoniasta stopa (przód)
+
+
+# --- TREANT — WYSOKIE drzewo-istota (forest). Najwyższa sylwetka w grze: gruby pień-tułów z korą
+# (warstwy lekko poprzesuwanych kostek), korzeniowe stopy, dwie długie GAŁĘZIOWE ręce z gałązkowymi
+# palcami, mały mszysty/liściasty czubek i ŚWIECĄCE oczy w wydrążonej twarzy. Rooted, wolny, górujący.
+# Mapowanie pivotów pod istniejący rig (zero nowej animacji): _arm_l/_arm_r = dwie konarowe ręce (kołyszą
+# się/zadają cios); _leg_l/_leg_r = korzeniowe "stopy" (delikatne kołysanie korzeni przy ruchu).
+func _build_silhouette_treant() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+	# Kora: ciemnobrązowe drewno niezależne od zielonej skóry wariantu (chyba że reskin biomowy nadpisze).
+	var bark := Color(0.34, 0.24, 0.15)
+	var bark_d := Color(0.24, 0.17, 0.10)
+	var leaf := Color(0.22, 0.48, 0.18)     # liściasty/mszysty czubek (zieleń lasu)
+	var leaf_d := Color(0.16, 0.36, 0.13)
+	# Reskin biomowy (ogień/mróz): jeśli paleta wariantu nadpisana, ciągnij korę/liście za skórą wariantu.
+	if skin_tint.a > 0.0:
+		bark = skin_d
+		bark_d = skin_d.darkened(0.30)
+		leaf = skin
+		leaf_d = skin.darkened(0.25)
+
+	# --- PIEŃ-TUŁÓW: gruba, WYSOKA kolumna z warstw lekko poprzesuwanych kostek (faktura kory). ---
+	_cube(_model, Vector3(0.62, 0.50, 0.56), Vector3(0.04, 0.42, 0.0), bark)        # podstawa pnia
+	_cube(_model, Vector3(0.56, 0.46, 0.50), Vector3(-0.05, 0.86, 0.02), bark_d)    # środek (przesunięty L)
+	_cube(_model, Vector3(0.52, 0.46, 0.48), Vector3(0.05, 1.28, -0.02), bark)      # górny (przesunięty R)
+	_cube(_model, Vector3(0.48, 0.40, 0.44), Vector3(-0.03, 1.66, 0.0), bark_d)     # ramiona/kark pnia
+	# Sęki/narośla kory (akcenty faktury, asymetryczne — żywe drewno).
+	_cube(_model, Vector3(0.12, 0.16, 0.10), Vector3(0.34, 0.70, -0.20), bark_d)
+	_cube(_model, Vector3(0.10, 0.14, 0.10), Vector3(-0.32, 1.14, -0.18), bark_d)
+
+	# --- WYDRĄŻONA TWARZ w pniu (ciemna jama) + ŚWIECĄCE oczy + szczelina-usta. ---
+	_cube(_model, Vector3(0.34, 0.30, 0.06), Vector3(0.0, 1.60, -0.26), mouth)         # jama twarzy
+	_cube(_model, Vector3(0.10, 0.12, 0.06), Vector3(-0.11, 1.66, -0.30), eyes, true)  # oko L (świeci z jamy)
+	_cube(_model, Vector3(0.10, 0.12, 0.06), Vector3(0.11, 1.66, -0.30), eyes, true)   # oko R
+	_cube(_model, Vector3(0.22, 0.05, 0.06), Vector3(0.0, 1.48, -0.30), mouth)         # szczelina ust
+
+	# --- MSZYSTY/LIŚCIASTY CZUBEK (korona) — bryła zieleni z drobnym świecącym akcentem (spory/poświata). ---
+	_cube(_model, Vector3(0.60, 0.34, 0.56), Vector3(0.0, 1.98, 0.0), leaf)         # główna kępa
+	_cube(_model, Vector3(0.40, 0.26, 0.40), Vector3(-0.18, 2.18, -0.10), leaf_d)   # kępa L
+	_cube(_model, Vector3(0.38, 0.24, 0.38), Vector3(0.20, 2.16, 0.12), leaf_d)     # kępa R
+	_cube(_model, Vector3(0.30, 0.22, 0.30), Vector3(0.0, 2.34, 0.0), leaf)         # czubek
+	_cube(_model, Vector3(0.10, 0.10, 0.10), Vector3(0.12, 2.20, -0.18), accent, true)  # świecące spory/owoc
+
+	# --- KORZENIOWE STOPY = _leg_l/_leg_r (pivoty u podstawy pnia; korzenie schodzą do ziemi). ---
+	# Rooted: delikatne kołysanie korzeni przy ruchu (rotacja.x w _process daje "naprężanie" korzeni).
+	_leg_l = _make_pivot(_model, Vector3(-0.22, 0.30, 0.0))
+	_leg_r = _make_pivot(_model, Vector3(0.22, 0.30, 0.0))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.22, 0.34, 0.24), Vector3(0.0, -0.16, 0.0), bark)        # gruby korzeń
+		_cube(leg, Vector3(0.30, 0.10, 0.34), Vector3(0.0, -0.32, 0.0), bark_d)      # rozłożysta stopa
+		_cube(leg, Vector3(0.10, 0.08, 0.22), Vector3(0.0, -0.30, -0.22), bark_d)    # korzeń-palec do przodu (-Z)
+
+	# --- GAŁĘZIOWE RĘCE = _arm_l/_arm_r (długie konary z gałązkowymi palcami; kołyszą się / zadają cios). ---
+	# Pivoty wysoko na "barkach" pnia. Konary nieco rozłożyste (sylwetka rozkrzewionego drzewa).
+	_arm_l = _make_pivot(_model, Vector3(-0.40, 1.56, 0.0))
+	_arm_r = _make_pivot(_model, Vector3(0.40, 1.56, 0.0))
+	# Lewa ręka — opadający konar.
+	_cube(_arm_l, Vector3(0.18, 0.56, 0.18), Vector3(-0.10, -0.26, 0.0), bark)       # konar górny
+	_cube(_arm_l, Vector3(0.15, 0.42, 0.15), Vector3(-0.20, -0.62, -0.04), bark_d)   # konar dolny (odgięty)
+	_cube(_arm_l, Vector3(0.07, 0.18, 0.07), Vector3(-0.28, -0.86, -0.10), bark_d)   # gałązka-palec
+	_cube(_arm_l, Vector3(0.06, 0.14, 0.06), Vector3(-0.14, -0.88, -0.06), bark_d)   # gałązka-palec
+	_cube(_arm_l, Vector3(0.10, 0.10, 0.10), Vector3(-0.22, -0.66, -0.04), leaf_d)   # kępka liści na konarze
+	# Prawa ręka — symetrycznie po prawej (lustro).
+	_cube(_arm_r, Vector3(0.18, 0.56, 0.18), Vector3(0.10, -0.26, 0.0), bark)
+	_cube(_arm_r, Vector3(0.15, 0.42, 0.15), Vector3(0.20, -0.62, -0.04), bark_d)
+	_cube(_arm_r, Vector3(0.07, 0.18, 0.07), Vector3(0.28, -0.86, -0.10), bark_d)
+	_cube(_arm_r, Vector3(0.06, 0.14, 0.06), Vector3(0.14, -0.88, -0.06), bark_d)
+	_cube(_arm_r, Vector3(0.10, 0.10, 0.10), Vector3(0.22, -0.66, -0.04), leaf_d)
+
+
+# --- GOLEM / STONE GIANT — najcięższa, najszersza sylwetka: monolityczny blok skały, OGROMNE głazowe
+# bary i pięści (na _arm_l/_arm_r), krępe grube nogi (_leg_l/_leg_r), mała głowa wciśnięta między bary,
+# świecący RDZEŃ + pęknięcia (emit) na piersi. Humanoid (NIE _is_beast): zamach unosi prawą pięść jak
+# brute, więc głazowe dłonie czytają się jako ciężki cios melee. Mapowanie pivotów: ręce=bary z pięściami,
+# nogi=stopy-kolumny. Wszystko deterministyczne (zero RNG, co-op-safe). Sylwetka woła "GŁAZ" z daleka.
+func _build_silhouette_golem() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var accent: Color = pal[5]
+	# Kamienne odcienie pochodne palety (biom-reskin baked w pal): jaśniejszy "kant" + ciemna szczelina.
+	var rock := skin
+	var rock_d := skin_d
+	var crack := accent                 # świecący rdzeń/pęknięcia (emisyjny akcent — "serce mocy")
+
+	# --- MONOLITYCZNY TUŁÓW: bardzo szeroki i głęboki blok (najcięższa masa w grze). ---
+	_cube(_model, Vector3(1.04, 0.78, 0.66), Vector3(0.0, 0.92, 0.0), rock)          # główny blok skały
+	_cube(_model, Vector3(1.10, 0.16, 0.70), Vector3(0.0, 0.56, 0.0), rock_d)        # ciężka podstawa bioder
+	# GŁAZOWE BARY jako osobny wał (skrajnie szeroka, kanciasta góra — sygnatura golema).
+	_cube(_model, Vector3(1.34, 0.34, 0.74), Vector3(0.0, 1.34, 0.0), rock_d)        # naramienny wał
+	# ŚWIECĄCY RDZEŃ + PĘKNIĘCIA na piersi (czytelny żar wewnątrz skały z daleka).
+	_cube(_model, Vector3(0.26, 0.26, 0.08), Vector3(0.0, 1.00, -0.34), crack, true)     # rdzeń-serce
+	_cube(_model, Vector3(0.07, 0.30, 0.06), Vector3(-0.22, 0.84, -0.34), crack, true)   # pęknięcie L
+	_cube(_model, Vector3(0.07, 0.24, 0.06), Vector3(0.24, 1.12, -0.34), crack, true)    # pęknięcie R
+
+	# --- GŁOWA MAŁA, wciśnięta nisko między bary (brak szyi) — głaz-czaszka, świecące oczy-szczeliny. ---
+	_cube(_model, Vector3(0.42, 0.40, 0.42), Vector3(0.0, 1.62, 0.02), rock)
+	_cube(_model, Vector3(0.10, 0.06, 0.05), Vector3(-0.11, 1.64, -0.22), eyes, true)    # oko L (szczelina)
+	_cube(_model, Vector3(0.10, 0.06, 0.05), Vector3(0.11, 1.64, -0.22), eyes, true)     # oko R
+
+	# --- NOGI: krótkie, GRUBE KOLUMNY skały (przysadzista, ciężka postawa). Pivoty nisko. ---
+	_leg_l = _make_pivot(_model, Vector3(-0.30, 0.50, 0.0))
+	_leg_r = _make_pivot(_model, Vector3(0.30, 0.50, 0.0))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.40, 0.46, 0.42), Vector3(0.0, -0.26, 0.0), rock_d)      # udo-kolumna
+		_cube(leg, Vector3(0.46, 0.16, 0.50), Vector3(0.0, -0.50, 0.04), rock)       # ciężka stopa-głaz
+
+	# --- RĘCE: OGROMNE głazowe ramiona zwisające nisko (postawa goryla) + olbrzymie PIĘŚCI-BOULDERY. ---
+	_arm_l = _make_pivot(_model, Vector3(-0.70, 1.34, 0.0))
+	_arm_r = _make_pivot(_model, Vector3(0.70, 1.34, 0.0))
+	for arm in [_arm_l, _arm_r]:
+		_cube(arm, Vector3(0.36, 0.66, 0.40), Vector3(0.0, -0.34, 0.0), rock)        # masywne ramię
+		_cube(arm, Vector3(0.50, 0.46, 0.52), Vector3(0.0, -0.78, 0.0), rock_d)      # PIĘŚĆ-GŁAZ (bok)
+		_cube(arm, Vector3(0.16, 0.16, 0.06), Vector3(0.0, -0.78, -0.27), crack, true)  # żarząca szczelina w pięści
+
+
+# --- WYVERN — drapieżny LATAJĄCY gad gór. Sylwetka czytelna z daleka jako SKRZYDLATY ŁOWCA:
+# lewitujące smukłe ciało wyniesione (~y1.2), długa SZYJA wygięta w przód + ROGATA głowa ze świecącymi
+# oczami (-Z), dwa WIELKIE SKRZYDŁA rozłożone szeroko na _arm_l/_arm_r (rotation.x → trzepot/przechył),
+# długi OGON z kolcem za sobą (+Z), dwie podkulone ŁAPY ze szponami na _leg_l/_leg_r. Floater: feet ~0.7+.
+# Mapowanie pivotów pod ISTNIEJĄCY rig (zero nowego systemu animacji):
+#   _arm_l/_arm_r = skrzydła (szeroko rozłożone → łagodny obrót na X czyta się jako MACHANIE/przechył),
+#   _leg_l/_leg_r = podkulone łapy (delikatne kołysanie podczas lotu, krótki "szpon" przy szarży).
+func _build_silhouette_wyvern() -> void:
+	_is_floating = true
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+
+	# --- TUŁÓW LEWITUJĄCY: smukły, wyniesiony (środek ~y1.2). Pierś z przodu masywniejsza, biodra węższe. ---
+	_cube(_model, Vector3(0.40, 0.40, 0.62), Vector3(0.0, 1.20, 0.06), skin)        # główny korpus
+	_cube(_model, Vector3(0.44, 0.34, 0.30), Vector3(0.0, 1.22, -0.22), skin)       # pierś (przód, do -Z)
+	_cube(_model, Vector3(0.30, 0.26, 0.26), Vector3(0.0, 1.16, 0.34), skin_d)      # biodra (tył, +Z)
+	# ŚWIECĄCY RDZEŃ na piersi — drapieżny "puls mocy" elementu, czytelny akcent latawca z daleka.
+	_cube(_model, Vector3(0.16, 0.16, 0.06), Vector3(0.0, 1.24, -0.36), accent, true)
+
+	# --- SZYJA wygięta w PRZÓD-GÓRĘ + ROGATA GŁOWA (-Z). Predatorska sylwetka węża/smoka. ---
+	_cube(_model, Vector3(0.20, 0.24, 0.22), Vector3(0.0, 1.34, -0.40), skin)       # szyja dolna
+	_cube(_model, Vector3(0.18, 0.22, 0.20), Vector3(0.0, 1.52, -0.52), skin)       # szyja górna
+	_cube(_model, Vector3(0.26, 0.26, 0.34), Vector3(0.0, 1.58, -0.70), skin)       # głowa
+	_cube(_model, Vector3(0.16, 0.14, 0.22), Vector3(0.0, 1.50, -0.90), skin_d)     # pysk/szczęka
+	_cube(_model, Vector3(0.14, 0.05, 0.05), Vector3(0.0, 1.46, -1.00), mouth)      # paszcza
+	# Rogi (wygięte do tyłu-góry) — czytelna "rogata" głowa drapieżnika.
+	_cube(_model, Vector3(0.06, 0.20, 0.06), Vector3(-0.10, 1.74, -0.62), skin_d)   # róg L
+	_cube(_model, Vector3(0.06, 0.20, 0.06), Vector3(0.10, 1.74, -0.62), skin_d)    # róg R
+	# Oczy świecące po bokach głowy (drapieżny wzrok, czytelny z daleka).
+	_cube(_model, Vector3(0.05, 0.08, 0.07), Vector3(-0.14, 1.58, -0.78), eyes, true)  # oko L
+	_cube(_model, Vector3(0.05, 0.08, 0.07), Vector3(0.14, 1.58, -0.78), eyes, true)   # oko R
+
+	# --- OGON: długi, zwęża się ku tyłowi (+Z), zakończony emisyjnym KOLCEM. Balansuje sylwetkę lotu. ---
+	_cube(_model, Vector3(0.20, 0.20, 0.30), Vector3(0.0, 1.14, 0.46), skin)        # nasada ogona
+	_cube(_model, Vector3(0.14, 0.14, 0.30), Vector3(0.0, 1.08, 0.72), skin_d)      # środek ogona
+	_cube(_model, Vector3(0.09, 0.09, 0.26), Vector3(0.0, 1.02, 0.96), skin_d)      # końcówka
+	_cube(_model, Vector3(0.14, 0.14, 0.14), Vector3(0.0, 1.00, 1.14), accent, true)   # kolec/żądło świecące
+
+	# --- SKRZYDŁA = _arm_l/_arm_r: pivoty w barkach (y=1.34), rozłożone SZEROKO w bok. Obrót na X
+	#     (rig "ramion") przechyla rozpostarte płaty → czytelny TRZEPOT/przechył lotu. Każde skrzydło:
+	#     gruba kość przednia + cienka błona ciągnąca się w bok i lekko do tyłu (+Z). ---
+	_arm_l = _make_pivot(_model, Vector3(-0.20, 1.34, -0.02))
+	_arm_r = _make_pivot(_model, Vector3(0.20, 1.34, -0.02))
+	# Lewe skrzydło (rozciąga się w -X).
+	_cube(_arm_l, Vector3(0.46, 0.10, 0.12), Vector3(-0.28, 0.04, -0.04), skin_d)   # kość barkowa
+	_cube(_arm_l, Vector3(0.40, 0.06, 0.46), Vector3(-0.68, 0.00, 0.10), skin)      # błona wewnętrzna
+	_cube(_arm_l, Vector3(0.34, 0.05, 0.40), Vector3(-1.04, -0.04, 0.18), skin_d)   # błona zewnętrzna
+	_cube(_arm_l, Vector3(0.10, 0.14, 0.10), Vector3(-1.24, 0.02, -0.08), skin_d)   # pazur/szczyt skrzydła
+	# Prawe skrzydło (lustro w +X).
+	_cube(_arm_r, Vector3(0.46, 0.10, 0.12), Vector3(0.28, 0.04, -0.04), skin_d)
+	_cube(_arm_r, Vector3(0.40, 0.06, 0.46), Vector3(0.68, 0.00, 0.10), skin)
+	_cube(_arm_r, Vector3(0.34, 0.05, 0.40), Vector3(1.04, -0.04, 0.18), skin_d)
+	_cube(_arm_r, Vector3(0.10, 0.14, 0.10), Vector3(1.24, 0.02, -0.08), skin_d)
+
+	# --- ŁAPY = _leg_l/_leg_r: pivoty pod brzuchem (y=1.02), PODKULONE w locie. Obrót na X kołysze je
+	#     łagodnie; przy szarży robią krótki wymach szponem. Udo + zwisające szpony. ---
+	_leg_l = _make_pivot(_model, Vector3(-0.14, 1.02, 0.04))
+	_leg_r = _make_pivot(_model, Vector3(0.14, 1.02, 0.04))
+	for leg in [_leg_l, _leg_r]:
+		_cube(leg, Vector3(0.14, 0.24, 0.16), Vector3(0.0, -0.14, -0.04), skin_d)   # udo (podkulone)
+		_cube(leg, Vector3(0.16, 0.10, 0.20), Vector3(0.0, -0.28, -0.10), skin)     # podudzie/stopa
+		_cube(leg, Vector3(0.05, 0.10, 0.06), Vector3(-0.05, -0.36, -0.18), mouth)  # szpon L
+		_cube(leg, Vector3(0.05, 0.10, 0.06), Vector3(0.05, -0.36, -0.18), mouth)   # szpon R
+
+
+func _build_silhouette_spirit() -> void:
+	# --- ELEMENTAL SPIRIT (wariant wulkaniczny: ognisty duch / demon lawy). FLOATER bez kontaktu z ziemią:
+	# jasny EMISYJNY RDZEŃ unoszący się ~y1.0, owinięty kilkoma ciemnymi odłamkami skały/żaru krążącymi wokół,
+	# z 4 wiotkimi MACKAMI/wstęgami zwisającymi pod spodem. Macki mapuję na istniejący rig (zero nowej animacji):
+	#   _arm_l/_arm_r = przednia para wstęg (-Z), _leg_l/_leg_r = tylna para (+Z). Łagodny obrót.x w _process
+	#   czyta się jako DRYF/falowanie macek (nie chód). Sylwetka: świetlista kula z dymiącymi mackami — natychmiast
+	#   odróżnia się od goblina/bruta/slingera/zwierza. Mostly emisyjny, złowieszczy, bez stóp na ziemi.
+	_is_floating = true
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var accent: Color = pal[5]
+	# Odłamki skały/żaru — bardzo ciemne, "ostygła skorupa lawy" wokół rozżarzonego rdzenia (kontrast z emisją).
+	var shard := skin_d.darkened(0.55)
+
+	# --- RDZEŃ: rozżarzona kula (warstwowa, by świeciła "mięsiście" z każdej strony) unosząca się ~y1.0. ---
+	_cube(_model, Vector3(0.46, 0.46, 0.46), Vector3(0.0, 1.00, 0.0), accent, true)     # jądro (jasne)
+	_cube(_model, Vector3(0.60, 0.30, 0.40), Vector3(0.0, 1.00, 0.0), accent, true)     # poprzeczny rozbłysk
+	_cube(_model, Vector3(0.30, 0.60, 0.40), Vector3(0.0, 1.00, 0.0), accent, true)     # pionowy rozbłysk
+
+	# --- ZŁOWIESZCZE OCZY z przodu rdzenia (-Z), świecące — twarz ducha czytelna z daleka. ---
+	_cube(_model, Vector3(0.10, 0.12, 0.05), Vector3(-0.13, 1.06, -0.26), eyes, true)   # oko L
+	_cube(_model, Vector3(0.10, 0.12, 0.05), Vector3(0.13, 1.06, -0.26), eyes, true)    # oko R
+
+	# --- ODŁAMKI SKAŁY/ŻARU krążące wokół rdzenia (ciemne, asymetryczne — "orbitujący gruz"). Statyczne. ---
+	_cube(_model, Vector3(0.22, 0.22, 0.22), Vector3(-0.42, 1.16, 0.10), shard)         # górny-lewy
+	_cube(_model, Vector3(0.20, 0.20, 0.20), Vector3(0.40, 0.86, -0.06), shard)         # dolny-prawy
+	_cube(_model, Vector3(0.18, 0.18, 0.18), Vector3(0.10, 1.40, 0.18), shard)          # nad rdzeniem (tył)
+	_cube(_model, Vector3(0.16, 0.16, 0.16), Vector3(-0.18, 0.74, -0.30), shard)        # przód-dół
+	# Rozżarzone szczeliny w paru odłamkach (emisyjny żar w pęknięciach skały) — sparingly.
+	_cube(_model, Vector3(0.24, 0.06, 0.06), Vector3(-0.42, 1.16, 0.10), accent, true)
+	_cube(_model, Vector3(0.06, 0.22, 0.06), Vector3(0.40, 0.86, -0.06), accent, true)
+
+	# --- 4 WIOTKIE MACKI/WSTĘGI zwisające pod rdzeniem (pivoty u podstawy ~y0.74, zwisają w DÓŁ, bez ziemi). ---
+	# Przednia para = _arm_l/_arm_r (przy -Z), tylna = _leg_l/_leg_r (przy +Z). Obrót.x w _process → dryf.
+	_arm_l = _make_pivot(_model, Vector3(-0.18, 0.74, -0.14))
+	_arm_r = _make_pivot(_model, Vector3(0.18, 0.74, -0.14))
+	_leg_l = _make_pivot(_model, Vector3(-0.18, 0.74, 0.16))
+	_leg_r = _make_pivot(_model, Vector3(0.18, 0.74, 0.16))
+	for tend in [_arm_l, _arm_r, _leg_l, _leg_r]:
+		_cube(tend, Vector3(0.14, 0.30, 0.14), Vector3(0.0, -0.18, 0.0), skin)          # górny segment (ciało ducha)
+		_cube(tend, Vector3(0.10, 0.26, 0.10), Vector3(0.0, -0.40, 0.0), skin_d)        # środkowy (cieńszy, ciemniejszy)
+		_cube(tend, Vector3(0.07, 0.18, 0.07), Vector3(0.0, -0.58, 0.0), accent, true)  # żarzący się koniuszek (wisp)
+
+
+# --- SAND WORM — pionowy, SEGMENTOWANY tubus wynurzający się z ziemi w ŁUKU (kostki piętrzą się
+# w górę, potem głowa opada do przodu/-Z), zwieńczony okrągłą PASZCZĄ z pierścieniem zębów i
+# świecącym GARDŁEM (emit). Brak nóg. Sylwetka "wieża z piasku" czyta się natychmiast z daleka i
+# jest oczywiście różna od humanoidów (goblin/brute/slinger) i poziomego czworonoga (beast).
+#
+# ANIMACJA: rig obraca CZTERY pivoty na osi X. Mapuję je na CZTERY zawiasy-segmenty wzdłuż łuku
+# (od podstawy do głowy), KAŻDY zagnieżdżony w poprzednim (łańcuch), więc obrót.x każdego segmentu
+# kumuluje się i całe ciało FALUJE/undulauje. Kolejność łańcucha base->head: _arm_l, _arm_r, _leg_l,
+# _leg_r. W ścieżce chodu _arm_l=+swing, _arm_r=-swing, _leg_l=-swing, _leg_r=+swing → sąsiednie
+# segmenty są w przeciwfazie → przez tubus przebiega fala (wąż wije się). Geometrię każdego segmentu
+# (oraz głowę/paszczę) wieszam NA tych pivotach, by ruch był widoczny; pivoty nie są pustymi stubami.
+func _build_silhouette_worm() -> void:
+	var pal := _variant_palette()
+	var skin: Color = pal[0]; var skin_d: Color = pal[1]; var eyes: Color = pal[2]
+	var mouth: Color = pal[3]; var accent: Color = pal[5]
+
+	# --- STOPA/KOPIEC u podstawy (statyczny) — wysypany piach wokół miejsca wynurzenia, kotwiczy
+	#     sylwetkę w ziemi (feet at y=0). Szeroki, niski, ciemniejszy. ---
+	_cube(_model, Vector3(0.86, 0.22, 0.86), Vector3(0.0, 0.11, 0.10), skin_d)
+	_cube(_model, Vector3(0.66, 0.16, 0.66), Vector3(0.20, 0.08, -0.16), skin_d)
+	_cube(_model, Vector3(0.58, 0.14, 0.58), Vector3(-0.22, 0.07, 0.22), skin_d)
+
+	# --- DOLNY, najgrubszy SEGMENT tubusa (statyczny, wrośnie z kopca). Pierścieniowe prążki = dwa
+	#     ciemniejsze "obręcze" sugerujące segmentację robaka. ---
+	_cube(_model, Vector3(0.52, 0.40, 0.52), Vector3(0.0, 0.42, 0.0), skin)
+	_cube(_model, Vector3(0.56, 0.06, 0.56), Vector3(0.0, 0.30, 0.0), skin_d)   # obręcz
+	_cube(_model, Vector3(0.54, 0.06, 0.54), Vector3(0.0, 0.56, 0.0), skin_d)   # obręcz
+
+	# --- ŁAŃCUCH 4 ZAWIASÓW-SEGMENTÓW wzdłuż ŁUKU. Każdy pivot dziecko poprzedniego; lokalne pos
+	#     przesuwa go w górę i stopniowo do przodu (-Z), tworząc krzywiznę "rośnie w górę, potem
+	#     głowa nurkuje". Każdy nosi swój walec ciała + obręcz. Grubość maleje ku głowie. ---
+	# Segment 1 (base->) = _arm_l
+	_arm_l = _make_pivot(_model, Vector3(0.0, 0.66, 0.0))
+	_cube(_arm_l, Vector3(0.48, 0.34, 0.48), Vector3(0.0, 0.17, 0.0), skin)
+	_cube(_arm_l, Vector3(0.50, 0.06, 0.50), Vector3(0.0, 0.30, 0.0), skin_d)  # obręcz/staw
+
+	# Segment 2 = _arm_r (dziecko _arm_l) — zaczyna lekko nachylać łuk do przodu (-Z).
+	_arm_r = _make_pivot(_arm_l, Vector3(0.0, 0.36, -0.04))
+	_cube(_arm_r, Vector3(0.44, 0.32, 0.44), Vector3(0.0, 0.16, -0.02), skin)
+	_cube(_arm_r, Vector3(0.46, 0.06, 0.46), Vector3(0.0, 0.28, -0.02), skin_d)
+
+	# Segment 3 = _leg_l (dziecko _arm_r) — łuk przechyla się mocniej do przodu, czubek zaczyna opadać.
+	_leg_l = _make_pivot(_arm_r, Vector3(0.0, 0.34, -0.12))
+	_cube(_leg_l, Vector3(0.40, 0.30, 0.40), Vector3(0.0, 0.13, -0.06), skin)
+	_cube(_leg_l, Vector3(0.42, 0.06, 0.42), Vector3(0.0, 0.24, -0.06), skin_d)
+
+	# Segment 4 = _leg_r (dziecko _leg_l) — szyja gnie się do przodu/dół; tu osadzona GŁOWA z paszczą.
+	_leg_r = _make_pivot(_leg_l, Vector3(0.0, 0.28, -0.20))
+	_cube(_leg_r, Vector3(0.36, 0.26, 0.40), Vector3(0.0, 0.08, -0.10), skin)   # szyja gnąca się w przód
+
+	# --- GŁOWA + OKRĄGŁA PASZCZA z przodu szyji (-Z), w lokalu _leg_r. Czaszka, potem pierścień ZĘBÓW
+	#     wokół otworu i ŚWIECĄCE GARDŁO w środku (emit). Pierścień zębów = 8 małych kostek radialnie. ---
+	var head_y := 0.06
+	var head_z := -0.34
+	_cube(_leg_r, Vector3(0.46, 0.42, 0.34), Vector3(0.0, head_y, head_z), skin)        # głowa (bulwiasta)
+	_cube(_leg_r, Vector3(0.50, 0.10, 0.30), Vector3(0.0, head_y + 0.18, head_z), skin_d)  # grzbietowy wał głowy
+	# ŚWIECĄCE GARDŁO — wpuszczone w czoło paszczy (przód = -Z), emisyjny rdzeń czytelny z daleka.
+	_cube(_leg_r, Vector3(0.24, 0.24, 0.10), Vector3(0.0, head_y, head_z - 0.18), accent, true)  # gardło
+	_cube(_leg_r, Vector3(0.12, 0.12, 0.06), Vector3(0.0, head_y, head_z - 0.23), eyes, true)    # jaśniejszy rdzeń
+	# PIERŚCIEŃ ZĘBÓW wokół otworu paszczy (8 kostek radialnie w płaszczyźnie X/Y, przy przodzie -Z).
+	var teeth := 8
+	var tr := 0.18
+	var mouth_z := head_z - 0.21
+	for i in teeth:
+		var a := TAU * float(i) / float(teeth)
+		var tx := cos(a) * tr
+		var ty := head_y + sin(a) * tr
+		_cube(_leg_r, Vector3(0.07, 0.07, 0.12), Vector3(tx, ty, mouth_z), mouth)
+
+	# --- OCZKA/SENSORY po bokach głowy (drobne, świecące — "ślepy drapieżnik wyczuwający drgania"). ---
+	_cube(_leg_r, Vector3(0.06, 0.07, 0.08), Vector3(-0.22, head_y + 0.10, head_z - 0.04), eyes, true)  # oko L
+	_cube(_leg_r, Vector3(0.06, 0.07, 0.08), Vector3(0.22, head_y + 0.10, head_z - 0.04), eyes, true)   # oko R
 
 
 func _make_pivot(parent: Node3D, pos: Vector3) -> Node3D:
@@ -1176,6 +1769,12 @@ func _process(delta: float) -> void:
 		_threat_marker_phase += delta
 		_threat_marker.position.y = _threat_marker_base_y() + 0.08 * sin(_threat_marker_phase * 2.2)
 		_threat_marker.rotation.y = _threat_marker_phase * 1.2
+
+	# ART OVERHAUL: HOVER stworów latających (wywern/żywiołak) — model unosi się i delikatnie buja,
+	# więc czyta się jako „w powietrzu" (sylwetka budowana wyżej, brak styku z ziemią).
+	if _is_floating:
+		_float_phase += delta
+		_model.position.y = 0.30 + 0.12 * sin(_float_phase * 1.7)
 
 	# Obrót modelu w stronę _face_dir (przód = -Z), płynnie.
 	if _face_dir.length() > 0.01:
