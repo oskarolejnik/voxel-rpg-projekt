@@ -385,6 +385,8 @@ func _make_spark() -> GPUParticles3D:
 	pm.damping_max = 8.0
 	pm.scale_min = 0.5
 	pm.scale_max = 1.2
+	pm.color_ramp = _spark_color_ramp()      # ART OVERHAUL: flash-to-fade (pełna jasność -> zanik alfy)
+	pm.scale_curve = _spark_scale_curve()     # ART OVERHAUL: POP (szybkie nabrzmienie) -> kurczenie
 	p.process_material = pm
 	var mesh := QuadMesh.new()
 	mesh.size = Vector2(0.13, 0.13)
@@ -400,6 +402,34 @@ func _make_spark() -> GPUParticles3D:
 	mesh.material = mat
 	p.draw_pass_1 = mesh
 	return p
+
+
+# ART OVERHAUL — tekstury iskry (cache, budowane raz): gradient flash-to-fade + krzywa pop-then-shrink.
+# Hue-neutralny ramp (biel->biel->przezroczysty) zachowuje per-cios kolor materiału, dokłada PŁYNNY zanik
+# alfy (dawniej iskry znikały skokowo na końcu życia). scale_curve daje „pop" (nabrzmienie) i kurczenie.
+var _spark_ramp_tex: GradientTexture1D = null
+var _spark_scale_tex: CurveTexture = null
+
+func _spark_color_ramp() -> GradientTexture1D:
+	if _spark_ramp_tex == null:
+		var g := Gradient.new()
+		g.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
+		g.colors = PackedColorArray([Color(1, 1, 1, 1), Color(1, 1, 1, 1), Color(1, 1, 1, 0)])
+		var t := GradientTexture1D.new()
+		t.gradient = g
+		_spark_ramp_tex = t
+	return _spark_ramp_tex
+
+func _spark_scale_curve() -> CurveTexture:
+	if _spark_scale_tex == null:
+		var c := Curve.new()
+		c.add_point(Vector2(0.0, 0.55))
+		c.add_point(Vector2(0.16, 1.30))
+		c.add_point(Vector2(1.0, 0.08))
+		var t := CurveTexture.new()
+		t.curve = c
+		_spark_scale_tex = t
+	return _spark_scale_tex
 
 
 func _make_light() -> OmniLight3D:

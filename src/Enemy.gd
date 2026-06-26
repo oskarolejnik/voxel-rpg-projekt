@@ -1293,11 +1293,68 @@ func _spawn_death_burst() -> void:
 	parent.add_child(p)
 	p.global_position = global_position + Vector3(0.0, 0.7 * body_scale, 0.0)
 	p.emitting = true
-	# Samo-zwolnienie po lifetime (timer na drzewie sceny, nie na zwalnianym wrogu).
 	var tree := parent.get_tree()
+
+	# JUICE (ART OVERHAUL): kolor „esencji" wg elementu wariantu (ciepły domyślnie).
+	var ecol := Color(1.0, 0.86, 0.55)
+	match element:
+		&"fire": ecol = Color(1.0, 0.50, 0.20)
+		&"frost": ecol = Color(0.50, 0.82, 1.0)
+		&"poison": ecol = Color(0.60, 1.0, 0.42)
+		&"lightning": ecol = Color(0.82, 0.82, 1.0)
+
+	# JUICE: BŁYSK ŚWIATŁA (pop) w chwili śmierci — krótki OmniLight gasnący tweenem (czytelny „kill").
+	var fl := OmniLight3D.new()
+	fl.omni_range = 3.4 * body_scale
+	fl.light_energy = 2.6
+	fl.light_color = ecol
+	parent.add_child(fl)
+	fl.global_position = p.global_position
+	var ftw := fl.create_tween()
+	ftw.tween_property(fl, "light_energy", 0.0, 0.32)
+	ftw.tween_callback(fl.queue_free)
+
+	# JUICE: unoszący się „duszek" energii — esencja wroga ulatuje w górę (emisyjne iskry pod prąd grawitacji).
+	var w := GPUParticles3D.new()
+	w.amount = 9
+	w.lifetime = 0.85
+	w.one_shot = true
+	w.explosiveness = 0.55
+	w.local_coords = false
+	var wpm := ParticleProcessMaterial.new()
+	wpm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	wpm.emission_sphere_radius = 0.22 * body_scale
+	wpm.gravity = Vector3(0.0, 1.4, 0.0)        # UNOSZĄ się w górę
+	wpm.direction = Vector3(0.0, 1.0, 0.0)
+	wpm.spread = 22.0
+	wpm.initial_velocity_min = 1.0
+	wpm.initial_velocity_max = 2.4
+	wpm.damping_min = 0.5
+	wpm.damping_max = 1.5
+	wpm.scale_min = 0.4
+	wpm.scale_max = 0.9
+	var wmesh := QuadMesh.new()
+	wmesh.size = Vector2(0.12, 0.12) * body_scale
+	var wmat := StandardMaterial3D.new()
+	wmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	wmat.albedo_color = ecol
+	wmat.emission_enabled = true
+	wmat.emission = ecol
+	wmat.emission_energy_multiplier = 3.0
+	wmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	wmat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	wmat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	wmesh.material = wmat
+	w.draw_pass_1 = wmesh
+	w.process_material = wpm
+	parent.add_child(w)
+	w.global_position = p.global_position
+	w.emitting = true
+
+	# Samo-zwolnienie po lifetime (timery na drzewie sceny, nie na zwalnianym wrogu).
 	if tree != null:
-		var t := tree.create_timer(0.9)
-		t.timeout.connect(p.queue_free)
+		tree.create_timer(0.9).timeout.connect(p.queue_free)
+		tree.create_timer(1.2).timeout.connect(w.queue_free)
 
 # ============================================================================
 #  ETAP 1 — HitData wroga + Slinger (pocisk)
