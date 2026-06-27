@@ -1152,9 +1152,11 @@ func connect_equipment_visuals(inv: Node) -> void:
 
 func _on_gear_equipped(equip_slot: int, item) -> void:
 	_rebuild_gear_slot(equip_slot, item)
+	_net_broadcast_equipment()      # LOOT Faza 7c: rozsyłaj zmianę gearu do innych peerów (co-op)
 
 func _on_gear_unequipped(equip_slot: int, _item) -> void:
 	_rebuild_gear_slot(equip_slot, null)
+	_net_broadcast_equipment()
 
 
 ## Inkrementalna przebudowa JEDNEGO slotu: zwolnij stare meshe, zbuduj nowe wg visual_kind (gdy item != null).
@@ -1186,6 +1188,53 @@ func _rebuild_gear_slot(equip_slot: int, item) -> void:
 		made.append(mi)
 	if not made.is_empty():
 		_gear[equip_slot] = made
+
+
+# ============================================================================
+#  LOOT Faza 7c — REPLIKACJA WIDOCZNEGO EKWIPUNKU (co-op)
+# ============================================================================
+# Każdy peer jest autorytetem WŁASNEGO ekwipunku. Na zmianę gearu właściciel rozsyła PEŁNY snapshot
+# (slot -> {base_id, rarity}); repliki tej postaci u innych peerów odbudowują modele Phase 3. SP/no-net
+# = no-op (has_network()==false). HP/staty idą osobnymi kanałami — to TYLKO warstwa wizualna gearu.
+
+## Właściciel rozsyła snapshot swojego ekwipunku (po zmianie). Tylko w sieci i tylko dla swojej postaci.
+func _net_broadcast_equipment() -> void:
+	if _net_sync == null or NetManager == null or not NetManager.has_network():
+		return
+	if not NetManager.is_movement_owner(self):   # rozsyła TYLKO właściciel tej postaci
+		return
+	var inv := _find_inventory()
+	if inv == null or not ("equipment" in inv):
+		return
+	var snap: Dictionary = {}
+	for s in inv.equipment:
+		var it = inv.equipment[s]
+		if it != null and "base_id" in it:
+			snap[int(s)] = { "base_id": String(it.base_id), "rarity": int(it.rarity) }
+	if _net_sync.has_method("broadcast_equipment"):
+		_net_sync.broadcast_equipment(snap)
+
+
+## Replika (nie-właściciel): zastosuj zreplikowany ekwipunek — odbuduj WIDOCZNY gear bez InventoryComponent.
+## Wołane przez PlayerNetSync._recv_equipment. snap: { slot(int) -> {base_id:String, rarity:int} }.
+func apply_remote_equipment(snap: Dictionary) -> void:
+	if _model == null:
+		return
+	# Zwolnij sloty, których nie ma już w snapshocie.
+	for s in _gear.keys():
+		if not snap.has(int(s)):
+			_rebuild_gear_slot(int(s), null)
+	# Odbuduj/zaktualizuj sloty ze snapshotu (minimalny ItemInstance: base_id + rarity wystarcza wizualnie).
+	for s in snap:
+		var e = snap[s]
+		var base_id: StringName = StringName(e.get("base_id", "")) if e is Dictionary else StringName(e)
+		if base_id == &"":
+			_rebuild_gear_slot(int(s), null)
+			continue
+		var inst := ItemInstance.new()
+		inst.base_id = base_id
+		inst.rarity = int(e.get("rarity", 0)) if e is Dictionary else 0
+		_rebuild_gear_slot(int(s), inst)
 
 
 ## Punkty przyczepienia gearu danego slotu: {pivot, pivot_vox (jak w _build_voxel_character), side}.

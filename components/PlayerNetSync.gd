@@ -250,6 +250,27 @@ func _recv_snapshot(pos: Vector3, yaw: float) -> void:
 		_snapshots.pop_front()
 
 
+# ── LOOT Faza 7c: REPLIKACJA WIDOCZNEGO EKWIPUNKU (owner-authoritative, reliable) ──
+## Właściciel tej postaci rozsyła snapshot swojego ekwipunku do innych peerów (reliable — rzadkie,
+## ważne zdarzenie: założenie/zdjęcie itemu). SP/no-net = no-op. Tylko właściciel (nie host za wszystkich).
+func broadcast_equipment(snap: Dictionary) -> void:
+	if not _net() or not _is_local_owner():
+		return
+	_recv_equipment.rpc(snap)
+
+
+## RPC: snapshot ekwipunku właściciela -> repliki odbudowują WIDOCZNY gear (Player.apply_remote_equipment).
+## Anti-spoof: nadawca MUSI być owner-peerem TEJ postaci. Własna postać ignoruje (gear z InventoryComponent).
+@rpc("any_peer", "call_remote", "reliable")
+func _recv_equipment(snap: Dictionary) -> void:
+	if _identity == null or multiplayer.get_remote_sender_id() != int(_identity.owner_peer):
+		return
+	if _is_local_owner():
+		return
+	if _player != null and _player.has_method("apply_remote_equipment"):
+		_player.apply_remote_equipment(snap)
+
+
 ## Interpolacja cudzej postaci: renderujemy "w przeszlosci" (INTERP_DELAY) miedzy dwoma snapshotami.
 func _apply_interpolation() -> void:
 	if _snapshots.size() == 0:
