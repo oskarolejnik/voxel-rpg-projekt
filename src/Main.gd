@@ -136,8 +136,9 @@ func _ready() -> void:
 		if _sd != null:
 			if _sd.world_seed != 0:
 				_ws = _sd.world_seed           # boot z zapisem -> TEN SAM świat (żeby Continue trafiło w zapis)
-			if _sd.class_id != &"" and GameState != null:
+			if _sd.class_id != &"" and GameState != null and OS.get_environment("PROBE_CLASS") == "":
 				GameState.class_id = _sd.class_id   # ...i ta sama KLASA: model/zasób/drzewko budują się z zapisu
+				# (PROBE_CLASS ma priorytet — debug sond nie nadpisujemy zapisem)
 	if OS.get_environment("PROBE_SEED") != "":
 		_ws = int(OS.get_environment("PROBE_SEED"))   # DEBUG (sonda): wymuś seed świata do zrzutów porównawczych
 	if RNGService != null:
@@ -620,6 +621,11 @@ func _probe_shot() -> void:
 		for e in get_tree().get_nodes_in_group("enemies"):
 			e.queue_free()
 
+	# DEBUG (sonda): PROBE_GEAR=1 zakłada syntetyczny KOMPLET (broń+hełm+naramienniki+peleryna+napierśnik+buty)
+	# do weryfikacji widocznego modelu ekwipunku (Faza 3). Rzadkość EPIC => emisyjny blask.
+	if OS.get_environment("PROBE_GEAR") != "" and _inventory != null:
+		_probe_equip_gear()
+
 	# Tryb "water": przenieś gracza nad najniższy punkt terenu w okolicy (tam stoi woda).
 	var water_yaw_deg := 35.0   # domyślny yaw kamery (tryb nie-woda)
 	if mode == "water":
@@ -732,6 +738,34 @@ func _probe_shot() -> void:
 	get_viewport().get_texture().get_image().save_png("C:/Users/oskar/Downloads/voxel-rpg/_shot.png")
 	print("[PROBE] shot saved")
 	get_tree().quit()
+
+
+## DEBUG (Faza 3): zakłada syntetyczny komplet gearu na gracza (do zrzutu widocznego ekwipunku).
+func _probe_equip_gear() -> void:
+	var wcls := OS.get_environment("PROBE_GEAR")
+	if wcls == "" or wcls == "1":
+		wcls = "sword"
+	var pieces := [
+		{ "id": &"pg_weapon", "slot": ItemResource.Slot.WEAPON, "kind": &"", "wc": StringName(wcls), "tint": Color(0.74, 0.76, 0.82) },
+		{ "id": &"pg_helm", "slot": ItemResource.Slot.HELM, "kind": &"helm", "wc": &"", "tint": Color(0.72, 0.74, 0.80) },
+		{ "id": &"pg_shoulders", "slot": ItemResource.Slot.SHOULDERS, "kind": &"pauldron", "wc": &"", "tint": Color(0.78, 0.64, 0.30) },
+		{ "id": &"pg_cloak", "slot": ItemResource.Slot.CLOAK, "kind": &"cloak", "wc": &"", "tint": Color(0.46, 0.16, 0.56) },
+		{ "id": &"pg_chest", "slot": ItemResource.Slot.CHEST, "kind": &"chest", "wc": &"", "tint": Color(0.68, 0.70, 0.76) },
+		{ "id": &"pg_boots", "slot": ItemResource.Slot.BOOTS, "kind": &"boot", "wc": &"", "tint": Color(0.42, 0.30, 0.18) },
+	]
+	for e in pieces:
+		var ir := ItemResource.new()
+		ir.id = e.id
+		ir.slot = e.slot
+		ir.visual_kind = e.kind
+		ir.weapon_class = e.wc
+		ir.visual_tint = e.tint
+		ItemDB.items[ir.id] = ir
+		var inst := ItemInstance.new()
+		inst.base_id = ir.id
+		inst.rarity = ItemResource.Rarity.EPIC
+		_inventory.equip(inst)
+
 
 func _find_node_of_type(n: Node, type_name: String) -> Node:
 	for c in n.get_children():
@@ -948,6 +982,10 @@ func _spawn_player() -> void:
 	# do magic_find w LootService.
 	_inventory = InventoryComponentScript.new()
 	_player_ref.add_child(_inventory)
+	# LOOT Faza 3: wpięcie WIDOCZNEGO ekwipunku — Player nasłuchuje item_equipped/unequipped i bake'uje
+	# gear na pivotach modelu. (Dotąd sygnał item_equipped nie był podłączony nigdzie => zero modeli gearu.)
+	if _player_ref.has_method("connect_equipment_visuals"):
+		_player_ref.connect_equipment_visuals(_inventory)
 	if GameState != null:
 		GameState.set_local_player(_player_ref)
 

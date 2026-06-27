@@ -29,6 +29,9 @@ func _ready() -> void:
 	_check(ItemResource.Rarity.MYTHIC == 6 and ItemResource.Rarity.ANCIENT == 7, "MYTHIC/ANCIENT mają złe indeksy")
 	_check(InventoryComponent.EQUIP_SLOT_COUNT == 12 and InventoryComponent.EquipSlot.TRINKET_2 == 6 \
 		and InventoryComponent.EquipSlot.AMULET == 11, "EquipSlot nie rozszerzony do 12")
+	# Lockstep UI: etykiety slotów MUSZĄ mieć tyle wpisów co EQUIP_SLOT_COUNT (inaczej crash przy nowych slotach).
+	_check(InventoryUI.EQUIP_LABELS.size() == InventoryComponent.EQUIP_SLOT_COUNT,
+		"EQUIP_LABELS (%d) != EQUIP_SLOT_COUNT (%d)" % [InventoryUI.EQUIP_LABELS.size(), InventoryComponent.EQUIP_SLOT_COUNT])
 
 	# (b) tablice rzadkości długości 8.
 	_check(LootService.TIER_MULT.size() == 8 and LootService.AFFIX_COUNT.size() == 8 \

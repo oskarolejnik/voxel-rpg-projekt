@@ -13,7 +13,13 @@ enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET, MYTHIC, ANCIENT }   
 @export var id: StringName = &""
 @export var display_name: String = ""
 @export var icon: Texture2D
-@export var mesh: PackedScene                         # voxelowy model broni/itemu
+@export var mesh: PackedScene                         # (legacy/nieużywane) — patrz visual_kind
+# LOOT Faza 3 — WIDOCZNY MODEL ekwipunku. visual_kind wybiera proceduralną rzeźbę (_sculpt_gear_<kind>
+# w Player), NIE renderujemy PackedScene (perf przy 100+). visual_tint: a==0 => dziedzicz paletę klasy.
+# visual_glow: a==0 => energia emisji z rzadkości. Definicyjne => save-free.
+@export var visual_kind: StringName = &""             # &"sword"/&"helm"/&"pauldron"/&"cloak"... (puste => domyślny wg slotu)
+@export var visual_tint: Color = Color(0, 0, 0, 0)
+@export var visual_glow: Color = Color(0, 0, 0, 0)
 @export var slot: Slot = Slot.WEAPON
 @export var weapon_class: StringName = &""            # &"axe2h"/&"wand"/&"bow"... -> nadpisuje bron
 @export var base_modifiers: Array[StatModifier] = []  # implicit

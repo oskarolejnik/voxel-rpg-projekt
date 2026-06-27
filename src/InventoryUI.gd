@@ -20,8 +20,9 @@ const TOAST_LIFETIME: float = 3.2
 const SLOT_SIZE: float = 56.0
 const SLOT_GAP: float = 8.0
 
-## Etykiety slotow noszonych (kolejnosc = InventoryComponent.EquipSlot).
-const EQUIP_LABELS: Array[String] = ["Bron", "Glowa", "Tulow", "Nogi", "Buty", "Trinket 1", "Trinket 2"]
+## Etykiety slotow noszonych (kolejnosc = InventoryComponent.EquipSlot; 12 slotow po LOOT Fazie 1).
+const EQUIP_LABELS: Array[String] = ["Bron", "Glowa", "Tulow", "Nogi", "Buty", "Trinket 1", "Trinket 2",
+	"Rekawice", "Naramienniki", "Pas", "Peleryna", "Amulet"]
 
 var _inv: InventoryComponent = null
 

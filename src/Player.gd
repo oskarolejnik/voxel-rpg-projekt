@@ -184,6 +184,8 @@ var _dying: bool = false
 var _hair: Node3D            # pivot grzywki (dziecko _head)
 var _weapon: Node3D          # pivot broni/dloni (dziecko _arm_r_lo)
 var _cape: Node3D            # pivot peleryny (dziecko _torso)
+# LOOT Faza 3 — WIDOCZNY EKWIPUNEK: EquipSlot(int) -> Array[MeshInstance3D] przyczepione do pivotów modelu.
+var _gear: Dictionary = {}
 # Dodatkowy stan dla NATURALNEJ animacji (wygładzane „blend weights" 0..1 i fazy).
 var _gait: float = 0.0        # 0=idle/stoi, 1=pełny chód — wygładzona „siła" lokomocji (anti-pop)
 var _run_blend: float = 0.0   # 0=chód, 1=bieg — wygładzone przejście chód<->bieg (amplitudy/tempo)
@@ -1121,6 +1123,285 @@ func _make_char_material() -> StandardMaterial3D:
 	mat.roughness = 1.0
 	mat.metallic = 0.0
 	return mat
+
+
+# ============================================================================
+#  LOOT Faza 3 — WIDOCZNY MODEL EKWIPUNKU
+#  Sterowane sygnałem InventoryComponent.item_equipped/unequipped (dotąd niepodłączonym). Każdy slot
+#  bake'uje PROCEDURALNĄ geometrię (VoxelDef -> mesh) na pivocie ciała, w tej samej konwencji co sculpty
+#  klasy (globalne voxele + znany pivot_vox). INKREMENTALNIE: przebudowa TYLKO zmienionego slotu, nigdy
+#  całej postaci. visual_kind -> rzeźba; tint -> kolor (a==0 dziedziczy paletę klasy); rarity -> emisja.
+# ============================================================================
+
+## Wpina wizualizację ekwipunku do sygnałów komponentu. Woła Main po utworzeniu InventoryComponentu.
+func connect_equipment_visuals(inv: Node) -> void:
+	if inv == null:
+		return
+	if inv.has_signal("item_equipped") and not inv.item_equipped.is_connected(_on_gear_equipped):
+		inv.item_equipped.connect(_on_gear_equipped)
+	if inv.has_signal("item_unequipped") and not inv.item_unequipped.is_connected(_on_gear_unequipped):
+		inv.item_unequipped.connect(_on_gear_unequipped)
+	# Wstępna synchronizacja: pokaż to, co już założone (np. po wczytaniu zapisu).
+	if "equipment" in inv:
+		for s in inv.equipment:
+			if inv.equipment[s] != null:
+				_rebuild_gear_slot(int(s), inv.equipment[s])
+
+
+func _on_gear_equipped(equip_slot: int, item) -> void:
+	_rebuild_gear_slot(equip_slot, item)
+
+func _on_gear_unequipped(equip_slot: int, _item) -> void:
+	_rebuild_gear_slot(equip_slot, null)
+
+
+## Inkrementalna przebudowa JEDNEGO slotu: zwolnij stare meshe, zbuduj nowe wg visual_kind (gdy item != null).
+func _rebuild_gear_slot(equip_slot: int, item) -> void:
+	if _model == null:
+		return
+	if _gear.has(equip_slot):
+		for mi in _gear[equip_slot]:
+			if is_instance_valid(mi):
+				mi.queue_free()
+		_gear.erase(equip_slot)
+	if item == null:
+		return
+	var ir = ItemDB.item(item.base_id) if (ItemDB != null and "base_id" in item) else null
+	if ir == null:
+		return
+	var kind: StringName = ir.visual_kind if ir.visual_kind != &"" else _default_gear_kind(equip_slot, ir)
+	if kind == &"":
+		return
+	var tint: Color = ir.visual_tint if ir.visual_tint.a > 0.0 else _gear_default_tint(equip_slot)
+	var made: Array = []
+	for ap in _gear_attach_points(equip_slot):
+		var d := VoxelModel.VoxelDef.new()
+		_sculpt_gear(d, kind, ir.weapon_class, int(ap.side), tint)
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelModel.build_mesh(d, VS, -Vector3(ap.pivot_vox) * VS)
+		mi.material_override = _make_gear_material(tint, ir.visual_glow, int(item.rarity))
+		ap.pivot.add_child(mi)
+		made.append(mi)
+	if not made.is_empty():
+		_gear[equip_slot] = made
+
+
+## Punkty przyczepienia gearu danego slotu: {pivot, pivot_vox (jak w _build_voxel_character), side}.
+func _gear_attach_points(equip_slot: int) -> Array:
+	var ES := InventoryComponent.EquipSlot
+	var wrist_y := _ELBOW_Y - P_FARM_H + 2
+	match equip_slot:
+		ES.WEAPON:
+			return [{ "pivot": _weapon, "pivot_vox": Vector3i(_ARM_X, wrist_y, 0), "side": 1 }]
+		ES.HELM:
+			return [{ "pivot": _head, "pivot_vox": Vector3i(0, _SHOULDER_Y, 0), "side": 0 }]
+		ES.CHEST, ES.BELT:
+			return [{ "pivot": _torso, "pivot_vox": Vector3i(0, _HIP_Y, 0), "side": 0 }]
+		ES.CLOAK:
+			return [{ "pivot": _cape, "pivot_vox": Vector3i(0, _SHOULDER_Y - 1, P_TORSO_D / 2 + 1), "side": 0 }]
+		ES.SHOULDERS:
+			return [{ "pivot": _arm_l, "pivot_vox": Vector3i(-_ARM_X, _SHOULDER_Y, 0), "side": -1 },
+				{ "pivot": _arm_r, "pivot_vox": Vector3i(_ARM_X, _SHOULDER_Y, 0), "side": 1 }]
+		ES.GLOVES:
+			return [{ "pivot": _arm_l_lo, "pivot_vox": Vector3i(-_ARM_X, _ELBOW_Y, 0), "side": -1 },
+				{ "pivot": _arm_r_lo, "pivot_vox": Vector3i(_ARM_X, _ELBOW_Y, 0), "side": 1 }]
+		ES.BOOTS:
+			return [{ "pivot": _leg_l_lo, "pivot_vox": Vector3i(-_LEG_X, _KNEE_Y, 0), "side": -1 },
+				{ "pivot": _leg_r_lo, "pivot_vox": Vector3i(_LEG_X, _KNEE_Y, 0), "side": 1 }]
+		ES.LEGS:
+			return [{ "pivot": _leg_l, "pivot_vox": Vector3i(-_LEG_X, _HIP_Y, 0), "side": -1 },
+				{ "pivot": _leg_r, "pivot_vox": Vector3i(_LEG_X, _HIP_Y, 0), "side": 1 }]
+		_:
+			return []   # TRINKET/AMULET: akcent emisyjny (rozszerzenie); brak pełnej geometrii
+
+
+## Domyślny visual_kind, gdy item go nie poda — z weapon_class (broń) lub ze slotu (pancerz).
+func _default_gear_kind(equip_slot: int, ir) -> StringName:
+	var ES := InventoryComponent.EquipSlot
+	match equip_slot:
+		ES.WEAPON:
+			return ir.weapon_class if ir.weapon_class != &"" else &"sword"
+		ES.HELM: return &"helm"
+		ES.CHEST: return &"chest"
+		ES.SHOULDERS: return &"pauldron"
+		ES.CLOAK: return &"cloak"
+		ES.GLOVES: return &"bracer"
+		ES.BOOTS: return &"boot"
+		ES.LEGS: return &"greave"
+		ES.BELT: return &"belt"
+	return &""
+
+
+## Domyślny kolor gearu (gdy item nie ma visual_tint): pochodna palety klasy (metal trim / tkanina).
+func _gear_default_tint(equip_slot: int) -> Color:
+	var ES := InventoryComponent.EquipSlot
+	if equip_slot == ES.CLOAK:
+		return _C_CAPE
+	if equip_slot == ES.WEAPON:
+		return _C_TRIM
+	return _C_TRIM   # pancerz metalowy ~ lamówka klasy
+
+
+## Materiał gearu: vertex-color albedo + emisja od rzadkości (EPIC+ świeci, ANCIENT mocno) lub visual_glow.
+func _make_gear_material(tint: Color, glow: Color, rarity: int) -> StandardMaterial3D:
+	var mat := _make_char_material()
+	var emis := glow
+	if emis.a <= 0.0 and rarity >= ItemResource.Rarity.EPIC:
+		emis = LootService.rarity_color(rarity)
+	if emis.a > 0.0:
+		mat.emission_enabled = true
+		mat.emission = Color(emis.r, emis.g, emis.b)
+		mat.emission_energy_multiplier = 0.5 + float(maxi(0, rarity - ItemResource.Rarity.EPIC)) * 0.45
+	return mat
+
+
+## Dispatcher rzeźb gearu. side=-1(L)/+1(R)/0(środek). tint = kolor bazowy; sh = cień.
+func _sculpt_gear(d: VoxelModel.VoxelDef, kind: StringName, weapon_class: StringName, side: int, tint: Color) -> void:
+	var sh := tint.darkened(0.26)
+	match kind:
+		&"sword", &"greatsword", &"axe", &"axe2h", &"mace", &"hammer2h", &"spear", &"dagger", &"sword2h":
+			_gear_blade(d, kind, tint, sh)
+		&"staff", &"wand", &"tome":
+			_gear_staff(d, kind, tint, sh)
+		&"bow", &"crossbow":
+			_gear_bow(d, tint, sh)
+		&"helm":
+			_gear_helm(d, tint, sh)
+		&"pauldron":
+			_gear_pauldron(d, side, tint, sh)
+		&"cloak":
+			_gear_cloak(d, tint, sh)
+		&"chest":
+			_gear_chest(d, tint, sh)
+		&"belt":
+			_gear_belt(d, tint, sh)
+		&"bracer":
+			_gear_bracer(d, side, tint, sh)
+		&"boot", &"greave":
+			_gear_boot(d, side, tint, sh)
+		_:
+			# nieznany kind broni -> ostrze; inaczej drobna płyta na barku.
+			if weapon_class != &"":
+				_gear_blade(d, &"sword", tint, sh)
+			else:
+				_gear_pauldron(d, side, tint, sh)
+
+
+# --- BROŃ (na pivocie _weapon, cx=_ARM_X, gy=wrist_y; wyciągnięta do przodu -Z) ---
+func _gear_blade(d: VoxelModel.VoxelDef, kind: StringName, tint: Color, sh: Color) -> void:
+	var cx := _ARM_X
+	var gy := _ELBOW_Y - P_FARM_H + 2
+	var dz := P_LIMB_D / 2
+	var blade_len := 9
+	if kind == &"greatsword" or kind == &"axe2h" or kind == &"hammer2h" or kind == &"sword2h" or kind == &"spear":
+		blade_len = 14
+	elif kind == &"dagger":
+		blade_len = 5
+	# rękojeść (ciemna) tuż pod nadgarstkiem.
+	d.fill_box(Vector3i(cx, gy - 2, -dz), Vector3i(cx + 1, gy, -dz + 1), sh)
+	# jelec/poprzeczka (szersza, ku przodowi).
+	d.fill_box(Vector3i(cx - 1, gy - 1, -dz - 1), Vector3i(cx + 2, gy, -dz), tint)
+	# głownia/ostrze wyciągnięte do przodu (-Z).
+	d.fill_box(Vector3i(cx, gy - 1, -dz - 1 - blade_len), Vector3i(cx + 1, gy, -dz - 1), tint)
+	# czubek (zwężenie).
+	d.set_voxel(Vector3i(cx, gy - 1, -dz - 2 - blade_len), tint)
+	if kind == &"axe" or kind == &"axe2h":
+		# topór: szeroka „brzeszczot" przy jelcu.
+		d.fill_box(Vector3i(cx + 1, gy - 2, -dz - 4), Vector3i(cx + 3, gy + 1, -dz - 1), tint)
+	elif kind == &"mace" or kind == &"hammer2h":
+		# obuch na końcu.
+		d.fill_box(Vector3i(cx - 1, gy - 2, -dz - 3 - blade_len), Vector3i(cx + 2, gy + 1, -dz - blade_len), tint)
+
+func _gear_staff(d: VoxelModel.VoxelDef, kind: StringName, tint: Color, sh: Color) -> void:
+	var cx := _ARM_X
+	var gy := _ELBOW_Y - P_FARM_H + 2
+	var dz := P_LIMB_D / 2
+	# długi drzewiec w górę (+Y) z dłoni.
+	d.fill_box(Vector3i(cx, gy - 2, -dz), Vector3i(cx + 1, gy + 10, -dz + 1), sh)
+	# świecący kryształ na czubku (akcent).
+	d.fill_box(Vector3i(cx - 1, gy + 10, -dz - 1), Vector3i(cx + 2, gy + 13, -dz + 2), tint)
+	if kind == &"wand":
+		# różdżka: krótszy drzewiec.
+		d.cells.clear()
+		d.fill_box(Vector3i(cx, gy - 2, -dz - 3), Vector3i(cx + 1, gy, -dz + 1), sh)
+		d.fill_box(Vector3i(cx, gy - 1, -dz - 5), Vector3i(cx + 1, gy, -dz - 3), tint)
+
+func _gear_bow(d: VoxelModel.VoxelDef, tint: Color, sh: Color) -> void:
+	var cx := _ARM_X
+	var gy := _ELBOW_Y - P_FARM_H + 2
+	var dz := P_LIMB_D / 2
+	# łuk: pionowy łuk (+Y i -Y) z cięciwą.
+	for yy in range(gy - 7, gy + 8):
+		var bend := absi(yy - gy)
+		d.set_voxel(Vector3i(cx, yy, -dz - 1 - (3 - mini(3, bend))), tint)
+	d.fill_box(Vector3i(cx, gy - 7, -dz), Vector3i(cx + 1, gy + 8, -dz + 1), sh)   # cięciwa (ciemna)
+
+
+# --- PANCERZ ---
+func _gear_helm(d: VoxelModel.VoxelDef, tint: Color, sh: Color) -> void:
+	var hw := P_HEAD_W / 2
+	var hd := P_HEAD_D / 2
+	var y1 := _HEAD_TOP
+	var brow := _NECK_TOP + (P_HEAD_H * 11) / 20 + 2
+	# kopuła hełmu nad czołem + opaska + nosal.
+	for yy in range(brow + 1, y1 + maxi(1, P_HAIR_TOP)):
+		d.fill_box(Vector3i(-hw - 1, yy, -hd - 1), Vector3i(hw + 2, yy + 1, hd + 2), tint)
+	d.fill_box(Vector3i(-hw - 1, brow, -hd - 2), Vector3i(hw + 2, brow + 1, hd + 2), tint)
+	d.set_voxel(Vector3i(0, brow - 1, -hd - 2), sh)   # nosal
+
+func _gear_pauldron(d: VoxelModel.VoxelDef, side: int, tint: Color, sh: Color) -> void:
+	var cx := side * _ARM_X
+	var x0 := cx - P_ARM_W / 2
+	var x1 := x0 + P_ARM_W
+	var dz := P_LIMB_D / 2
+	# duża płyta projektująca na zewnątrz + grzbiet (jak ciężki naramiennik).
+	var ox0 := (x0 - 2) if side < 0 else x0
+	var ox1 := x1 if side < 0 else (x1 + 2)
+	d.fill_box(Vector3i(ox0, _SHOULDER_Y - 2, -dz - 1), Vector3i(ox1, _SHOULDER_Y, dz + 2), tint)
+	d.fill_box(Vector3i(ox0, _SHOULDER_Y, -dz), Vector3i(ox1, _SHOULDER_Y + 2, dz + 1), tint)
+	var edge := ox0 if side < 0 else (ox1 - 1)
+	d.set_voxel(Vector3i(edge, _SHOULDER_Y - 1, 0), sh)   # nit
+
+func _gear_cloak(d: VoxelModel.VoxelDef, tint: Color, sh: Color) -> void:
+	var y0 := _HIP_Y - 2                          # dłuższa peleryna niż klasowa
+	var y1 := _SHOULDER_Y
+	var sw := P_SHOULDER_W / 2
+	var dz := P_TORSO_D / 2
+	d.fill_box(Vector3i(-sw, y0, dz + 1), Vector3i(sw + 1, y1, dz + 2), tint)
+	d.fill_box(Vector3i(-sw, y0, dz + 1), Vector3i(0, y1, dz + 2), sh)   # cień fałdy (lewa połowa)
+
+func _gear_chest(d: VoxelModel.VoxelDef, tint: Color, sh: Color) -> void:
+	var y0 := _HIP_Y + 1
+	var y1 := _SHOULDER_Y
+	var ww := P_WAIST_W / 2
+	var dz := P_TORSO_D / 2
+	# napierśnik: nakładka płyt na froncie korpusu + barki.
+	d.fill_box(Vector3i(-ww - 1, y0, -dz - 1), Vector3i(ww + 2, y1, -dz), tint)
+	d.fill_box(Vector3i(-ww - 1, (y0 + y1) / 2, -dz - 1), Vector3i(ww + 2, (y0 + y1) / 2 + 1, -dz), sh)  # przepaska
+
+func _gear_belt(d: VoxelModel.VoxelDef, tint: Color, sh: Color) -> void:
+	var ww := P_WAIST_W / 2
+	var dz := P_TORSO_D / 2
+	d.fill_box(Vector3i(-ww - 1, _HIP_Y, -dz - 1), Vector3i(ww + 2, _HIP_Y + 2, dz + 1), tint)
+	d.set_voxel(Vector3i(0, _HIP_Y, -dz - 1), sh)   # klamra
+
+func _gear_bracer(d: VoxelModel.VoxelDef, side: int, tint: Color, sh: Color) -> void:
+	var cx := side * _ARM_X
+	var x0 := cx - P_ARM_W / 2
+	var x1 := x0 + P_ARM_W
+	var dz := P_LIMB_D / 2
+	var y0 := _ELBOW_Y - P_FARM_H
+	d.fill_box(Vector3i(x0 - 1, y0 + 1, -dz - 1), Vector3i(x1 + 1, _ELBOW_Y - 1, dz + 1), tint)
+	d.set_voxel(Vector3i(cx, _ELBOW_Y - 2, -dz - 1), sh)
+
+func _gear_boot(d: VoxelModel.VoxelDef, side: int, tint: Color, sh: Color) -> void:
+	var cx := side * _LEG_X
+	var x0 := cx - P_LEG_W / 2
+	var x1 := x0 + P_LEG_W
+	var dz := P_LIMB_D / 2
+	# nagolennik/but: nakładka na łydkę + czubek.
+	d.fill_box(Vector3i(x0 - 1, 1, -dz - 1), Vector3i(x1 + 1, _ANKLE_Y + 2, dz + 1), tint)
+	d.fill_box(Vector3i(x0 - 1, 1, -dz - P_FOOT_FWD - 1), Vector3i(x1 + 1, 2, -dz), sh)   # czubek
 
 # FEEL 3: dokłada dwa malutkie EMISYJNE voxele na tęczówkach gracza (dzieci _head). Głowa to jeden
 # vertex-color mesh bez emisji per-voxel, więc świecący akcent oka dajemy osobnymi mini-meshami.
