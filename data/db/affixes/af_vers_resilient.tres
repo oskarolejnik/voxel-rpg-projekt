@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_vs01"]
+
+[resource]
+script = ExtResource("1_vs01")
+id = &"af_vers_resilient"
+kind = 0
+stat = &"max_hp"
+op = 0
+value_min = 20.0
+value_max = 50.0
+tags = Array[StringName]([&"defense", &"nature"])
+ilvl_min = 2
+allowed_slots = Array[int]([2, 3])
+biomes = Array[StringName]([])
+weight = 1.3

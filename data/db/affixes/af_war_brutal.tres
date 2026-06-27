@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_war01"]
+
+[resource]
+script = ExtResource("1_war01")
+id = &"af_war_brutal"
+kind = 0
+stat = &"damage"
+op = 0
+value_min = 8.0
+value_max = 18.0
+tags = Array[StringName]([&"phys", &"melee"])
+ilvl_min = 2
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([])
+weight = 1.3

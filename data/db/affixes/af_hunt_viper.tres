@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_hnt03"]
+
+[resource]
+script = ExtResource("1_hnt03")
+id = &"af_hunt_viper"
+kind = 0
+stat = &"poison_damage"
+op = 0
+value_min = 5.0
+value_max = 13.0
+tags = Array[StringName]([&"nature", &"ranged"])
+ilvl_min = 4
+allowed_slots = Array[int]([0, 5])
+biomes = Array[StringName]([])
+weight = 1.0

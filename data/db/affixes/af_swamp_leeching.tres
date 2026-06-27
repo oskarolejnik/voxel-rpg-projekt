@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_sw2lc"]
+
+[resource]
+script = ExtResource("1_sw2lc")
+id = &"af_swamp_leeching"
+stat = &"lifesteal"
+value_min = 0.02
+value_max = 0.05
+tags = Array[StringName]([&"leech", &"nature"])
+ilvl_min = 5
+allowed_slots = Array[int]([0, 5])
+biomes = Array[StringName]([&"swamp"])
+weight = 0.8

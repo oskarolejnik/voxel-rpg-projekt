@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_vs08"]
+
+[resource]
+script = ExtResource("1_vs08")
+id = &"af_vers_of_seeker"
+kind = 1
+stat = &"magic_find"
+op = 1
+value_min = 0.05
+value_max = 0.18
+tags = Array[StringName]([&"nature", &"caster"])
+ilvl_min = 8
+allowed_slots = Array[int]([5, 8])
+biomes = Array[StringName]([])
+weight = 0.7

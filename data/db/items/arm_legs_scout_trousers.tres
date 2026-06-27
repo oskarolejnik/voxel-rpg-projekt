@@ -6,7 +6,8 @@
 [sub_resource type="Resource" id="Resource_a"]
 script = ExtResource("1_sm")
 stat = &"move_speed"
-value = 0.35
+op = 1
+value = 0.12
 tags = Array[StringName]([&"mobility"])
 source = &"gear"
 source_id = &"arm_legs_scout_trousers"

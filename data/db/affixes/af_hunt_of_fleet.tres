@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_hnt06"]
+
+[resource]
+script = ExtResource("1_hnt06")
+id = &"af_hunt_of_fleet"
+kind = 1
+stat = &"move_speed"
+op = 1
+value_min = 0.15
+value_max = 0.40
+tags = Array[StringName]([&"ranged", &"melee"])
+ilvl_min = 3
+allowed_slots = Array[int]([4, 11])
+biomes = Array[StringName]([])
+weight = 1.1

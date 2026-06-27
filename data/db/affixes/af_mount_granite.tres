@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_mnt01"]
+
+[resource]
+script = ExtResource("1_mnt01")
+id = &"af_mount_granite"
+kind = 0
+stat = &"armor"
+op = 0
+value_min = 8.0
+value_max = 20.0
+tags = Array[StringName]([&"defense"])
+ilvl_min = 3
+allowed_slots = Array[int]([1, 2])
+biomes = Array[StringName]([&"mountains"])
+weight = 1.2

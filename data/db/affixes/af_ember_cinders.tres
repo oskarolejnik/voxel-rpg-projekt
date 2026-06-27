@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_af"]
+
+[resource]
+script = ExtResource("1_af")
+id = &"af_ember_cinders"
+kind = 1
+stat = &"fire_damage"
+op = 0
+value_min = 6.0
+value_max = 15.0
+tags = Array[StringName]([&"fire"])
+ilvl_min = 5
+allowed_slots = Array[int]([8, 12])
+biomes = Array[StringName]([&"emberwaste", &"volcanic"])
+weight = 1.3

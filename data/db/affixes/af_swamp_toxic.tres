@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_sw1tx"]
+
+[resource]
+script = ExtResource("1_sw1tx")
+id = &"af_swamp_toxic"
+stat = &"poison_damage"
+value_min = 5.0
+value_max = 13.0
+tags = Array[StringName]([&"poison", &"nature"])
+ilvl_min = 3
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"swamp"])
+weight = 1.1

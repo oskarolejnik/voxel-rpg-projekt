@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_mnt06"]
+
+[resource]
+script = ExtResource("1_mnt06")
+id = &"af_mount_gorebound"
+kind = 1
+stat = &"bleed_damage"
+op = 1
+value_min = 0.10
+value_max = 0.28
+tags = Array[StringName]([&"melee"])
+ilvl_min = 8
+allowed_slots = Array[int]([0, 1])
+biomes = Array[StringName]([&"mountains"])
+weight = 0.7

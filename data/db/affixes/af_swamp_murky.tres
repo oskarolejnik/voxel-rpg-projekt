@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_sw3mk"]
+
+[resource]
+script = ExtResource("1_sw3mk")
+id = &"af_swamp_murky"
+kind = 1
+stat = &"dodge"
+value_min = 0.03
+value_max = 0.08
+tags = Array[StringName]([&"defense", &"nature"])
+ilvl_min = 2
+allowed_slots = Array[int]([4, 2])
+biomes = Array[StringName]([&"swamp"])
+weight = 1.2

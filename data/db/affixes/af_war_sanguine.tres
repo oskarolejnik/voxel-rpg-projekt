@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_war05"]
+
+[resource]
+script = ExtResource("1_war05")
+id = &"af_war_sanguine"
+kind = 0
+stat = &"lifesteal"
+op = 0
+value_min = 0.02
+value_max = 0.05
+tags = Array[StringName]([&"leech", &"melee"])
+ilvl_min = 5
+allowed_slots = Array[int]([0, 5])
+biomes = Array[StringName]([])
+weight = 0.9

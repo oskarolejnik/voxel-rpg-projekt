@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_af02"]
+
+[resource]
+script = ExtResource("1_af02")
+id = &"af_holy_guardian"
+kind = 0
+stat = &"armor"
+op = 0
+value_min = 8.0
+value_max = 20.0
+tags = Array[StringName]([&"holy", &"defense"])
+ilvl_min = 1
+allowed_slots = Array[int]([2, 9])
+biomes = Array[StringName]([])
+weight = 1.2

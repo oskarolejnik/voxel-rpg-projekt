@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_mnt03"]
+
+[resource]
+script = ExtResource("1_mnt03")
+id = &"af_mount_stoneblood"
+kind = 0
+stat = &"max_hp"
+op = 0
+value_min = 20.0
+value_max = 55.0
+tags = Array[StringName]([&"defense"])
+ilvl_min = 2
+allowed_slots = Array[int]([1, 3, 9])
+biomes = Array[StringName]([&"mountains"])
+weight = 1.1

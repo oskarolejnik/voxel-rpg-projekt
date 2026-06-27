@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_mnt04"]
+
+[resource]
+script = ExtResource("1_mnt04")
+id = &"af_mount_ravager"
+kind = 0
+stat = &"bleed_damage"
+op = 0
+value_min = 5.0
+value_max = 14.0
+tags = Array[StringName]([&"melee"])
+ilvl_min = 5
+allowed_slots = Array[int]([0])
+biomes = Array[StringName]([&"mountains"])
+weight = 0.9

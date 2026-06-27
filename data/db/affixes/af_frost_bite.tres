@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_af"]
+
+[resource]
+script = ExtResource("1_af")
+id = &"af_frost_bite"
+kind = 0
+stat = &"frost_damage"
+op = 0
+value_min = 5.0
+value_max = 15.0
+tags = Array[StringName]([&"frost"])
+ilvl_min = 3
+allowed_slots = Array[int]([0, 12])
+biomes = Array[StringName]([&"frosthelm"])
+weight = 1.1

@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="AffixResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/AffixResource.gd" id="1_hnt08"]
+
+[resource]
+script = ExtResource("1_hnt08")
+id = &"af_hunt_of_execution"
+kind = 1
+stat = &"crit_mult"
+op = 0
+value_min = 0.12
+value_max = 0.35
+tags = Array[StringName]([&"crit", &"ranged"])
+ilvl_min = 8
+allowed_slots = Array[int]([0, 5])
+biomes = Array[StringName]([])
+weight = 0.7

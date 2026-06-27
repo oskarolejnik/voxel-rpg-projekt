@@ -22,7 +22,7 @@ source_id = &"wpn_sword_iron_fang"
 [resource]
 script = ExtResource("2_ir")
 id = &"wpn_sword_iron_fang"
-display_name = "Zelazny Kel"
+display_name = "Zelazny Kiel"
 visual_kind = &"sword"
 visual_tint = Color(0.72, 0.72, 0.76, 1.0)
 slot = 0
