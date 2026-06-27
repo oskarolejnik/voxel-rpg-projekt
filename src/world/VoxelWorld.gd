@@ -75,6 +75,11 @@ const FORWARD_BIAS: float = 2.0
 #   BEACH ≤ 26 (13 m), ROCK ≥ 56 (28 m), SNOW ≥ 68 (34 m) — wszystkie osiągalne.
 const BASE_HEIGHT: float = 14.0          # z kontrastem szumu daje jeziora (doliny) i szczyty (śnieg)
 const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m (szczyty ~44 m)
+# WORLDGEN P3 (Cube World feel): domain warp + redystrybucja wysokości. WARP_AMP = ile metrów przesuwamy
+# próbkowane współrzędne (organiczne, płynące formy zamiast kratek). HEIGHT_EXPONENT > 1 wpycha średnie
+# wysokości w dół (szerokie płaskie doliny, "zaprojektowane" wzniesienia). Gen const => determinizm; save-gate.
+const WARP_AMP: float = 90.0
+const HEIGHT_EXPONENT: float = 1.7
 
 # BIOME #8: per-biomowe PROFILE terenu (indeks == pasmo w BIOME_PROGRESSION). Profil nadpisuje
 # globalne BASE/AMP/freq tak, by każdy biom miał DISTINCT sylwetkę (płaskie równiny vs postrzępione
@@ -143,6 +148,7 @@ var _noise: FastNoiseLite
 var _tint_noise: FastNoiseLite
 var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C) == temperatura (Etap 4)
 var _humid_noise: FastNoiseLite   # ETAP 4: wilgotność (drugi wymiar podziału biomów)
+var _warp_noise: FastNoiseLite    # WORLDGEN P3: domain warp (organiczne, nie-kratkowe landformy)
 # JASKINIE: dwa zdekorelowane pola ridged (przecięcie izopowierzchni ~0 = tunele) + cellular na komory.
 # Konfigurowane RAZ w _setup_noise, potem TYLKO odczyt (is_cave/ore_at) z wątku roboczego — ten sam
 # kontrakt thread-safe co _noise/_biome_noise (żadnych mutacji po starcie).
@@ -205,6 +211,16 @@ func _setup_noise() -> void:
 	_noise.fractal_octaves = 4
 	_noise.fractal_lacunarity = 2.0
 	_noise.fractal_gain = 0.5
+
+	# WORLDGEN P3: DOMAIN WARP — przesuwamy współrzędne próbkowania terenu drugim, niskoczęstym szumem.
+	# Zamienia osiowo-wyrównane (kratkowe) FBM w organiczne, PŁYNĄCE landformy => "zaprojektowane", nie
+	# "z funkcji szumu". Najwyższy zwrot wizualny/linijkę. Deterministyczne (seed); przesuwa surface_y => save-gate.
+	_warp_noise = FastNoiseLite.new()
+	_warp_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_warp_noise.seed = world_seed + 4471
+	_warp_noise.frequency = 0.0018
+	_warp_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_warp_noise.fractal_octaves = 2
 
 	_tint_noise = FastNoiseLite.new()
 	_tint_noise.noise_type = FastNoiseLite.TYPE_PERLIN
@@ -349,7 +365,13 @@ func surface_height(world_x: int, world_z: int) -> int:
 	# poziom morza (jeziora) i wybijał w szczyty, zamiast skupiać się wokół środka. Per-profil
 	# freq_mul zmienia REALNY rozmiar form (drobne wydmy vs szerokie wzgórza), bez mutacji _noise.
 	var fm: float = prof["freq_mul"]
-	var raw := _noise.get_noise_2d(float(world_x) * fm, float(world_z) * fm)
+	# WORLDGEN P3: DOMAIN WARP — przesuwamy próbkowane współrzędne niskoczęstym szumem (organiczne,
+	# płynące landformy zamiast osiowych kratek). Warp z NIEwarpowanych (wx,wz) => deterministyczny.
+	var warp_x := _warp_noise.get_noise_2d(float(world_x), float(world_z)) * WARP_AMP
+	var warp_z := _warp_noise.get_noise_2d(float(world_x) + 1000.0, float(world_z) - 1000.0) * WARP_AMP
+	var sx := (float(world_x) + warp_x) * fm
+	var sz := (float(world_z) + warp_z) * fm
+	var raw := _noise.get_noise_2d(sx, sz)
 	var shaped: float
 	if bool(prof["ridged"]):
 		# RIDGED: 1 - |n| daje ostre granie (góry/wulkany) — szczyt tam, gdzie szum przecina 0.
@@ -357,6 +379,9 @@ func surface_height(world_x: int, world_z: int) -> int:
 		shaped = clampf((1.0 - absf(raw)) * float(prof["contrast"]) - (float(prof["contrast"]) - 1.0), 0.0, 1.0)
 	else:
 		shaped = clampf(raw * float(prof["contrast"]) + 0.5, 0.0, 1.0)
+		# WORLDGEN P3: REDISTRYBUCJA — pow(e, exponent>1) wpycha ŚREDNIE wysokości w dół => szerokie,
+		# PŁASKIE doliny + wyraźniejsze, "zamierzone" wzniesienia (zamiast jednostajnego falowania).
+		shaped = pow(shaped, HEIGHT_EXPONENT)
 	var h := int(round(float(prof["base"]) + shaped * float(prof["amp"])))
 	return clampi(h, 1, WORLD_HEIGHT - 1)
 
