@@ -126,3 +126,34 @@ state — the 2nd back-to-back run is always worse regardless of variant.)
 ### Save note
 Phases 4A shift `surface_y` (terrain regen). Character saves (level/loot/inventory) are unaffected;
 only saved voxel EDITS on an old world float — acceptable pre-release. Start a fresh world to see it.
+
+---
+
+## MESHING-SPEED PASS — findings (no code kept; the safe levers don't move it)
+
+Profiled the chunk worker (gen vs mesh, `Time.get_ticks_usec`):
+
+- **mesh ≈ 400 ms CPU/chunk at low contention** (gold@spawn 447 ms, walk 393 ms), **gen ≈ 120 ms**.
+  Under the fast-travel stress this inflates to ~625 ms (≈ +180 ms preemption — 3 workers + main on ~4
+  cores). Queue-drain rate (~3.7 chunks/s) ≈ per-chunk wall-time ÷ 3 workers — so the per-chunk mesh CPU
+  **is** the streaming limiter.
+- **Tried + reverted (zero measurable gain):**
+  - *Per-column loop bound* (skip air above `_colmax` instead of full WORLD_HEIGHT) — the skipped air
+    iterations are cheap; the face-generation work dominates.
+  - *`MeshBuilder`* (SurfaceTool → direct PackedArrays, no vertex-dedup hashing) — rendered identically
+    but mesh time unchanged (625 vs 607 ms). So the cost is **not** vertex accumulation.
+- **Conclusion:** the ~400 ms is **face GENERATION**, not vertex bookkeeping — dominated by the fine-leaf
+  clusters (thousands of sub-voxel faces/forest-chunk; Phase 4B's denser+taller trees *raised* this) plus
+  per-voxel `_solid_color`/`_is_face_visible` noise sampling. **Greedy meshing is blocked** by per-voxel
+  continuous tint (faces can't merge without flattening the look).
+
+### What would actually unlock it (each a trade-off / bigger lift — product decisions)
+1. **Simpler far/forest leaf rendering** (billboard or coarse leaf blocks past N m) — biggest win, mild
+   visual change. Pairs naturally with the deferred FAR-ring trees (coarse leaves only).
+2. **Native (GDExtension) mesher** for the solid surface — removes GDScript per-face overhead; large lift.
+3. **Accept the far-edge lag**: ship the ultra ring / far trees knowing the distant edge fills a beat
+   behind under sprint (fog hides it) — no code-speed needed, just tuning.
+4. **Greedy meshing** only if the terrain moves to per-*type* (not per-voxel) color — a look change.
+
+The streamer is therefore **core-bound + face-generation-heavy**; the safe tuning levers are exhausted.
+Further view-distance/forest-horizon gains need one of the above, not more parameter tuning.
