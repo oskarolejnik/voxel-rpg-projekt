@@ -312,7 +312,12 @@ func _compare_slot_for(item: ItemInstance) -> int:
 		ItemResource.Slot.CHEST:  return InventoryComponent.EquipSlot.CHEST
 		ItemResource.Slot.LEGS:   return InventoryComponent.EquipSlot.LEGS
 		ItemResource.Slot.BOOTS:  return InventoryComponent.EquipSlot.BOOTS
-		_: return InventoryComponent.EquipSlot.TRINKET_1
+		ItemResource.Slot.GLOVES:    return InventoryComponent.EquipSlot.GLOVES
+		ItemResource.Slot.SHOULDERS: return InventoryComponent.EquipSlot.SHOULDERS
+		ItemResource.Slot.BELT:      return InventoryComponent.EquipSlot.BELT
+		ItemResource.Slot.CLOAK:     return InventoryComponent.EquipSlot.CLOAK
+		ItemResource.Slot.AMULET:    return InventoryComponent.EquipSlot.AMULET
+		_: return InventoryComponent.EquipSlot.TRINKET_1   # TRINKET/pierścień/charm -> bay trinketu
 
 
 ## Tekst BBCode itemu (nazwa w kolorze rzadkosci + afiksy). Gdy `compare` != null, dokleja sekcje

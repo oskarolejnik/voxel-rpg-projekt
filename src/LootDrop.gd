@@ -102,7 +102,8 @@ var _beam: MeshInstance3D = null
 ## Indeks rzadkosci dropu (0..5). Zloto bez itemu -> 1 (lekki, zauwazalny blask, nie szary common).
 func _rarity_index() -> int:
 	if item != null:
-		return clampi(item.rarity, 0, 5)
+		# LOOT: 7 tierów — clamp do liczby kolorów rzadkości (0..7), żeby MYTHIC/ANCIENT miały własny blask.
+		return clampi(item.rarity, 0, LootService.RARITY_COLORS.size() - 1)
 	return 1   # zloto ~ UNCOMMON-tier blask
 
 func _build_visual() -> void:

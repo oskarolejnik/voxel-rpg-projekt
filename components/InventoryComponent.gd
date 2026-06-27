@@ -14,11 +14,12 @@ extends Node
 ## DoD Etapu 2: equip(item) zmienia StatsComponent.get_stat(); socket_gem() zmienia stat; wszystko
 ## przez rebuild_modifiers() (cache invalidacja + stats_changed). Serializacja do/z SaveData.
 
-## 7 slotow noszonych (GDD 6.3). Trinket ma 2 fizyczne sloty -> rozbijamy enum ItemResource.Slot
-## na konkretne pozycje noszone. WEAPON/HELM/CHEST/LEGS/BOOTS + TRINKET_1/TRINKET_2.
-enum EquipSlot { WEAPON, HELM, CHEST, LEGS, BOOTS, TRINKET_1, TRINKET_2 }
+## Sloty noszone (GDD 6.3 + rozszerzenie). Trinket ma 2 fizyczne bays. ZAPIS: int(slot) jest kluczem w
+## equipment_to_save -> WOLNO TYLKO DOPISYWAĆ NA KOŃCU (stare zapisy 0..6 zachowują znaczenie). Rękawice/
+## naramienniki/pas/peleryna/amulet dopisane jako 7..11. Pierścień/charm/relikt = ItemResource.Slot.TRINKET.
+enum EquipSlot { WEAPON, HELM, CHEST, LEGS, BOOTS, TRINKET_1, TRINKET_2, GLOVES, SHOULDERS, BELT, CLOAK, AMULET }
 
-const EQUIP_SLOT_COUNT: int = 7
+const EQUIP_SLOT_COUNT: int = 12
 
 signal inventory_changed                       # plecak/ekwipunek zmieniony (UI odswieza)
 signal item_equipped(slot: int, item: ItemInstance)
@@ -316,6 +317,12 @@ func _natural_slot(item: ItemInstance) -> int:
 			if equipment.get(EquipSlot.TRINKET_1, null) == null:
 				return EquipSlot.TRINKET_1
 			return EquipSlot.TRINKET_2
+		# Rozszerzenie slotów (LOOT): pancerz/akcesoria w dedykowanych bays.
+		ItemResource.Slot.GLOVES:    return EquipSlot.GLOVES
+		ItemResource.Slot.SHOULDERS: return EquipSlot.SHOULDERS
+		ItemResource.Slot.BELT:      return EquipSlot.BELT
+		ItemResource.Slot.CLOAK:     return EquipSlot.CLOAK
+		ItemResource.Slot.AMULET:    return EquipSlot.AMULET
 		_:
 			return -1
 

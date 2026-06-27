@@ -4,8 +4,11 @@ extends Resource
 ## To, co lezy w plecaku, to ItemInstance (lekka, z seed) — patrz ItemInstance.gd.
 ## Etap 0: tylko schemat danych.
 
-enum Slot { WEAPON, HELM, CHEST, LEGS, BOOTS, TRINKET, CONSUMABLE, MATERIAL }
-enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET }   # KANON tierow (GDD 6.2)
+# UWAGA (zapis): Slot i Rarity to SUROWE INTY w zapisie (ItemInstance.rarity, equipment_to_save).
+# WOLNO TYLKO DOPISYWAĆ NA KOŃCU — przestawienie/wstawienie cicho przemapuje każdy zapisany przedmiot.
+# Sloty 8-12 (rękawice/naramienniki/pas/peleryna/amulet) i tiery 6-7 (mityczny/prastary) dopisane.
+enum Slot { WEAPON, HELM, CHEST, LEGS, BOOTS, TRINKET, CONSUMABLE, MATERIAL, GLOVES, SHOULDERS, BELT, CLOAK, AMULET }
+enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET, MYTHIC, ANCIENT }   # KANON tierow (GDD 6.2 + rozszerzenie)
 
 @export var id: StringName = &""
 @export var display_name: String = ""

@@ -470,10 +470,10 @@ func _treasure_rarity(rng: RandomNumberGenerator, is_secret: bool) -> int:
 	return ItemResource.Rarity.EPIC if rng.randf() < 0.35 else ItemResource.Rarity.RARE
 
 
-## Losowy slot ekwipunku do dropu skarbca (bron/pancerz/trinket — bez consumable/material).
+## Losowy slot ekwipunku do dropu skarbca (broń/pancerz/akcesoria — bez consumable/material).
+## LOOT: jedno źródło prawdy = LootService.WEARABLE_SLOTS (zawiera nowe sloty 8-12).
 func _treasure_slot(rng: RandomNumberGenerator) -> int:
-	var slots := [ItemResource.Slot.WEAPON, ItemResource.Slot.HELM, ItemResource.Slot.CHEST,
-		ItemResource.Slot.LEGS, ItemResource.Slot.BOOTS, ItemResource.Slot.TRINKET]
+	var slots := LootService.WEARABLE_SLOTS
 	return int(slots[rng.randi_range(0, slots.size() - 1)])
 
 

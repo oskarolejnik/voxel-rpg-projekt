@@ -17,17 +17,18 @@ extends Node
 ## Wartosc afiksu (GDD 6.4): value = lerp(min,max,roll) * TIER_MULT[tier] * ilvl_scale(ilvl),
 ## gdzie ilvl_scale = 1 + (ilvl-1)*0.04. Item nigdy nie dostaje dwoch afiksow tej samej `stat`.
 
-## Mnoznik tieru (GDD 6.2). Indeksy = ItemResource.Rarity (COMMON..SET).
-const TIER_MULT: Array[float] = [0.7, 0.85, 1.0, 1.15, 1.25, 1.0]
+## Mnoznik tieru (GDD 6.2 + LOOT). Indeksy = ItemResource.Rarity (COMMON..SET, MYTHIC=6, ANCIENT=7).
+const TIER_MULT: Array[float] = [0.7, 0.85, 1.0, 1.15, 1.25, 1.0, 1.4, 1.6]
 
 ## Liczba afiksow per tier (GDD 6.2). SET ma 2 stale + losowane do tej liczby (tu traktujemy
 ## jako gorny limit losowanych poza fixed_modifiers).
-const AFFIX_COUNT: Array[int] = [1, 2, 3, 4, 4, 3]
+const AFFIX_COUNT: Array[int] = [1, 2, 3, 4, 4, 3, 5, 6]   # MYTHIC 5, ANCIENT 6
 
 ## Sockety per tier: Vector2i(min,max) (GDD 6.2). COMMON 0; UNCOMMON 0-1; RARE 1; EPIC 1-2;
 ## LEGENDARY 2; SET 1.
 const SOCKETS_BY_TIER: Array[Vector2i] = [
 	Vector2i(0, 0), Vector2i(0, 1), Vector2i(1, 1), Vector2i(1, 2), Vector2i(2, 2), Vector2i(1, 1),
+	Vector2i(2, 3), Vector2i(3, 3),   # MYTHIC 2-3, ANCIENT 3
 ]
 
 ## Enchant od RARE w gore (GDD 6.2): RARE/EPIC/LEGENDARY/SET maja slot enchantu.
@@ -39,7 +40,7 @@ const REQ_LEVEL_OFFSET: int = 2
 
 ## Domyslne wagi rarity, gdy LootTableResource ich nie poda (driver mocy = liczba afiksow).
 ## Indeksy = Rarity. Suma niewazna (normalizujemy). Trash czesty, legenda rzadka.
-const DEFAULT_RARITY_WEIGHTS: Array[float] = [50.0, 30.0, 14.0, 5.0, 1.0, 0.0]
+const DEFAULT_RARITY_WEIGHTS: Array[float] = [50.0, 30.0, 14.0, 5.0, 1.0, 0.0, 0.2, 0.04]   # MYTHIC/ANCIENT skrajnie rzadkie (boss/world-boss/MF)
 
 ## Kolory rzadkosci (GDD 6.2) — wspoldzielone przez LootDrop (wizual) i UI/toast.
 const RARITY_COLORS: Array[Color] = [
@@ -49,10 +50,20 @@ const RARITY_COLORS: Array[Color] = [
 	Color(0.66, 0.38, 0.92),   # EPIC    — fioletowy
 	Color(0.96, 0.58, 0.16),   # LEGENDARY— pomaranczowy
 	Color(0.20, 0.82, 0.78),   # SET     — turkus
+	Color(0.92, 0.16, 0.22),   # MYTHIC  — krwista czerwień
+	Color(1.00, 0.86, 0.45),   # ANCIENT — promienna złoto-biel (chase item)
 ]
 
 const RARITY_NAMES: Array[String] = [
-	"Pospolity", "Niezwykly", "Rzadki", "Epicki", "Legendarny", "Set",
+	"Pospolity", "Niezwykly", "Rzadki", "Epicki", "Legendarny", "Set", "Mityczny", "Prastary",
+]
+
+## LOOT: sloty NOSZONE losowalne (zakres slotów nie jest już ciągły — CONSUMABLE/MATERIAL=6/7 leżą
+## MIĘDZY TRINKET=5 a nowymi 8-12). Jedno źródło prawdy dla _roll_slot. Pomija CONSUMABLE/MATERIAL.
+const WEARABLE_SLOTS: Array[int] = [
+	ItemResource.Slot.WEAPON, ItemResource.Slot.HELM, ItemResource.Slot.CHEST, ItemResource.Slot.LEGS,
+	ItemResource.Slot.BOOTS, ItemResource.Slot.TRINKET, ItemResource.Slot.GLOVES, ItemResource.Slot.SHOULDERS,
+	ItemResource.Slot.BELT, ItemResource.Slot.CLOAK, ItemResource.Slot.AMULET,
 ]
 
 
@@ -110,15 +121,23 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 
 	# --- Set (turkus): stale modyfikatory sztuki + przypisanie set_id ---
 	# SET losuje set z puli ItemDB.sets (jesli sa). fixed_modifiers wchodza jako explicit (rozpoznawalnosc).
+	# DECOUPLE (LOOT): rarity = oś POTĘGI, set_id = oś PRZYNALEŻNOŚCI — komponują się. Przypisz set, gdy
+	# (a) tier==SET (gwarantowany pełny set, losowany z puli), LUB (b) BAZA należy do setu (base.set_id) —
+	# wtedy np. MITYCZNA część setu jest wyrażalna. Wariant (b) NIE dobiera z rng (deterministyczny lookup),
+	# więc kolejność losowań [set->afiksy->unikat->sockety->enchant] NIE zmienia się (co-op-safe).
 	var set_def: SetResource = null
 	if tier == ItemResource.Rarity.SET:
 		set_def = _pick_set(rng)
-		if set_def != null:
-			it.set_id = set_def.id          # NAPRAWA (audyt #2): zapamietaj set na instancji — inaczej bonus 2/4-cz. NIGDY nie liczy
-			for fm in set_def.fixed_modifiers:
-				if fm is StatModifier:
-					var copy := _dup_mod(fm, &"set", set_def.id)
-					it.explicit_modifiers.append(copy)
+	elif base_id != &"":
+		var base_def := ItemDB.item(base_id)
+		if base_def != null and base_def.set_id != &"":
+			set_def = ItemDB.set_def(base_def.set_id)
+	if set_def != null:
+		it.set_id = set_def.id              # zapamietaj set na instancji — inaczej bonus 2/4/6-cz. nie liczy
+		for fm in set_def.fixed_modifiers:
+			if fm is StatModifier:
+				var copy := _dup_mod(fm, &"set", set_def.id)
+				it.explicit_modifiers.append(copy)
 
 	# --- Afiksy losowane z pul AffixResource (filtr: slot + ilvl_min + biome), bez powtorzen stat ---
 	var n_aff := _affix_count(tier)
@@ -126,8 +145,9 @@ func roll_item(item_seed: int, ilvl: int, biome: StringName, tier: int, slot: in
 	for m in rolled:
 		it.rolled_affixes.append(m)
 
-	# --- Legendarny: efekt unikatowy jako MORE (game-changer, GDD 6.2) ---
-	if tier == ItemResource.Rarity.LEGENDARY:
+	# --- Legendarny+: efekt unikatowy jako MORE (game-changer, GDD 6.2). LOOT: dotyczy LEGENDARY oraz
+	# MYTHIC/ANCIENT (NIE SET=5 — ten ma własny podpis fixed_modifiers). Bez zmiany kolejności losowań. ---
+	if tier == ItemResource.Rarity.LEGENDARY or tier >= ItemResource.Rarity.MYTHIC:
 		var uniq := _roll_legendary_unique(rng, slot, ilvl)
 		if uniq != null:
 			it.rolled_affixes.append(uniq)
@@ -371,7 +391,7 @@ func _roll_slot(table: LootTableResource) -> int:
 		var ir := ItemDB.item(bid)
 		if ir != null:
 			return ir.slot
-	return RNGService.loot.randi_range(ItemResource.Slot.WEAPON, ItemResource.Slot.TRINKET)
+	return WEARABLE_SLOTS[RNGService.loot.randi_range(0, WEARABLE_SLOTS.size() - 1)]
 
 
 func _roll_base_id(table: LootTableResource, slot: int) -> StringName:
