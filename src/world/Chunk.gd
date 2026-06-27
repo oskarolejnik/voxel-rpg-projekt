@@ -235,6 +235,14 @@ var _heightmap: PackedInt32Array = PackedInt32Array()
 # _build_mesh emituje kilka dużych pudeł/drzewo do st_leaf (płaski tint, BEZ kolizji). Zwalniane po meshu.
 var _canopies: Array = []
 
+# WORLDGEN P2 (perf): granice MESHOWANIA per kolumna — pętla _build_mesh leci TYLKO przez pas ODSŁONIĘTY
+# [_colmin..._colmax] zamiast 0..WORLD_HEIGHT. Zakopane wnętrze (bez jaskini i bez niższego sąsiada) NIE
+# emituje ścian => pominięcie jest WIZUALNIE IDENTYCZNE, a tnie ~5× iteracji (wąskie gardło streamingu).
+# _colmax = górny wypełniony voxel (teren/woda/cechy). _colmin = najniższy ODSŁONIĘTY (min z: niższy
+# sąsiad-klif, dno jaskini; brzegi chunku konserwatywnie 0). Indeks x + CHUNK_SIZE*z.
+var _colmax: PackedInt32Array = PackedInt32Array()
+var _colmin: PackedInt32Array = PackedInt32Array()
+
 # FEEL 3 (review #minor): cache BIOMU per kolumna (CHUNK_SIZE×CHUNK_SIZE), liczony RAZ w
 # _generate_data. get_biome() próbkuje DWA FastNoiseLite (temp+humidity), a _solid_color jest
 # wołane PER ŚCIANA (do 6× na voxel) => bez cache to do 12 zbędnych próbek szumu na voxel na
@@ -377,6 +385,8 @@ func finalize(world: VoxelWorld) -> void:
 	_heightmap = PackedInt32Array()
 	_biomemap = PackedByteArray()   # FEEL 3: cache biomu też niepotrzebny po zbudowaniu mesha
 	_canopies = []                  # WORLDGEN P1: lista koron-blobów niepotrzebna po zbudowaniu mesha
+	_colmax = PackedInt32Array()    # WORLDGEN P2: granice mesha kolumn niepotrzebne po zbudowaniu
+	_colmin = PackedInt32Array()
 	_finalized = true
 
 
@@ -400,6 +410,8 @@ func _generate_data(world: VoxelWorld) -> void:
 	# per ściana w _solid_color. Bajt: 1=verdant, 2=emberwaste, 3=frosthelm (0 = nigdy, kolumna
 	# zawsze ma biom). Off-thread, czysty odczyt niemutowanego szumu (jak surface_height).
 	_biomemap.resize(CHUNK_SIZE * CHUNK_SIZE)
+	_colmax.resize(CHUNK_SIZE * CHUNK_SIZE)
+	_colmin.resize(CHUNK_SIZE * CHUNK_SIZE)
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
@@ -414,21 +426,43 @@ func _generate_data(world: VoxelWorld) -> void:
 			# a pozostałą skałę okazjonalnie zamieniamy w rudę (ore_at). Kolumny POD WODĄ (sy<SEA_LEVEL)
 			# NIE drążymy => żadna kieszeń powietrza pod taflą (woda nie wlewa się do jaskiń).
 			var submerged := sy < SEA_LEVEL
+			var cave_low := sy + 1                       # WORLDGEN P2: najniższy wycięty AIR (sy+1 = brak jaskini)
 			for y in range(0, sy + 1):
 				var t := _block_for(y, sy)
 				if t == Blocks.Type.ROCK and not submerged:
 					if world.is_cave(wx, y, wz, sy):
 						t = Blocks.Type.AIR                  # wytnij korytarz/komorę
+						if y < cave_low:
+							cave_low = y
 					else:
 						var o := world.ore_at(wx, y, wz, sy)  # ruda tylko w zachowanej skale (ściany tuneli)
 						if o != -1:
 							t = o
 				_set_voxel(x, y, z, t)
+			var ci := x + CHUNK_SIZE * z
+			_colmax[ci] = SEA_LEVEL if submerged else sy   # górny voxel (woda do SEA_LEVEL; cechy podniosą w _try_set_feature)
+			_colmin[ci] = cave_low - 1                      # dno jaskini-1 (tymczasowo; klify sąsiadów dojdą niżej)
 
 			# Woda: jeśli powierzchnia jest poniżej poziomu morza, zalewamy puste warstwy.
 			if submerged:
 				for y in range(sy + 1, SEA_LEVEL + 1):
 					_set_voxel(x, y, z, Blocks.Type.WATER)
+
+	# WORLDGEN P2: KLIFY — kolumna jest odsłonięta w bok aż do wysokości NIŻSZEGO sąsiada => zejdź _colmin
+	# do min(sąsiednie sy). Brzegi chunku konserwatywnie 0 (sąsiad w INNYM chunku — pełna iteracja, bo nie
+	# znamy jego wysokości bez próbkowania; brzegi to ~12% kolumn). Gwarantuje BRAK dziur w terenie.
+	for x in CHUNK_SIZE:
+		for z in CHUNK_SIZE:
+			var ci := x + CHUNK_SIZE * z
+			var lo := _colmin[ci]
+			if x == 0 or x == CHUNK_SIZE - 1 or z == 0 or z == CHUNK_SIZE - 1:
+				lo = 0
+			else:
+				if _heightmap[(x - 1) + CHUNK_SIZE * z] < lo: lo = _heightmap[(x - 1) + CHUNK_SIZE * z]
+				if _heightmap[(x + 1) + CHUNK_SIZE * z] < lo: lo = _heightmap[(x + 1) + CHUNK_SIZE * z]
+				if _heightmap[x + CHUNK_SIZE * (z - 1)] < lo: lo = _heightmap[x + CHUNK_SIZE * (z - 1)]
+				if _heightmap[x + CHUNK_SIZE * (z + 1)] < lo: lo = _heightmap[x + CHUNK_SIZE * (z + 1)]
+			_colmin[ci] = maxi(0, lo)
 
 	# Roślinność i obiekty — PO terenie i wodzie.
 	_place_features(world)
@@ -597,6 +631,10 @@ func _try_set_feature(x: int, y: int, z: int, t: int) -> void:
 	if x < 0 or x >= CHUNK_SIZE or z < 0 or z >= CHUNK_SIZE:
 		return
 	_set_voxel(x, y, z, t)
+	# WORLDGEN P2: cechy (pień, krzak) podnoszą górną granicę mesha kolumny (pętla musi je objąć).
+	var ci := x + CHUNK_SIZE * z
+	if y > _colmax[ci]:
+		_colmax[ci] = y
 
 
 ## Drzewo — pień WOOD (trzon 1×1 lub 2×2) + korona LEAVES jako kula z postrzępionym
@@ -948,7 +986,12 @@ func _build_mesh(world: VoxelWorld) -> void:
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
-			for y in WORLD_HEIGHT:
+			# WORLDGEN P2: pętla TYLKO przez pas ODSŁONIĘTY [_colmin.._colmax] zamiast 0..WORLD_HEIGHT.
+			# Poniżej _colmin: zakopane (bez jaskini, bez niższego sąsiada) => 0 ścian. Powyżej _colmax:
+			# sam AIR. Pas zawiera teren+wodę+cechy => mesh IDENTYCZNY, ~5× mniej iteracji (płaskie kolumny).
+			var ci := x + CHUNK_SIZE * z
+			var y_hi := mini(_colmax[ci] + 1, WORLD_HEIGHT)
+			for y in range(_colmin[ci], y_hi):
 				var t := get_voxel(x, y, z)
 				if t == Blocks.Type.AIR:
 					continue
