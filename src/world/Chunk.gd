@@ -231,6 +231,10 @@ var _voxels: PackedByteArray = PackedByteArray()
 # i ponownie w _place_features — po 4 oktawy FBM na próbkę). Indeks: x + CHUNK_SIZE*z.
 var _heightmap: PackedInt32Array = PackedInt32Array()
 
+# WORLDGEN P1: korony drzew jako WIELKIE BLOBY (nie fine-leaf). _place_tree dopisuje tu {x,y,z,r,leaf};
+# _build_mesh emituje kilka dużych pudeł/drzewo do st_leaf (płaski tint, BEZ kolizji). Zwalniane po meshu.
+var _canopies: Array = []
+
 # FEEL 3 (review #minor): cache BIOMU per kolumna (CHUNK_SIZE×CHUNK_SIZE), liczony RAZ w
 # _generate_data. get_biome() próbkuje DWA FastNoiseLite (temp+humidity), a _solid_color jest
 # wołane PER ŚCIANA (do 6× na voxel) => bez cache to do 12 zbędnych próbek szumu na voxel na
@@ -372,6 +376,7 @@ func finalize(world: VoxelWorld) -> void:
 	_voxels = PackedByteArray()
 	_heightmap = PackedInt32Array()
 	_biomemap = PackedByteArray()   # FEEL 3: cache biomu też niepotrzebny po zbudowaniu mesha
+	_canopies = []                  # WORLDGEN P1: lista koron-blobów niepotrzebna po zbudowaniu mesha
 	_finalized = true
 
 
@@ -635,26 +640,11 @@ func _place_tree(world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -
 			_try_set_feature(x, ty, z + 1, Blocks.Type.WOOD)
 			_try_set_feature(x + 1, ty, z + 1, Blocks.Type.WOOD)
 
-	# Korona: kula LEAVES o promieniu r wokół punktu nad wierzchołkiem pnia.
-	var cy := top_y + 1                       # środek korony
-	for dx in range(-r, r + 1):
-		for dy in range(-r, r + 1):
-			for dz in range(-r, r + 1):
-				# 1) Pion lekko spłaszczony (korona szersza niż wyższa) — mnożnik 1.3 na dy.
-				var d2 := dx * dx + int(round(float(dy * dy) * 1.3)) + dz * dz
-				# 2) Próg promienia perturbowany per voxel => poszarpany, naturalny brzeg.
-				#    Zakres ~[-0.6, +0.6] voxela. Deterministyczne (SALT_TREE_CROWN+dy).
-				var edge := (world.feature_hash(wx + dx, wz + dz, SALT_TREE_CROWN + dy) - 0.5) * 1.2
-				var rr := float(r) + edge
-				if float(d2) > rr * rr:
-					continue
-				# Nie zamazuj samego pnia liśćmi w jego trzonie.
-				if dx == 0 and dz == 0 and (cy + dy) <= top_y:
-					continue
-				# Ochrona pni SĄSIEDNICH drzew: nie zamazuj istniejącego WOOD liściem.
-				if get_voxel(x + dx, cy + dy, z + dz) == Blocks.Type.WOOD:
-					continue
-				_try_set_feature(x + dx, cy + dy, z + dz, leaf_type)
+	# WORLDGEN P1: korona jako WIELKI BLOB (kilka dużych pudeł, płaski tint per-pudło) — styl Cube World,
+	# NIE kula fine-leaf voxeli. ~30× mniej ścian (fine-leaf był wąskim gardłem streamingu). Renderowana
+	# w _build_mesh z listy _canopies do st_leaf (BEZ kolizji). Pień (WOOD) zostaje voxelowy (kolizja).
+	var cy := top_y + 1                        # środek korony nad wierzchołkiem pnia
+	_canopies.append({ "x": x, "y": cy, "z": z, "r": r, "leaf": leaf_type })
 
 
 ## Krzak — kulista kępka LEAVES (r=1 lub r=2) tuż nad ziemią, z perturbowanym brzegiem.
@@ -1024,6 +1014,11 @@ func _build_mesh(world: VoxelWorld) -> void:
 	# --- OFF-THREAD: commit gotowych zasobów do pól. ZERO operacji na drzewie sceny.
 	#     Węzły (MeshInstance3D / CollisionShape3D) + add_child powstają w finalize() na głównym watku.
 
+	# WORLDGEN P1: KORONY-BLOBY — kilka dużych pudeł/drzewo do st_leaf (płaski tint, A=0, BEZ kolizji).
+	# Zastępują fine-leaf clustery (~30× mniej ścian => odblokowanie streamingu). Drzewa z _canopies.
+	for canopy in _canopies:
+		leaf_count += _emit_canopy(st_leaf, world, canopy)
+
 	# Powierzchnia stała: osobny ArrayMesh (źródło kolizji).
 	# UWAGA (BLOCKER): create_trimesh_shape() NIE jest thread-safe w Godot 4.x (godot#69076 —
 	# wołane z WorkerThreadPool zawiesza/deadlockuje grę, bo sięga do PhysicsServer3D, który
@@ -1063,6 +1058,47 @@ func _classify_leaf(x: int, y: int, z: int) -> int:
 			# Sąsiad jest stały i NIE jest liściem => pień (WOOD) lub teren => liść zakotwiczony.
 			flags |= LEAF_FLAG_ANCHORED
 	return flags
+
+
+## WORLDGEN P1: korona-blob — 1 duże spłaszczone pudło + 4 guzy (deterministyczne per drzewo), płaski
+## tint per-pudło (A=0, bez sway). Styl Cube World: korona = kilka brył jednego koloru, NIE tysiące
+## listków. Reużywa _emit_coarse_box/_coarse_quad. Zwraca przybliżoną liczbę quadów (do guarda commit).
+func _emit_canopy(st, world: VoxelWorld, c: Dictionary) -> int:
+	var x: int = c["x"]
+	var z: int = c["z"]
+	var cy: int = c["y"]
+	var r: int = c["r"]
+	var leaf_type: int = c["leaf"]
+	var wx := _coord.x * CHUNK_SIZE + x
+	var wz := _coord.y * CHUNK_SIZE + z
+	var base := _solid_color(world, leaf_type, x, cy, z)
+	var cxm := (float(x) + 0.5) * VOXEL_SIZE
+	var czm := (float(z) + 0.5) * VOXEL_SIZE
+	var cym := (float(cy) + float(r) * 0.35) * VOXEL_SIZE        # blob siedzi na wierzchołku pnia, lekko w górę
+	var rm := float(r) * VOXEL_SIZE
+	var faces := 0
+	_canopy_box(st, cxm, cym, czm, rm, rm * 0.8, rm, base)       # główne pudło (szersze niż wyższe)
+	faces += 5
+	for i in 4:                                                  # 4 guzy dla organicznej, lumpy sylwetki
+		var a := float(i) * (TAU / 4.0) + world.feature_hash(wx, wz, SALT_TREE_CROWN + i) * 1.6
+		var off := rm * 0.6
+		var lx := cxm + cos(a) * off
+		var lz := czm + sin(a) * off
+		var ly := cym + (world.feature_hash(wx + i, wz, SALT_TREE_CROWN + 11) - 0.45) * rm * 0.6
+		var lr := rm * (0.45 + world.feature_hash(wx, wz + i, SALT_TREE_CROWN + 23) * 0.35)
+		var k := (world.feature_hash(wx + i, wz + i, SALT_TREE_CROWN + 31) - 0.5) * 0.16
+		var lc := Color(clampf(base.r + k, 0.0, 1.0), clampf(base.g + k, 0.0, 1.0), clampf(base.b + k, 0.0, 1.0), 1.0)
+		_canopy_box(st, lx, ly, lz, lr, lr * 0.8, lr, lc)
+		faces += 5
+	return faces
+
+
+## Pojedyncze pudło korony (centrum + półboki). Wymusza A=0 (płaski blob, bez sway). 5 ścian (bez dna,
+## schowane pod blobem). Reużywa _emit_coarse_box.
+func _canopy_box(st, cx: float, cy: float, cz: float, hx: float, hy: float, hz: float, col: Color) -> void:
+	var c := col
+	c.a = 0.0
+	_emit_coarse_box(st, cx - hx, cy - hy, cz - hz, cx + hx, cy + hy, cz + hz, c)
 
 
 ## Renderuje POWIERZCHNIOWY voxel liścia jako klaster drobnych sub-voxeli (skorupa + prześwity
