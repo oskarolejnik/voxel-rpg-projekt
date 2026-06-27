@@ -24,7 +24,7 @@ extends Node3D
 #   WORLD_HEIGHT=96 voxeli × 0,5 = 48 m (bez zmian realnie)
 #   SEA_LEVEL=24 voxeli × 0,5 = 12 m (bez zmian realnie)
 const CHUNK_SIZE: int = 32           # 32 voxele = 16 m
-const WORLD_HEIGHT: int = 96         # 96 voxeli = 48 m
+const WORLD_HEIGHT: int = 128        # WORLDSCALE F4: 96 -> 128 (64 m ceiling) — wyższe góry. Koszt RAM tylko w resize tablicy (zwalniana po mesh); pętla wypełniania jest surface-bound => taniej. MUSI == Chunk.WORLD_HEIGHT
 const SEA_LEVEL: int = 24            # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 
@@ -34,7 +34,7 @@ const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 # far_dist = najdalszy budowany pierścień => render_distance to teraz alias far_dist.
 # 4 -> 7 daje 64 m -> 112 m zasięgu, a koszt rośnie głównie na TANICH chunkach FAR.
 @export var near_dist: int = 3           # promień pełnego detalu (3 × 16 m = 48 m) — odchudzone na 4GB
-@export var far_dist: int = 5            # najdalszy zgrubny pierścień (5 × 16 m = 80 m) — mniej draw calls/VRAM
+@export var far_dist: int = 7            # WORLDSCALE F3: 5 -> 7 (80 -> 112 m). FAR=step2 tani; forward-bias chroni NEAR; mgła cofa się z far_dist
 @export var chunks_per_frame: int = 2    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
 
 # Kroki próbkowania LOD przekazywane chunkowi (1=NEAR pełny, 2=FAR zgrubny). MUSZĄ być
@@ -59,6 +59,11 @@ const MAX_IN_FLIGHT: int = 3
 # Limituje koszt finalize na głównym (add_child + rejestracja kolizji w PhysicsServer),
 # żeby odbiór kilku gotowych chunków naraz nie dał mikro-zacięcia.
 const MAX_FINALIZE_PER_FRAME: int = 1
+# WORLDSCALE F2: bias kolejki budowy ku kierunkowi ruchu (w jednostkach chunków). Maszyna jest
+# core-bound (profilowanie: MAX_IN_FLIGHT 5 oversubskrybuje CPU, FPS 190->90), więc NIE zwiększamy
+# throughputu — zamiast tego priorytetujemy chunki PRZED graczem (wiodąca krawędź gotowa wcześniej).
+# Czysto kolejność budowy => zero wpływu na treść/determinizm/zapis.
+const FORWARD_BIAS: float = 2.0
 
 # --- Parametry terenu (w VOXELACH) ---
 # NAPRAWA SKALI BIOMÓW (review #MAJOR): poprzednio BASE=20, AMP=40 dawało
@@ -70,6 +75,11 @@ const MAX_FINALIZE_PER_FRAME: int = 1
 #   BEACH ≤ 26 (13 m), ROCK ≥ 56 (28 m), SNOW ≥ 68 (34 m) — wszystkie osiągalne.
 const BASE_HEIGHT: float = 14.0          # z kontrastem szumu daje jeziora (doliny) i szczyty (śnieg)
 const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m (szczyty ~44 m)
+# WORLDGEN P3 (Cube World feel): domain warp + redystrybucja wysokości. WARP_AMP = ile metrów przesuwamy
+# próbkowane współrzędne (organiczne, płynące formy zamiast kratek). HEIGHT_EXPONENT > 1 wpycha średnie
+# wysokości w dół (szerokie płaskie doliny, "zaprojektowane" wzniesienia). Gen const => determinizm; save-gate.
+const WARP_AMP: float = 90.0
+const HEIGHT_EXPONENT: float = 1.7
 
 # BIOME #8: per-biomowe PROFILE terenu (indeks == pasmo w BIOME_PROGRESSION). Profil nadpisuje
 # globalne BASE/AMP/freq tak, by każdy biom miał DISTINCT sylwetkę (płaskie równiny vs postrzępione
@@ -82,13 +92,13 @@ const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m 
 # Profil to czysta tabela danych (deterministyczna). Cross-fade między sąsiednimi pasmami robi
 # _height_profile_blend (szwy organiczne, bo dystans jest już warpowany szumem klimatu jak w _biome_band).
 const _HEIGHT_PROFILES: Array[Dictionary] = [
-	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 1.6, "ridged": false },  # 0 verdant/forest — pofalowane wzgórza (jak dawniej)
+	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 2.0, "ridged": false },  # 0 verdant — WORLDSCALE F4: ostrzejsze doliny/wzgórza (contrast 1.6->2.0)
 	{ "base": 20.0, "amp": 18.0, "freq_mul": 0.8, "contrast": 1.2, "ridged": false },  # 1 plains — płaskie, niska amplituda
 	{ "base": 16.0, "amp": 12.0, "freq_mul": 1.1, "contrast": 1.1, "ridged": false },  # 2 swamp — nisko + płasko (przy poziomie morza)
-	{ "base": 22.0, "amp": 78.0, "freq_mul": 1.3, "contrast": 1.9, "ridged": true },   # 3 mountains — wysokie, postrzępione granie
+	{ "base": 22.0, "amp": 100.0, "freq_mul": 0.6, "contrast": 2.3, "ridged": true },  # 3 mountains — WORLDGEN P4: SZEROKIE masywy (freq_mul 0.9->0.6) + maska gór => kilka ikonicznych pasm
 	{ "base": 18.0, "amp": 30.0, "freq_mul": 0.6, "contrast": 1.4, "ridged": false },  # 4 emberwaste/desert — gładkie wydmy
-	{ "base": 24.0, "amp": 70.0, "freq_mul": 1.2, "contrast": 1.8, "ridged": true },   # 5 frosthelm/snow — wysokie szczyty (śnieg)
-	{ "base": 26.0, "amp": 84.0, "freq_mul": 1.5, "contrast": 2.1, "ridged": true },   # 6 volcanic — najwyższe, najbardziej postrzępione
+	{ "base": 24.0, "amp": 92.0, "freq_mul": 0.65, "contrast": 2.2, "ridged": true },  # 5 frosthelm — WORLDGEN P4: szersze ośnieżone masywy (freq_mul 0.9->0.65) + maska gór
+	{ "base": 26.0, "amp": 110.0, "freq_mul": 1.0, "contrast": 2.1, "ridged": true },  # 6 volcanic — WORLDGEN P4: najwyższe granie (freq_mul 1.5->1.0, nadal najbardziej postrzępione) + maska
 ]
 # Ułamek szerokości pasma (od JEGO końca), na którym profil cross-faduje do następnego pasma.
 # 0.18 => ostatnie ~18% pasma to płynne przejście sylwetki terenu (zero ostrego "muru" na szwie biomu).
@@ -138,6 +148,9 @@ var _noise: FastNoiseLite
 var _tint_noise: FastNoiseLite
 var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C) == temperatura (Etap 4)
 var _humid_noise: FastNoiseLite   # ETAP 4: wilgotność (drugi wymiar podziału biomów)
+var _warp_noise: FastNoiseLite    # WORLDGEN P3: domain warp (organiczne, nie-kratkowe landformy)
+var _mask_noise: FastNoiseLite    # WORLDGEN P4: maska gór (klastruje szczyty w kilka pasm + spokojne ramiona)
+var _region_noise: FastNoiseLite  # WORLDGEN P5: 2D pole REGIONÓW biomów (duże, spójne, PRZESTRZENNE — nie pierścienie)
 # JASKINIE: dwa zdekorelowane pola ridged (przecięcie izopowierzchni ~0 = tunele) + cellular na komory.
 # Konfigurowane RAZ w _setup_noise, potem TYLKO odczyt (is_cave/ore_at) z wątku roboczego — ten sam
 # kontrakt thread-safe co _noise/_biome_noise (żadnych mutacji po starcie).
@@ -195,11 +208,41 @@ func _setup_noise() -> void:
 	_noise.seed = world_seed   # BUGFIX „ciągle ten sam świat": seed terenu z runtime world_seed (nie stała 1337)
 	# /2 względem 0.014: indeksy voxeli są 2× gęstsze na ten sam metr (VOXEL_SIZE=0.5),
 	# więc dzielimy częstotliwość, by wzgórza miały ten sam REALNY rozmiar.
-	_noise.frequency = 0.007
+	_noise.frequency = 0.004   # WORLDSCALE F4: 0.007 -> 0.004 — wzgórza ~71 m -> ~125 m, góry szersze (świat wielki). ZERO kosztu voxeli. (gen const => determinizm jednolity; przesuwa surface_y => save-gate)
 	_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 	_noise.fractal_octaves = 4
 	_noise.fractal_lacunarity = 2.0
 	_noise.fractal_gain = 0.5
+
+	# WORLDGEN P3: DOMAIN WARP — przesuwamy współrzędne próbkowania terenu drugim, niskoczęstym szumem.
+	# Zamienia osiowo-wyrównane (kratkowe) FBM w organiczne, PŁYNĄCE landformy => "zaprojektowane", nie
+	# "z funkcji szumu". Najwyższy zwrot wizualny/linijkę. Deterministyczne (seed); przesuwa surface_y => save-gate.
+	_warp_noise = FastNoiseLite.new()
+	_warp_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_warp_noise.seed = world_seed + 4471
+	_warp_noise.frequency = 0.0018
+	_warp_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_warp_noise.fractal_octaves = 2
+
+	# WORLDGEN P4: MASKA GÓR — niskoczęsty szum bramkujący amplitudę grani. Szczyty wybijają TYLKO tam,
+	# gdzie maska wysoka => kilka IKONICZNYCH pasm + spokojne ramiona/przedgórza między nimi (zamiast
+	# jednostajnego kolca wszędzie). Deterministyczna (seed). Tylko profile ridged (góry/wulkan/śnieg).
+	_mask_noise = FastNoiseLite.new()
+	_mask_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_mask_noise.seed = world_seed + 8123
+	_mask_noise.frequency = 0.0014
+
+	# WORLDGEN P5: 2D POLE REGIONÓW — niskoczęsty szum domain-warpowany, by REGION biomu zależał od POZYCJI
+	# w 2D (duże, organiczne kraje), a NIE od dystansu od spawnu (koncentryczne pierścienie = "system-like").
+	# Dystans wciąż lekko biasuje (trudniejsze biomy dalej), ale przestrzeń dominuje. Domain warp => brzegi
+	# regionów falują (nie idealne plamy). Determinizm: seed; przesuwa biom/profil => save-gate.
+	_region_noise = FastNoiseLite.new()
+	_region_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_region_noise.seed = world_seed + 6271
+	_region_noise.frequency = 0.0006           # ~1.6 km regiony (duże, anty-fragmentacja)
+	_region_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_region_noise.fractal_octaves = 2
+	_region_noise.domain_warp_enabled = false  # ręczny warp w _biome_t (współdzielony z terenem)
 
 	_tint_noise = FastNoiseLite.new()
 	_tint_noise.noise_type = FastNoiseLite.TYPE_PERLIN
@@ -344,16 +387,36 @@ func surface_height(world_x: int, world_z: int) -> int:
 	# poziom morza (jeziora) i wybijał w szczyty, zamiast skupiać się wokół środka. Per-profil
 	# freq_mul zmienia REALNY rozmiar form (drobne wydmy vs szerokie wzgórza), bez mutacji _noise.
 	var fm: float = prof["freq_mul"]
-	var raw := _noise.get_noise_2d(float(world_x) * fm, float(world_z) * fm)
+	# WORLDGEN P3: DOMAIN WARP — przesuwamy próbkowane współrzędne niskoczęstym szumem (organiczne,
+	# płynące landformy zamiast osiowych kratek). Warp z NIEwarpowanych (wx,wz) => deterministyczny.
+	var warp_x := _warp_noise.get_noise_2d(float(world_x), float(world_z)) * WARP_AMP
+	var warp_z := _warp_noise.get_noise_2d(float(world_x) + 1000.0, float(world_z) - 1000.0) * WARP_AMP
+	var sx := (float(world_x) + warp_x) * fm
+	var sz := (float(world_z) + warp_z) * fm
+	var raw := _noise.get_noise_2d(sx, sz)
+	var contrast: float = prof["contrast"]
+	var rw: float = prof["ridged_w"]   # WORLDGEN P5: ciągła waga ridged (0=gładki/redystryb., 1=granie)
 	var shaped: float
-	if bool(prof["ridged"]):
-		# RIDGED: 1 - |n| daje ostre granie (góry/wulkany) — szczyt tam, gdzie szum przecina 0.
-		# Mapujemy do ~[0,1] tak, by clampf nie ścinał całości w jeden płaskowyż.
-		shaped = clampf((1.0 - absf(raw)) * float(prof["contrast"]) - (float(prof["contrast"]) - 1.0), 0.0, 1.0)
+	# Liczymy formułę zależnie od rw; na styku (0<rw<1) BLENDUJEMY obie => brak szwu góra/las (ciągłość C0).
+	if rw <= 0.0:
+		shaped = _shaped_smooth(raw, contrast)
+	elif rw >= 1.0:
+		shaped = _shaped_ridged(raw, contrast, world_x, world_z)
 	else:
-		shaped = clampf(raw * float(prof["contrast"]) + 0.5, 0.0, 1.0)
+		shaped = lerpf(_shaped_smooth(raw, contrast), _shaped_ridged(raw, contrast, world_x, world_z), rw)
 	var h := int(round(float(prof["base"]) + shaped * float(prof["amp"])))
 	return clampi(h, 1, WORLD_HEIGHT - 1)
+
+## WORLDGEN P3: profil GŁADKI — kontrast + REDYSTRYBUCJA pow(exp>1): szerokie płaskie doliny + zamierzone wzniesienia.
+func _shaped_smooth(raw: float, contrast: float) -> float:
+	return pow(clampf(raw * contrast + 0.5, 0.0, 1.0), HEIGHT_EXPONENT)
+
+## WORLDGEN P4: profil RIDGED — 1-|n| daje ostre granie (góry/wulkany), bramkowane MASKĄ GÓR (kilka ikonicznych
+## pasm + spokojne przedgórza, min 0.3). Wydzielone z surface_height, by dało się BLENDOWAĆ z gładkim na styku.
+func _shaped_ridged(raw: float, contrast: float, world_x: int, world_z: int) -> float:
+	var s := clampf((1.0 - absf(raw)) * contrast - (contrast - 1.0), 0.0, 1.0)
+	var mask := clampf(_mask_noise.get_noise_2d(float(world_x), float(world_z)) * 1.3 + 0.6, 0.3, 1.0)
+	return s * mask
 
 
 ## BIOME #8: zwraca SCROSSFADOWANY profil terenu dla kolumny świata (czysta, deterministyczna funkcja).
@@ -361,29 +424,36 @@ func surface_height(world_x: int, world_z: int) -> int:
 ## sylwetki pokrywają się z granicami biomów), po czym blenduje profil bieżącego pasma z następnym na
 ## ostatnich _HEIGHT_BLEND_FRAC pasma. Dzięki temu las nie graniczy „murem” z górami — przejście jest płynne.
 func _height_profile_blend(world_x: float, world_z: float) -> Dictionary:
-	var d := Vector2(world_x, world_z).length()
-	# Identyczny warp jak w _biome_band (determinizm + spójność granicy biom<->teren).
-	var temp := _biome_noise.get_noise_2d(world_x, world_z)   # [-1,1]
-	var hum := _humid_noise.get_noise_2d(world_x, world_z)    # [-1,1]
-	var warp := (temp * 0.6 + hum * 0.4) * BIOME_BORDER_JITTER_M
-	var t := (d + warp) / BIOME_BAND_METERS                    # ciągła pozycja w pasmach
+	# WORLDGEN P5: TA SAMA _biome_t co get_biome => region (kolor/temat) i jego sylwetka ZAWSZE się zgadzają.
+	# Cross-fade na ogonie pasma domyka profil dokładnie na granicy całkowitej => CIĄGŁOŚĆ wysokości nawet
+	# przy niemonotonicznym t (pole regionów oscyluje) — żadnych „murów"/klifów na styku biomów.
+	var t := _biome_t(world_x, world_z)
 	var last := _HEIGHT_PROFILES.size() - 1
 	var band := clampi(int(floor(t)), 0, last)
 	var frac: float = t - floorf(t)                            # [0,1) pozycja w obrębie pasma
 	var cur: Dictionary = _HEIGHT_PROFILES[band]
+	var cur_rw := (1.0 if bool(cur["ridged"]) else 0.0)
 	# Cross-fade tylko na ogonie pasma i tylko jeśli jest następne pasmo (ostatnie clampuje na sobie).
 	if band < last and frac > (1.0 - _HEIGHT_BLEND_FRAC):
 		var nxt: Dictionary = _HEIGHT_PROFILES[band + 1]
 		var w: float = (frac - (1.0 - _HEIGHT_BLEND_FRAC)) / _HEIGHT_BLEND_FRAC   # 0..1 waga następnego
+		var nxt_rw := (1.0 if bool(nxt["ridged"]) else 0.0)
 		return {
 			"base": lerpf(float(cur["base"]), float(nxt["base"]), w),
 			"amp": lerpf(float(cur["amp"]), float(nxt["amp"]), w),
 			"freq_mul": lerpf(float(cur["freq_mul"]), float(nxt["freq_mul"]), w),
 			"contrast": lerpf(float(cur["contrast"]), float(nxt["contrast"]), w),
-			# ridged: przełączamy w połowie przejścia (bool nie da się lerpować) — krótki ogon, niewidoczny szew.
-			"ridged": (bool(nxt["ridged"]) if w >= 0.5 else bool(cur["ridged"])),
+			# WORLDGEN P5: ridged_w jako CIĄGŁA waga (0..1) zamiast twardego bool-switcha — surface_height
+			# blenduje obie formuły shaped => zero szwu/klifu na styku gór (ridged) z lasem/równiną (gładki).
+			"ridged_w": lerpf(cur_rw, nxt_rw, w),
 		}
-	return cur
+	return {
+		"base": float(cur["base"]),
+		"amp": float(cur["amp"]),
+		"freq_mul": float(cur["freq_mul"]),
+		"contrast": float(cur["contrast"]),
+		"ridged_w": cur_rw,
+	}
 
 
 ## Drobna wariacja koloru (tint) per blok — deterministyczna z pozycji.
@@ -505,24 +575,44 @@ const BIOME_PROGRESSION: Array[StringName] = [
 	BIOME_FROSTHELM,   # pasmo 5 — śnieg/szczyty (wysokie, jak góry, ciut spokojniejsze)
 	BIOME_VOLCANIC,    # pasmo 6 — wulkaniczne (najwyższe, najbardziej postrzępione; koniec podróży, clamp)
 ]
-const BIOME_BAND_METERS: float = 700.0      # szerokość jednego pasma biomu (m) — wielkoskalowe przejścia
-const BIOME_BORDER_JITTER_M: float = 90.0   # warp granicy pasma z szumu klimatu (organiczne brzegi)
+const BIOME_BAND_METERS: float = 1200.0     # skala trendu trudności (m/pasmo) — dystans dosypuje biom dalej
+const BIOME_BORDER_JITTER_M: float = 140.0  # (legacy — warp granicy; brzeg robi teraz _region_noise + warp)
+# WORLDGEN P5 — REGIONY zamiast pierścieni:
+const BIOME_DIST_WEIGHT: float = 0.25       # ile DYSTANS (w pasmach/1200 m) przesuwa biom — DELIKATNY trend trudności
+                                            # (las jako biom-bohater utrzymuje się daleko; wysokie biomy dopiero ~10 km+)
+const BIOME_SPATIAL_RANGE: float = 6.0      # mnożnik 2D pola regionów. Skalibrowane: region_noise ma std≈0.223
+                                            # => efektywne ~1.3 pasma std (extrema ±4) — wyraźne regiony, przestrzeń DOMINUJE
+const BIOME_FOREST_BIAS: float = 0.4        # lekkie przesunięcie rozkładu w dół (ku verdant) — las jako tło-bohater świata
+const BIOME_SPAWN_SAFE_M: float = 700.0     # promień bezpiecznej strefy startu: ściągnij do verdant (start ZAWSZE las)
 
 func get_biome(world_x: int, world_z: int) -> StringName:
 	return BIOME_PROGRESSION[_biome_band(float(world_x), float(world_z))]
 
-## Indeks pasma biomu z dystansu od spawnu, z organicznym (warpowanym szumem) brzegiem.
-## Czysta, deterministyczna funkcja. clamp do ostatniego pasma => świat poza ostatnim biomem
-## pozostaje w najtrudniejszym biomie (nigdy „pusty"/nieznany — kontrakt get_biome nienaruszony).
-func _biome_band(world_x: float, world_z: float) -> int:
+## WORLDGEN P5: CIĄGŁA pozycja biomu w progresji [0, N) — WSPÓLNA dla get_biome (temat: loot/wrogowie/kolor)
+## i _height_profile_blend (sylwetka terenu), żeby region i jego ukształtowanie ZAWSZE się zgadzały.
+## Model: 2D POLE REGIONÓW (_region_noise, domain-warpowane) daje PRZESTRZENNĄ wariację (duże, organiczne
+## kraje — NIE koncentryczne pierścienie), a DYSTANS dosypuje powolny trend trudności (dalej = trudniejszy
+## biom). Strefa startowa (BIOME_SPAWN_SAFE_M) ściągana do verdant => „starting biome = forest". Czysta,
+## deterministyczna (seed) => co-op-safe; przesuwa biom/profil => save-gate. distance_tier() (ilvl) BEZ ZMIAN.
+func _biome_t(world_x: float, world_z: float) -> float:
+	var n := float(_HEIGHT_PROFILES.size())
+	# Domain warp regionu tym SAMYM _warp_noise co teren => brzeg biomu spójny z sylwetką (nie idealne plamy).
+	var warp_x := _warp_noise.get_noise_2d(world_x, world_z) * WARP_AMP
+	var warp_z := _warp_noise.get_noise_2d(world_x + 1000.0, world_z - 1000.0) * WARP_AMP
+	var region := _region_noise.get_noise_2d(world_x + warp_x, world_z + warp_z)   # [-1,1], duże regiony
 	var d := Vector2(world_x, world_z).length()
-	# Warp efektywnego dystansu szumem klimatu (temp+wilgotność), by granice pasm falowały
-	# (NIE idealne okręgi). |warp| <= BIOME_BORDER_JITTER_M. Determinizm: niemutowane szumy.
-	var temp := _biome_noise.get_noise_2d(world_x, world_z)   # [-1,1]
-	var hum := _humid_noise.get_noise_2d(world_x, world_z)    # [-1,1]
-	var warp := (temp * 0.6 + hum * 0.4) * BIOME_BORDER_JITTER_M
-	var band := int(floor((d + warp) / BIOME_BAND_METERS))
-	return clampi(band, 0, BIOME_PROGRESSION.size() - 1)
+	# Rozkład: przesunięty w dół (FOREST_BIAS) => las/plains jako tło; przestrzeń (range) dominuje nad
+	# dystansem (weight) => regiony, nie pierścienie; dystans tylko delikatnie podnosi pułap trudności.
+	var t := (d / BIOME_BAND_METERS) * BIOME_DIST_WEIGHT + region * BIOME_SPATIAL_RANGE - BIOME_FOREST_BIAS
+	# Strefa startowa: gładko (safe^2) ściągnij do 0 (verdant) w promieniu BIOME_SPAWN_SAFE_M.
+	var safe := maxf(0.0, 1.0 - d / BIOME_SPAWN_SAFE_M)
+	t = lerpf(t, 0.0, safe * safe)
+	return clampf(t, 0.0, n - 0.001)
+
+## Indeks pasma biomu = floor(_biome_t). clamp do ostatniego pasma => świat pozostaje w najtrudniejszym
+## biomie (nigdy „pusty"/nieznany — kontrakt get_biome nienaruszony). Czysta, deterministyczna funkcja.
+func _biome_band(world_x: float, world_z: float) -> int:
+	return clampi(int(floor(_biome_t(world_x, world_z))), 0, BIOME_PROGRESSION.size() - 1)
 
 
 ## ETAP 4: tier lootu wg dystansu od spawnu (model Cube World — „skalowanie po dystansie”).
@@ -743,6 +833,20 @@ func _dist2(coord: Vector2i, center: Vector2i) -> int:
 	return dx * dx + dz * dz
 
 
+## WORLDSCALE F2: odległość² Z BIASEM kierunku ruchu — chunki PRZED graczem dostają mniejszy effective
+## (budowane wcześniej), za graczem większy. move_dir==ZERO => zwykła odległość². Tylko kolejność budowy.
+func _biased_d2(coord: Vector2i, center: Vector2i, move_dir: Vector2) -> float:
+	var d2 := float(_dist2(coord, center))
+	if move_dir == Vector2.ZERO:
+		return d2
+	var off := Vector2(float(coord.x - center.x), float(coord.y - center.y))
+	var dist := off.length()
+	if dist < 0.01:
+		return d2
+	var fwd := (off / dist).dot(move_dir)        # 1 = dokładnie na wprost, -1 = za plecami
+	return d2 - fwd * FORWARD_BIAS * dist         # na wprost => mniejszy effective => wcześniej w kolejce
+
+
 ## Czy coord jest już w kolejce budowania (_build_queue trzyma teraz same coordy).
 func _queued(coord: Vector2i) -> bool:
 	return _build_queue.has(coord)
@@ -844,9 +948,18 @@ func _update_chunks(center: Vector2i) -> void:
 			filtered.append(coord)
 	_build_queue = filtered
 
-	# Posortuj CAŁĄ kolejkę względem AKTUALNEGO środka — najbliżej budujemy najpierw.
+	# Posortuj CAŁĄ kolejkę — najbliżej najpierw, Z BIASEM KIERUNKU RUCHU (WORLDSCALE F2): chunki PRZED
+	# graczem budujemy wcześniej. Kierunek z DELTY środka (_last_center jeszcze NIE zaktualizowany w tym
+	# _process => mamy poprzedni środek; działa też dla teleport-stressu, gdzie velocity=0). Zmienia
+	# wyłącznie KOLEJNOŚĆ budowy => zero wpływu na determinizm/treść/zapis.
+	var move_dir := Vector2.ZERO
+	if _last_center.x != 2147483647:
+		var d := Vector2(float(center.x - _last_center.x), float(center.y - _last_center.y))
+		var dl := d.length()
+		if dl > 0.01 and dl < 8.0:
+			move_dir = d / dl
 	_build_queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		return _dist2(a, center) < _dist2(b, center)
+		return _biased_d2(a, center, move_dir) < _biased_d2(b, center, move_dir)
 	)
 
 	# Usuń (queue_free) chunki poza zasięgiem — te SĄ w drzewie i sfinalizowane, więc bezpiecznie.

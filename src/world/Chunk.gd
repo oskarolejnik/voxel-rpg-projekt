@@ -24,7 +24,7 @@ extends StaticBody3D
 # Konwencja: 1 voxel = 0,5 metra. Stałe „w voxelach” podwojone względem wersji 1 m,
 # co przy VOXEL_SIZE=0.5 daje TĘ SAMĄ realną skalę metrów.
 const CHUNK_SIZE: int = 32          # 32 voxele = 16 m
-const WORLD_HEIGHT: int = 96        # 96 voxeli = 48 m
+const WORLD_HEIGHT: int = 128       # WORLDSCALE F4: 96 -> 128 (64 m) — MUSI == VoxelWorld.WORLD_HEIGHT (wyższe góry)
 const SEA_LEVEL: int = 24           # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5       # 0,5 m/voxel
 
@@ -56,7 +56,7 @@ const SKIRT_DEPTH: int = 12
 # 2×2 (+1) = 7 voxeli (review #minor). Przy TREE_MARGIN=6 najdalszy liść trafiał DOKŁADNIE
 # w ostatni rząd chunku, więc każdy wzrost perturbacji ścinałby korony na szwach chunków.
 const TREE_CROWN_RADIUS: int = 4     # bazowy promień korony (warianty: 3..5)
-const TREE_MARGIN: int = 7           # margines od krawędzi chunku (max r=5 + perturbacja +1 + trzon +1)
+const TREE_MARGIN: int = 9           # WORLDSCALE F4B: 7 -> 9 (większe korony r=6 + giganty mieszczą się bez clipu na szwie)
 # Prawdopodobieństwa /4 względem wersji 1 m: kafli XZ jest teraz 4× więcej na ten sam metr,
 # więc bez tego świat byłby przeładowany roślinnością (estetyka + wydajność).
 const TREE_PROB: float = 0.006      # było 0.025
@@ -93,6 +93,7 @@ const SALT_ROCK_VARIANT: int = 6         # wariant rozmiaru głazu
 const SALT_TREE_HEIGHT: int = 7          # ±1 wysokość pnia
 const SALT_TREE_CROWN: int = 30          # perturbacja brzegu korony: SALT_TREE_CROWN+dy
 const SALT_TREE_AUTUMN: int = 9          # czy liście jesienne
+const SALT_TREE_GIANT: int = 61          # WORLDSCALE F4B: rzadkie olbrzymie drzewo (landmark)
 const SALT_ROCK_EDGE: int = 40           # perturbacja brzegu głazu: SALT_ROCK_EDGE+dy
 const SALT_BUSH_EDGE: int = 50           # perturbacja brzegu krzaka: SALT_BUSH_EDGE+dy
 const SALT_ROCK_MOSSY: int = 17          # czy głaz z porostem
@@ -229,6 +230,18 @@ var _voxels: PackedByteArray = PackedByteArray()
 # (review #minor: wcześniej surface_height liczone było 2× na kolumnę — w _generate_data
 # i ponownie w _place_features — po 4 oktawy FBM na próbkę). Indeks: x + CHUNK_SIZE*z.
 var _heightmap: PackedInt32Array = PackedInt32Array()
+
+# WORLDGEN P1: korony drzew jako WIELKIE BLOBY (nie fine-leaf). _place_tree dopisuje tu {x,y,z,r,leaf};
+# _build_mesh emituje kilka dużych pudeł/drzewo do st_leaf (płaski tint, BEZ kolizji). Zwalniane po meshu.
+var _canopies: Array = []
+
+# WORLDGEN P2 (perf): granice MESHOWANIA per kolumna — pętla _build_mesh leci TYLKO przez pas ODSŁONIĘTY
+# [_colmin..._colmax] zamiast 0..WORLD_HEIGHT. Zakopane wnętrze (bez jaskini i bez niższego sąsiada) NIE
+# emituje ścian => pominięcie jest WIZUALNIE IDENTYCZNE, a tnie ~5× iteracji (wąskie gardło streamingu).
+# _colmax = górny wypełniony voxel (teren/woda/cechy). _colmin = najniższy ODSŁONIĘTY (min z: niższy
+# sąsiad-klif, dno jaskini; brzegi chunku konserwatywnie 0). Indeks x + CHUNK_SIZE*z.
+var _colmax: PackedInt32Array = PackedInt32Array()
+var _colmin: PackedInt32Array = PackedInt32Array()
 
 # FEEL 3 (review #minor): cache BIOMU per kolumna (CHUNK_SIZE×CHUNK_SIZE), liczony RAZ w
 # _generate_data. get_biome() próbkuje DWA FastNoiseLite (temp+humidity), a _solid_color jest
@@ -371,6 +384,9 @@ func finalize(world: VoxelWorld) -> void:
 	_voxels = PackedByteArray()
 	_heightmap = PackedInt32Array()
 	_biomemap = PackedByteArray()   # FEEL 3: cache biomu też niepotrzebny po zbudowaniu mesha
+	_canopies = []                  # WORLDGEN P1: lista koron-blobów niepotrzebna po zbudowaniu mesha
+	_colmax = PackedInt32Array()    # WORLDGEN P2: granice mesha kolumn niepotrzebne po zbudowaniu
+	_colmin = PackedInt32Array()
 	_finalized = true
 
 
@@ -394,6 +410,8 @@ func _generate_data(world: VoxelWorld) -> void:
 	# per ściana w _solid_color. Bajt: 1=verdant, 2=emberwaste, 3=frosthelm (0 = nigdy, kolumna
 	# zawsze ma biom). Off-thread, czysty odczyt niemutowanego szumu (jak surface_height).
 	_biomemap.resize(CHUNK_SIZE * CHUNK_SIZE)
+	_colmax.resize(CHUNK_SIZE * CHUNK_SIZE)
+	_colmin.resize(CHUNK_SIZE * CHUNK_SIZE)
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
@@ -408,21 +426,43 @@ func _generate_data(world: VoxelWorld) -> void:
 			# a pozostałą skałę okazjonalnie zamieniamy w rudę (ore_at). Kolumny POD WODĄ (sy<SEA_LEVEL)
 			# NIE drążymy => żadna kieszeń powietrza pod taflą (woda nie wlewa się do jaskiń).
 			var submerged := sy < SEA_LEVEL
+			var cave_low := sy + 1                       # WORLDGEN P2: najniższy wycięty AIR (sy+1 = brak jaskini)
 			for y in range(0, sy + 1):
 				var t := _block_for(y, sy)
 				if t == Blocks.Type.ROCK and not submerged:
 					if world.is_cave(wx, y, wz, sy):
 						t = Blocks.Type.AIR                  # wytnij korytarz/komorę
+						if y < cave_low:
+							cave_low = y
 					else:
 						var o := world.ore_at(wx, y, wz, sy)  # ruda tylko w zachowanej skale (ściany tuneli)
 						if o != -1:
 							t = o
 				_set_voxel(x, y, z, t)
+			var ci := x + CHUNK_SIZE * z
+			_colmax[ci] = SEA_LEVEL if submerged else sy   # górny voxel (woda do SEA_LEVEL; cechy podniosą w _try_set_feature)
+			_colmin[ci] = cave_low - 1                      # dno jaskini-1 (tymczasowo; klify sąsiadów dojdą niżej)
 
 			# Woda: jeśli powierzchnia jest poniżej poziomu morza, zalewamy puste warstwy.
 			if submerged:
 				for y in range(sy + 1, SEA_LEVEL + 1):
 					_set_voxel(x, y, z, Blocks.Type.WATER)
+
+	# WORLDGEN P2: KLIFY — kolumna jest odsłonięta w bok aż do wysokości NIŻSZEGO sąsiada => zejdź _colmin
+	# do min(sąsiednie sy). Brzegi chunku konserwatywnie 0 (sąsiad w INNYM chunku — pełna iteracja, bo nie
+	# znamy jego wysokości bez próbkowania; brzegi to ~12% kolumn). Gwarantuje BRAK dziur w terenie.
+	for x in CHUNK_SIZE:
+		for z in CHUNK_SIZE:
+			var ci := x + CHUNK_SIZE * z
+			var lo := _colmin[ci]
+			if x == 0 or x == CHUNK_SIZE - 1 or z == 0 or z == CHUNK_SIZE - 1:
+				lo = 0
+			else:
+				if _heightmap[(x - 1) + CHUNK_SIZE * z] < lo: lo = _heightmap[(x - 1) + CHUNK_SIZE * z]
+				if _heightmap[(x + 1) + CHUNK_SIZE * z] < lo: lo = _heightmap[(x + 1) + CHUNK_SIZE * z]
+				if _heightmap[x + CHUNK_SIZE * (z - 1)] < lo: lo = _heightmap[x + CHUNK_SIZE * (z - 1)]
+				if _heightmap[x + CHUNK_SIZE * (z + 1)] < lo: lo = _heightmap[x + CHUNK_SIZE * (z + 1)]
+			_colmin[ci] = maxi(0, lo)
 
 	# Roślinność i obiekty — PO terenie i wodzie.
 	_place_features(world)
@@ -493,12 +533,41 @@ func _block_for(world_y: int, surface_y: int) -> int:
 
 
 # --- Roślinność, obiekty i propy: wpis do _voxels TYLKO w obrębie tego chunku ---
+## WORLDSCALE F4B: mnożnik gęstości drzew per biom (× TREE_PROB). verdant = gęsty las, równiny/pustynia
+## rzadkie, wulkan łysy. Deterministyczne (czysta tabela). Biom z get_biome (funkcja seeda+pozycji).
+func _tree_density_mul(biome: StringName) -> float:
+	match biome:
+		&"verdant":
+			return 3.0
+		&"swamp":
+			return 0.9
+		&"mountains":
+			return 0.5
+		&"plains":
+			return 0.35
+		&"frosthelm":
+			return 0.3
+		&"emberwaste":
+			return 0.2
+		&"volcanic":
+			return 0.0
+		_:
+			return 1.0
+
+
 func _place_features(world: VoxelWorld) -> void:
 	# Jeden SurfaceTool na CAŁY chunk zbiera wszystkie drobne propy do jednego mesha
 	# (1 draw call/chunk, bez kolizji). Budujemy go równolegle z rozmieszczaniem.
 	var st_props := SurfaceTool.new()
 	st_props.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_prop_count = 0
+
+	# WORLDSCALE F4B: gęstość drzew SKALOWANA BIOMEM — verdant gęsty las, równiny/pustynia rzadkie,
+	# wulkan łysy. Jeden get_biome na CHUNK (środek), NIE per-kafel (taniej). Czyste odczyty => bez wpływu
+	# na determinizm (biom jest funkcją seeda+pozycji).
+	var cwx := _coord.x * CHUNK_SIZE + CHUNK_SIZE / 2
+	var cwz := _coord.y * CHUNK_SIZE + CHUNK_SIZE / 2
+	var tree_prob := TREE_PROB * _tree_density_mul(world.get_biome(cwx, cwz))
 
 	# Propy stawiamy z marginesem 1 od krawędzi chunku (review #minor): największy
 	# prop (kapelusz grzyba 0,5 m + offset) wystaje wtedy najwyżej na styk z sąsiadem,
@@ -516,7 +585,7 @@ func _place_features(world: VoxelWorld) -> void:
 			if on_grass \
 			and x >= TREE_MARGIN and x <= CHUNK_SIZE - 1 - TREE_MARGIN \
 			and z >= TREE_MARGIN and z <= CHUNK_SIZE - 1 - TREE_MARGIN:
-				if world.feature_hash(wx, wz, SALT_TREE) < TREE_PROB:
+				if world.feature_hash(wx, wz, SALT_TREE) < tree_prob:
 					_place_tree(world, x, sy, z, wx, wz)
 					continue   # nie stawiaj krzaka/kamienia/propa na tym samym kaflu
 
@@ -562,6 +631,10 @@ func _try_set_feature(x: int, y: int, z: int, t: int) -> void:
 	if x < 0 or x >= CHUNK_SIZE or z < 0 or z >= CHUNK_SIZE:
 		return
 	_set_voxel(x, y, z, t)
+	# WORLDGEN P2: cechy (pień, krzak) podnoszą górną granicę mesha kolumny (pętla musi je objąć).
+	var ci := x + CHUNK_SIZE * z
+	if y > _colmax[ci]:
+		_colmax[ci] = y
 
 
 ## Drzewo — pień WOOD (trzon 1×1 lub 2×2) + korona LEAVES jako kula z postrzępionym
@@ -575,11 +648,17 @@ func _place_tree(world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -
 	var fat := false   # trzon 2×2?
 	match variant:
 		0:
-			trunk_h = 8;  r = 3; fat = false
+			trunk_h = 10; r = 4; fat = false   # WORLDSCALE F4B: drzewa wyższe (8/10/12 -> 10/14/18), korony większe (3/4/5 -> 4/5/6)
 		1:
-			trunk_h = 10; r = 4; fat = true
+			trunk_h = 14; r = 5; fat = true
 		_:
-			trunk_h = 12; r = 5; fat = true
+			trunk_h = 18; r = 6; fat = true
+	# WORLDSCALE F4B: rzadkie OLBRZYMIE drzewo (~2% kafli-drzew) — pień 22-28 voxeli (11-14 m), landmark
+	# "idź tam" widoczny z daleka. Korona r=6 mieści się w TREE_MARGIN=9. Rozłączny salt => deterministyczne.
+	if world.feature_hash(wx, wz, SALT_TREE_GIANT) < 0.02:
+		trunk_h = 22 + int(world.feature_hash(wx, wz, SALT_TREE_HEIGHT) * 7.0)   # 22..28
+		r = 6
+		fat = true
 	# ±1 voxel wysokości pnia (SALT_TREE_HEIGHT), żeby drzewa tego samego typu się różniły.
 	trunk_h += int(world.feature_hash(wx, wz, SALT_TREE_HEIGHT) * 3.0) - 1   # -1,0,+1
 
@@ -599,26 +678,11 @@ func _place_tree(world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -
 			_try_set_feature(x, ty, z + 1, Blocks.Type.WOOD)
 			_try_set_feature(x + 1, ty, z + 1, Blocks.Type.WOOD)
 
-	# Korona: kula LEAVES o promieniu r wokół punktu nad wierzchołkiem pnia.
-	var cy := top_y + 1                       # środek korony
-	for dx in range(-r, r + 1):
-		for dy in range(-r, r + 1):
-			for dz in range(-r, r + 1):
-				# 1) Pion lekko spłaszczony (korona szersza niż wyższa) — mnożnik 1.3 na dy.
-				var d2 := dx * dx + int(round(float(dy * dy) * 1.3)) + dz * dz
-				# 2) Próg promienia perturbowany per voxel => poszarpany, naturalny brzeg.
-				#    Zakres ~[-0.6, +0.6] voxela. Deterministyczne (SALT_TREE_CROWN+dy).
-				var edge := (world.feature_hash(wx + dx, wz + dz, SALT_TREE_CROWN + dy) - 0.5) * 1.2
-				var rr := float(r) + edge
-				if float(d2) > rr * rr:
-					continue
-				# Nie zamazuj samego pnia liśćmi w jego trzonie.
-				if dx == 0 and dz == 0 and (cy + dy) <= top_y:
-					continue
-				# Ochrona pni SĄSIEDNICH drzew: nie zamazuj istniejącego WOOD liściem.
-				if get_voxel(x + dx, cy + dy, z + dz) == Blocks.Type.WOOD:
-					continue
-				_try_set_feature(x + dx, cy + dy, z + dz, leaf_type)
+	# WORLDGEN P1: korona jako WIELKI BLOB (kilka dużych pudeł, płaski tint per-pudło) — styl Cube World,
+	# NIE kula fine-leaf voxeli. ~30× mniej ścian (fine-leaf był wąskim gardłem streamingu). Renderowana
+	# w _build_mesh z listy _canopies do st_leaf (BEZ kolizji). Pień (WOOD) zostaje voxelowy (kolizja).
+	var cy := top_y + 1                        # środek korony nad wierzchołkiem pnia
+	_canopies.append({ "x": x, "y": cy, "z": z, "r": r, "leaf": leaf_type })
 
 
 ## Krzak — kulista kępka LEAVES (r=1 lub r=2) tuż nad ziemią, z perturbowanym brzegiem.
@@ -922,7 +986,12 @@ func _build_mesh(world: VoxelWorld) -> void:
 
 	for x in CHUNK_SIZE:
 		for z in CHUNK_SIZE:
-			for y in WORLD_HEIGHT:
+			# WORLDGEN P2: pętla TYLKO przez pas ODSŁONIĘTY [_colmin.._colmax] zamiast 0..WORLD_HEIGHT.
+			# Poniżej _colmin: zakopane (bez jaskini, bez niższego sąsiada) => 0 ścian. Powyżej _colmax:
+			# sam AIR. Pas zawiera teren+wodę+cechy => mesh IDENTYCZNY, ~5× mniej iteracji (płaskie kolumny).
+			var ci := x + CHUNK_SIZE * z
+			var y_hi := mini(_colmax[ci] + 1, WORLD_HEIGHT)
+			for y in range(_colmin[ci], y_hi):
 				var t := get_voxel(x, y, z)
 				if t == Blocks.Type.AIR:
 					continue
@@ -988,6 +1057,11 @@ func _build_mesh(world: VoxelWorld) -> void:
 	# --- OFF-THREAD: commit gotowych zasobów do pól. ZERO operacji na drzewie sceny.
 	#     Węzły (MeshInstance3D / CollisionShape3D) + add_child powstają w finalize() na głównym watku.
 
+	# WORLDGEN P1: KORONY-BLOBY — kilka dużych pudeł/drzewo do st_leaf (płaski tint, A=0, BEZ kolizji).
+	# Zastępują fine-leaf clustery (~30× mniej ścian => odblokowanie streamingu). Drzewa z _canopies.
+	for canopy in _canopies:
+		leaf_count += _emit_canopy(st_leaf, world, canopy)
+
 	# Powierzchnia stała: osobny ArrayMesh (źródło kolizji).
 	# UWAGA (BLOCKER): create_trimesh_shape() NIE jest thread-safe w Godot 4.x (godot#69076 —
 	# wołane z WorkerThreadPool zawiesza/deadlockuje grę, bo sięga do PhysicsServer3D, który
@@ -1027,6 +1101,47 @@ func _classify_leaf(x: int, y: int, z: int) -> int:
 			# Sąsiad jest stały i NIE jest liściem => pień (WOOD) lub teren => liść zakotwiczony.
 			flags |= LEAF_FLAG_ANCHORED
 	return flags
+
+
+## WORLDGEN P1: korona-blob — 1 duże spłaszczone pudło + 4 guzy (deterministyczne per drzewo), płaski
+## tint per-pudło (A=0, bez sway). Styl Cube World: korona = kilka brył jednego koloru, NIE tysiące
+## listków. Reużywa _emit_coarse_box/_coarse_quad. Zwraca przybliżoną liczbę quadów (do guarda commit).
+func _emit_canopy(st, world: VoxelWorld, c: Dictionary) -> int:
+	var x: int = c["x"]
+	var z: int = c["z"]
+	var cy: int = c["y"]
+	var r: int = c["r"]
+	var leaf_type: int = c["leaf"]
+	var wx := _coord.x * CHUNK_SIZE + x
+	var wz := _coord.y * CHUNK_SIZE + z
+	var base := _solid_color(world, leaf_type, x, cy, z)
+	var cxm := (float(x) + 0.5) * VOXEL_SIZE
+	var czm := (float(z) + 0.5) * VOXEL_SIZE
+	var cym := (float(cy) + float(r) * 0.35) * VOXEL_SIZE        # blob siedzi na wierzchołku pnia, lekko w górę
+	var rm := float(r) * VOXEL_SIZE
+	var faces := 0
+	_canopy_box(st, cxm, cym, czm, rm, rm * 0.8, rm, base)       # główne pudło (szersze niż wyższe)
+	faces += 5
+	for i in 4:                                                  # 4 guzy dla organicznej, lumpy sylwetki
+		var a := float(i) * (TAU / 4.0) + world.feature_hash(wx, wz, SALT_TREE_CROWN + i) * 1.6
+		var off := rm * 0.6
+		var lx := cxm + cos(a) * off
+		var lz := czm + sin(a) * off
+		var ly := cym + (world.feature_hash(wx + i, wz, SALT_TREE_CROWN + 11) - 0.45) * rm * 0.6
+		var lr := rm * (0.45 + world.feature_hash(wx, wz + i, SALT_TREE_CROWN + 23) * 0.35)
+		var k := (world.feature_hash(wx + i, wz + i, SALT_TREE_CROWN + 31) - 0.5) * 0.16
+		var lc := Color(clampf(base.r + k, 0.0, 1.0), clampf(base.g + k, 0.0, 1.0), clampf(base.b + k, 0.0, 1.0), 1.0)
+		_canopy_box(st, lx, ly, lz, lr, lr * 0.8, lr, lc)
+		faces += 5
+	return faces
+
+
+## Pojedyncze pudło korony (centrum + półboki). Wymusza A=0 (płaski blob, bez sway). 5 ścian (bez dna,
+## schowane pod blobem). Reużywa _emit_coarse_box.
+func _canopy_box(st, cx: float, cy: float, cz: float, hx: float, hy: float, hz: float, col: Color) -> void:
+	var c := col
+	c.a = 0.0
+	_emit_coarse_box(st, cx - hx, cy - hy, cz - hz, cx + hx, cy + hy, cz + hz, c)
 
 
 ## Renderuje POWIERZCHNIOWY voxel liścia jako klaster drobnych sub-voxeli (skorupa + prześwity
@@ -1254,6 +1369,12 @@ func _build_coarse(world: VoxelWorld) -> void:
 			var wz := _coord.y * CHUNK_SIZE + cz * step
 			hm[cx + cells * cz] = world.surface_height(wx, wz)
 
+	# WORLDSCALE: ZGRUBNE DRZEWA na pierścieniu FAR — las sięga HORYZONTU (NEAR ma fine-leaf clustery;
+	# FAR dostaje tanie pudełka pień+korona, BEZ kolizji, ~12 ścian/drzewo). Gęstość per biom (jeden
+	# get_biome/chunk, jak NEAR). Pozycja w rogu komórki (co `step` voxeli) — drobny offset kryje mgła.
+	var cwx := _coord.x * CHUNK_SIZE + CHUNK_SIZE / 2
+	var cwz := _coord.y * CHUNK_SIZE + CHUNK_SIZE / 2
+	var far_tree_prob := TREE_PROB * _tree_density_mul(world.get_biome(cwx, cwz))
 	var emitted := 0
 	for cx in cells:
 		for cz in cells:
@@ -1288,6 +1409,13 @@ func _build_coarse(world: VoxelWorld) -> void:
 				var nh_mz := hm[cx + cells * (cz - 1)]
 				if nh_mz < sy: _emit_coarse_side(st, lx, lz, sy, nh_mz, step, 5, col)
 
+			# Zgrubne drzewo na trawie (ta sama szansa/wariant co NEAR => spójna gęstość lasu).
+			if t == Blocks.Type.GRASS:
+				var twx := _coord.x * CHUNK_SIZE + lx
+				var twz := _coord.y * CHUNK_SIZE + lz
+				if world.feature_hash(twx, twz, SALT_TREE) < far_tree_prob:
+					_emit_coarse_tree(st, world, lx, sy, lz, twx, twz)
+
 			emitted += 1
 
 	# 3) SKIRTY na 4 krawędziach chunku (zakrywają szwy LOD↔LOD i LOD↔NEAR).
@@ -1299,6 +1427,52 @@ func _build_coarse(world: VoxelWorld) -> void:
 	# _r_water_mesh / _r_props_mesh / _r_collision_shape pozostają null (FAR ich nie ma).
 	# Woda FAR pominięta świadomie: w dali i tak rozpływa się w mgle (cz. 3) => mniej draw-calli
 	# i zero kosztu DEPTH_TEXTURE wody w dali. Dorzucić dopiero gdyby brzegi jezior w dali raziły.
+
+
+## WORLDSCALE: zgrubne drzewo FAR — pień (wąskie pudło) + korona (zielone pudło). ~10 ścian, BEZ
+## fine-leaf (to NEAR), BEZ kolizji (FAR). Wariant/giganty z tych samych hashy co NEAR => spójna sylwetka
+## i gęstość przez granicę LOD. Współrzędne w METRACH (voxel × VOXEL_SIZE), jak reszta zgrubnego mesha.
+func _emit_coarse_tree(st: SurfaceTool, world: VoxelWorld, lx: int, sy: int, lz: int, wx: int, wz: int) -> void:
+	var variant := int(world.feature_hash(wx, wz, SALT_TREE_VARIANT) * 3.0)
+	var trunk_h := 10
+	var r := 4
+	match variant:
+		1:
+			trunk_h = 14; r = 5
+		2, 3:
+			trunk_h = 18; r = 6
+	if world.feature_hash(wx, wz, SALT_TREE_GIANT) < 0.02:
+		trunk_h = 24; r = 6   # gigant-landmark widoczny z dali
+	var cx := (float(lx) + 0.5) * VOXEL_SIZE
+	var cz := (float(lz) + 0.5) * VOXEL_SIZE
+	var base_y := float(sy + 1) * VOXEL_SIZE
+	var top_y := base_y + float(trunk_h) * VOXEL_SIZE
+	var trunk_col := Blocks.color_of(Blocks.Type.WOOD)
+	var leaf_col := Blocks.color_of(Blocks.Type.LEAVES)
+	var tw := VOXEL_SIZE                              # pień ±1 voxel
+	_emit_coarse_box(st, cx - tw, base_y, cz - tw, cx + tw, top_y, cz + tw, trunk_col)
+	var ch := float(r) * VOXEL_SIZE                   # korona ~2r szerokości na wierzchołku pnia
+	_emit_coarse_box(st, cx - ch, top_y - ch, cz - ch, cx + ch, top_y + ch, cz + ch, leaf_col)
+
+
+## Pudło [min..max] w METRACH — 5 ścian (dół -Y pominięty, schowany), CW od zewnątrz. Do zgrubnych drzew.
+func _emit_coarse_box(st: SurfaceTool, x0: float, y0: float, z0: float, x1: float, y1: float, z1: float, col: Color) -> void:
+	_coarse_quad(st, Vector3(x0, y1, z1), Vector3(x1, y1, z1), Vector3(x1, y1, z0), Vector3(x0, y1, z0), Vector3(0, 1, 0), col)    # +Y
+	_coarse_quad(st, Vector3(x1, y0, z0), Vector3(x1, y1, z0), Vector3(x1, y1, z1), Vector3(x1, y0, z1), Vector3(1, 0, 0), col)    # +X
+	_coarse_quad(st, Vector3(x0, y0, z1), Vector3(x0, y1, z1), Vector3(x0, y1, z0), Vector3(x0, y0, z0), Vector3(-1, 0, 0), col)   # -X
+	_coarse_quad(st, Vector3(x1, y0, z1), Vector3(x1, y1, z1), Vector3(x0, y1, z1), Vector3(x0, y0, z1), Vector3(0, 0, 1), col)    # +Z
+	_coarse_quad(st, Vector3(x0, y0, z0), Vector3(x0, y1, z0), Vector3(x1, y1, z0), Vector3(x1, y0, z0), Vector3(0, 0, -1), col)   # -Z
+
+
+## Quad a,b,c,d (CCW od zewnątrz) -> trójkąty CW: a,c,b / a,d,c (ten sam fold co _emit_coarse_top/side).
+func _coarse_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3, col: Color) -> void:
+	st.set_normal(n)
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(c)
+	st.set_color(col); st.add_vertex(b)
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(d)
+	st.set_color(col); st.add_vertex(c)
 
 
 ## Górna ściana zgrubnej komórki (step×step voxeli) na wierzchu kolumny sy. Normalna +Y,
