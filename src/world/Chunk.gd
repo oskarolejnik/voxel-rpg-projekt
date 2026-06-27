@@ -24,7 +24,7 @@ extends StaticBody3D
 # Konwencja: 1 voxel = 0,5 metra. Stałe „w voxelach” podwojone względem wersji 1 m,
 # co przy VOXEL_SIZE=0.5 daje TĘ SAMĄ realną skalę metrów.
 const CHUNK_SIZE: int = 32          # 32 voxele = 16 m
-const WORLD_HEIGHT: int = 96        # 96 voxeli = 48 m
+const WORLD_HEIGHT: int = 128       # WORLDSCALE F4: 96 -> 128 (64 m) — MUSI == VoxelWorld.WORLD_HEIGHT (wyższe góry)
 const SEA_LEVEL: int = 24           # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5       # 0,5 m/voxel
 

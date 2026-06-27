@@ -24,7 +24,7 @@ extends Node3D
 #   WORLD_HEIGHT=96 voxeli × 0,5 = 48 m (bez zmian realnie)
 #   SEA_LEVEL=24 voxeli × 0,5 = 12 m (bez zmian realnie)
 const CHUNK_SIZE: int = 32           # 32 voxele = 16 m
-const WORLD_HEIGHT: int = 96         # 96 voxeli = 48 m
+const WORLD_HEIGHT: int = 128        # WORLDSCALE F4: 96 -> 128 (64 m ceiling) — wyższe góry. Koszt RAM tylko w resize tablicy (zwalniana po mesh); pętla wypełniania jest surface-bound => taniej. MUSI == Chunk.WORLD_HEIGHT
 const SEA_LEVEL: int = 24            # 24 voxeli = 12 m
 const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 
@@ -87,13 +87,13 @@ const HEIGHT_AMPLITUDE: float = 64.0     # amplituda do 64 voxeli × 0,5 = 32 m 
 # Profil to czysta tabela danych (deterministyczna). Cross-fade między sąsiednimi pasmami robi
 # _height_profile_blend (szwy organiczne, bo dystans jest już warpowany szumem klimatu jak w _biome_band).
 const _HEIGHT_PROFILES: Array[Dictionary] = [
-	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 1.6, "ridged": false },  # 0 verdant/forest — pofalowane wzgórza (jak dawniej)
+	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 2.0, "ridged": false },  # 0 verdant — WORLDSCALE F4: ostrzejsze doliny/wzgórza (contrast 1.6->2.0)
 	{ "base": 20.0, "amp": 18.0, "freq_mul": 0.8, "contrast": 1.2, "ridged": false },  # 1 plains — płaskie, niska amplituda
 	{ "base": 16.0, "amp": 12.0, "freq_mul": 1.1, "contrast": 1.1, "ridged": false },  # 2 swamp — nisko + płasko (przy poziomie morza)
-	{ "base": 22.0, "amp": 78.0, "freq_mul": 1.3, "contrast": 1.9, "ridged": true },   # 3 mountains — wysokie, postrzępione granie
+	{ "base": 22.0, "amp": 100.0, "freq_mul": 0.9, "contrast": 2.3, "ridged": true },  # 3 mountains — WORLDSCALE F4: szersze masywy (freq 1.3->0.9) + wyższe (amp 78->100, do ~61 m) + ostrzejsze (1.9->2.3)
 	{ "base": 18.0, "amp": 30.0, "freq_mul": 0.6, "contrast": 1.4, "ridged": false },  # 4 emberwaste/desert — gładkie wydmy
-	{ "base": 24.0, "amp": 70.0, "freq_mul": 1.2, "contrast": 1.8, "ridged": true },   # 5 frosthelm/snow — wysokie szczyty (śnieg)
-	{ "base": 26.0, "amp": 84.0, "freq_mul": 1.5, "contrast": 2.1, "ridged": true },   # 6 volcanic — najwyższe, najbardziej postrzępione
+	{ "base": 24.0, "amp": 92.0, "freq_mul": 0.9, "contrast": 2.2, "ridged": true },   # 5 frosthelm — WORLDSCALE F4: szersze + wyższe ośnieżone szczyty (amp 70->92, do ~58 m)
+	{ "base": 26.0, "amp": 110.0, "freq_mul": 1.5, "contrast": 2.1, "ridged": true },  # 6 volcanic — WORLDSCALE F4: najwyższe granie (amp 84->110, postrzępione freq 1.5 zostaje)
 ]
 # Ułamek szerokości pasma (od JEGO końca), na którym profil cross-faduje do następnego pasma.
 # 0.18 => ostatnie ~18% pasma to płynne przejście sylwetki terenu (zero ostrego "muru" na szwie biomu).
@@ -200,7 +200,7 @@ func _setup_noise() -> void:
 	_noise.seed = world_seed   # BUGFIX „ciągle ten sam świat": seed terenu z runtime world_seed (nie stała 1337)
 	# /2 względem 0.014: indeksy voxeli są 2× gęstsze na ten sam metr (VOXEL_SIZE=0.5),
 	# więc dzielimy częstotliwość, by wzgórza miały ten sam REALNY rozmiar.
-	_noise.frequency = 0.007
+	_noise.frequency = 0.004   # WORLDSCALE F4: 0.007 -> 0.004 — wzgórza ~71 m -> ~125 m, góry szersze (świat wielki). ZERO kosztu voxeli. (gen const => determinizm jednolity; przesuwa surface_y => save-gate)
 	_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 	_noise.fractal_octaves = 4
 	_noise.fractal_lacunarity = 2.0
