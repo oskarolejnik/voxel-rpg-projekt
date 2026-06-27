@@ -95,10 +95,10 @@ const _HEIGHT_PROFILES: Array[Dictionary] = [
 	{ "base": 14.0, "amp": 64.0, "freq_mul": 1.0, "contrast": 2.0, "ridged": false },  # 0 verdant — WORLDSCALE F4: ostrzejsze doliny/wzgórza (contrast 1.6->2.0)
 	{ "base": 20.0, "amp": 18.0, "freq_mul": 0.8, "contrast": 1.2, "ridged": false },  # 1 plains — płaskie, niska amplituda
 	{ "base": 16.0, "amp": 12.0, "freq_mul": 1.1, "contrast": 1.1, "ridged": false },  # 2 swamp — nisko + płasko (przy poziomie morza)
-	{ "base": 22.0, "amp": 100.0, "freq_mul": 0.9, "contrast": 2.3, "ridged": true },  # 3 mountains — WORLDSCALE F4: szersze masywy (freq 1.3->0.9) + wyższe (amp 78->100, do ~61 m) + ostrzejsze (1.9->2.3)
+	{ "base": 22.0, "amp": 100.0, "freq_mul": 0.6, "contrast": 2.3, "ridged": true },  # 3 mountains — WORLDGEN P4: SZEROKIE masywy (freq_mul 0.9->0.6) + maska gór => kilka ikonicznych pasm
 	{ "base": 18.0, "amp": 30.0, "freq_mul": 0.6, "contrast": 1.4, "ridged": false },  # 4 emberwaste/desert — gładkie wydmy
-	{ "base": 24.0, "amp": 92.0, "freq_mul": 0.9, "contrast": 2.2, "ridged": true },   # 5 frosthelm — WORLDSCALE F4: szersze + wyższe ośnieżone szczyty (amp 70->92, do ~58 m)
-	{ "base": 26.0, "amp": 110.0, "freq_mul": 1.5, "contrast": 2.1, "ridged": true },  # 6 volcanic — WORLDSCALE F4: najwyższe granie (amp 84->110, postrzępione freq 1.5 zostaje)
+	{ "base": 24.0, "amp": 92.0, "freq_mul": 0.65, "contrast": 2.2, "ridged": true },  # 5 frosthelm — WORLDGEN P4: szersze ośnieżone masywy (freq_mul 0.9->0.65) + maska gór
+	{ "base": 26.0, "amp": 110.0, "freq_mul": 1.0, "contrast": 2.1, "ridged": true },  # 6 volcanic — WORLDGEN P4: najwyższe granie (freq_mul 1.5->1.0, nadal najbardziej postrzępione) + maska
 ]
 # Ułamek szerokości pasma (od JEGO końca), na którym profil cross-faduje do następnego pasma.
 # 0.18 => ostatnie ~18% pasma to płynne przejście sylwetki terenu (zero ostrego "muru" na szwie biomu).
@@ -149,6 +149,7 @@ var _tint_noise: FastNoiseLite
 var _biome_noise: FastNoiseLite   # regionalny biom koloru (Faza 2C) == temperatura (Etap 4)
 var _humid_noise: FastNoiseLite   # ETAP 4: wilgotność (drugi wymiar podziału biomów)
 var _warp_noise: FastNoiseLite    # WORLDGEN P3: domain warp (organiczne, nie-kratkowe landformy)
+var _mask_noise: FastNoiseLite    # WORLDGEN P4: maska gór (klastruje szczyty w kilka pasm + spokojne ramiona)
 # JASKINIE: dwa zdekorelowane pola ridged (przecięcie izopowierzchni ~0 = tunele) + cellular na komory.
 # Konfigurowane RAZ w _setup_noise, potem TYLKO odczyt (is_cave/ore_at) z wątku roboczego — ten sam
 # kontrakt thread-safe co _noise/_biome_noise (żadnych mutacji po starcie).
@@ -221,6 +222,14 @@ func _setup_noise() -> void:
 	_warp_noise.frequency = 0.0018
 	_warp_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
 	_warp_noise.fractal_octaves = 2
+
+	# WORLDGEN P4: MASKA GÓR — niskoczęsty szum bramkujący amplitudę grani. Szczyty wybijają TYLKO tam,
+	# gdzie maska wysoka => kilka IKONICZNYCH pasm + spokojne ramiona/przedgórza między nimi (zamiast
+	# jednostajnego kolca wszędzie). Deterministyczna (seed). Tylko profile ridged (góry/wulkan/śnieg).
+	_mask_noise = FastNoiseLite.new()
+	_mask_noise.noise_type = FastNoiseLite.TYPE_PERLIN
+	_mask_noise.seed = world_seed + 8123
+	_mask_noise.frequency = 0.0014
 
 	_tint_noise = FastNoiseLite.new()
 	_tint_noise.noise_type = FastNoiseLite.TYPE_PERLIN
@@ -377,6 +386,10 @@ func surface_height(world_x: int, world_z: int) -> int:
 		# RIDGED: 1 - |n| daje ostre granie (góry/wulkany) — szczyt tam, gdzie szum przecina 0.
 		# Mapujemy do ~[0,1] tak, by clampf nie ścinał całości w jeden płaskowyż.
 		shaped = clampf((1.0 - absf(raw)) * float(prof["contrast"]) - (float(prof["contrast"]) - 1.0), 0.0, 1.0)
+		# WORLDGEN P4: MASKA GÓR — amplituda grani bramkowana niskoczęstym szumem => kilka IKONICZNYCH pasm
+		# + spokojne ramiona/przedgórza (min 0.3, nie martwy płask). Sylwetka: szeroka podstawa, dramat na szczycie.
+		var mask := clampf(_mask_noise.get_noise_2d(float(world_x), float(world_z)) * 1.3 + 0.6, 0.3, 1.0)
+		shaped *= mask
 	else:
 		shaped = clampf(raw * float(prof["contrast"]) + 0.5, 0.0, 1.0)
 		# WORLDGEN P3: REDISTRYBUCJA — pow(e, exponent>1) wpycha ŚREDNIE wysokości w dół => szerokie,
