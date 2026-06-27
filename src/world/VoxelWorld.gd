@@ -34,7 +34,7 @@ const VOXEL_SIZE: float = 0.5        # 0,5 m/voxel (styl Cube World)
 # far_dist = najdalszy budowany pierścień => render_distance to teraz alias far_dist.
 # 4 -> 7 daje 64 m -> 112 m zasięgu, a koszt rośnie głównie na TANICH chunkach FAR.
 @export var near_dist: int = 3           # promień pełnego detalu (3 × 16 m = 48 m) — odchudzone na 4GB
-@export var far_dist: int = 5            # najdalszy zgrubny pierścień (5 × 16 m = 80 m) — mniej draw calls/VRAM
+@export var far_dist: int = 7            # WORLDSCALE F3: 5 -> 7 (80 -> 112 m). FAR=step2 tani; forward-bias chroni NEAR; mgła cofa się z far_dist
 @export var chunks_per_frame: int = 2    # ile NOWYCH zadań submitujemy max/klatkę (throttling submitu)
 
 # Kroki próbkowania LOD przekazywane chunkowi (1=NEAR pełny, 2=FAR zgrubny). MUSZĄ być
