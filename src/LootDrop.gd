@@ -95,9 +95,13 @@ func _process(delta: float) -> void:
 
 # FEEL 3: GLOW lootu skaluje sie z RZADKOSCIA — wyzsza rzadkosc => mocniejsza emisja, wieksze halo,
 # a od RARE w gore PIONOWY BEAM (slup swiatla) widoczny z daleka w hordzie/mgle. Czytelnosc "co warto
-# podniesc" bez UI. Indeks rzadkosci 0..5 (COMMON..SET); zloto traktujemy jak UNCOMMON-tier blask.
+# podniesc" bez UI. Indeks rzadkosci 0..7 (COMMON..ANCIENT); zloto traktujemy jak UNCOMMON-tier blask.
+# LOOT Faza 6: od LEGENDARY w gore dochodzą CZĄSTECZKI (iskry) — MYTHIC/ANCIENT gęstsze/wyższe => chase
+# item czytelny z daleka. glow(ANCIENT) > glow(LEGENDARY) (emis/halo/beam rosną liniowo z indeksem).
 const _LOOT_BEAM_FROM_RARITY: int = 2     # RARE i wyzej dostaja pionowy slup swiatla
+const _PARTICLES_FROM_RARITY: int = 4     # LEGENDARY i wyzej dostaja iskry (cząsteczki)
 var _beam: MeshInstance3D = null
+var _particles: CPUParticles3D = null
 
 ## Indeks rzadkosci dropu (0..5). Zloto bez itemu -> 1 (lekki, zauwazalny blask, nie szary common).
 func _rarity_index() -> int:
@@ -169,6 +173,38 @@ func _build_visual() -> void:
 		bmat.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y   # zawsze zwrocony do kamery (oś Y)
 		_beam.material_override = bmat
 		add_child(_beam)
+
+	# LOOT Faza 6: ISKRY od LEGENDARY w gore — unoszące się cząsteczki w kolorze rzadkości. Gęstość +
+	# wysokość rosną z indeksem (MYTHIC/ANCIENT wyraźnie bogatsze). CPUParticles3D (bez ParticleProcessMaterial,
+	# tani dla kilku dropów na słabym sprzęcie). Anti-bloat: tylko wartościowy loot iskrzy.
+	if r >= _PARTICLES_FROM_RARITY:
+		_particles = CPUParticles3D.new()
+		_particles.amount = 8 + (r - _PARTICLES_FROM_RARITY) * 6     # LEG 8 .. ANCIENT 26
+		_particles.lifetime = 1.4
+		_particles.position.y = 0.45
+		_particles.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+		_particles.emission_sphere_radius = 0.22
+		_particles.direction = Vector3.UP
+		_particles.spread = 18.0
+		_particles.initial_velocity_min = 0.4
+		_particles.initial_velocity_max = 0.5 + float(r) * 0.12      # wyższe iskry dla wyższej rzadkości
+		_particles.gravity = Vector3(0.0, -0.25, 0.0)
+		_particles.scale_amount_min = 0.04
+		_particles.scale_amount_max = 0.09
+		_particles.color = col
+		var pmat := StandardMaterial3D.new()
+		pmat.albedo_color = col
+		pmat.emission_enabled = true
+		pmat.emission = col
+		pmat.emission_energy_multiplier = 2.0 + float(r) * 0.25
+		pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		pmat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		pmat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		_particles.mesh = QuadMesh.new()
+		(_particles.mesh as QuadMesh).size = Vector2(0.12, 0.12)
+		_particles.material_override = pmat
+		add_child(_particles)
 
 
 ## Kolor dropu: zloto -> zloty; item -> kolor rzadkosci (LootService).

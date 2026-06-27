@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="LootTableResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/LootTableResource.gd" id="1_wbt"]
+
+[resource]
+script = ExtResource("1_wbt")
+rarity_weights = {
+4: 40.0,
+5: 20.0,
+6: 30.0,
+7: 10.0
+}
+guaranteed_rarity = 6
+gold_min = 250
+gold_max = 600

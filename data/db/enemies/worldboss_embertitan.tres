@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="EnemyResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatBlock.gd" id="1_stat"]
+[ext_resource type="Script" path="res://data/resources/EnemyResource.gd" id="2_enemy"]
+[ext_resource type="Resource" path="res://data/db/enemies/worldboss_table.tres" id="3_loot"]
+
+[sub_resource type="Resource" id="StatBlock_wb"]
+script = ExtResource("1_stat")
+max_hp = 2400.0
+damage = 58.0
+attack_speed = 0.45
+armor = 0.45
+move_speed = 2.6
+
+[resource]
+script = ExtResource("2_enemy")
+id = &"worldboss_embertitan"
+display_name = "Tytan Zaru"
+stats = SubResource("StatBlock_wb")
+loot_table = ExtResource("3_loot")
+xp_reward = 1200
+ai_profile = &"melee"
+threat_tier = &"boss"
+world_boss_id = &"embertitan"
+poise = 12.0
+biomes = Array[StringName]([&"ember"])
+variant_meta = {
+"attack_windup": 0.7,
+"attack_range": 3.2,
+"body_scale": 2.4,
+"aggro_radius": 18.0,
+"leash_radius": 30.0
+}

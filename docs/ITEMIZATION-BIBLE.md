@@ -194,6 +194,18 @@ desert fire/penetration, volcanic fire — via `affix_themes` + ~6–10 themed a
 **Co-op/save:** definition-side fields round-trip free; the **only** new save field is a small set of
 cleared world-boss ids in `SaveData` (default-empty get, still additive).
 
+**Phase 6 (shipped):** `LootTableResource.guaranteed_rarity` (−1=none) floors the roll in `_roll_rarity`
+and guarantees a drop. `LootService._rarity_floor(enemy, table)` composes floors: table value, **boss**
+(`threat_tier=="boss"` → ≥ LEGENDARY, so *every* dungeon boss benefits with zero content), and
+**world-boss** (`Enemy.world_boss_id` → ≥ MYTHIC; **first kill per save → ANCIENT**, marked in
+`GameState.cleared_world_bosses` ↔ `SaveData` via Player save/read, mirroring `gold`/`orbs`). Fixed a
+latent bug: `_roll_rarity` zeroed a length-**6** weights array, so tables could never roll Mythic/Ancient
+(idx 6,7) — now length 8. `LootDrop` adds CPU **spark particles** from LEGENDARY up (density/height scale
+with tier) on top of the existing 0..7 glow/halo/beam (glow(ANCIENT) > glow(LEGENDARY)). Content:
+`worldboss_embertitan` + `worldboss_table` (guaranteed MYTHIC) authored as ready data. **Deferred:** the
+world-boss is not yet auto-spawned into the open world — that needs dedicated spawn-rarity + difficulty
+tuning (a focused follow-up); the entity/table/system are complete and the first-kill path is verified.
+
 ---
 
 ## 7. Content taxonomy — 131 items

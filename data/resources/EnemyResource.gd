@@ -11,6 +11,9 @@ extends Resource
 @export var xp_reward: int = 10
 @export var ai_profile: StringName = &"melee"        # &"melee"/&"ranged"/&"caster"
 @export var threat_tier: StringName = &"trash"       # &"trash"/&"elite"/&"boss" (telegraf — GDD 5.4)
+## LOOT Faza 6 — WORLD-BOSS: niepuste => to świat-boss o tym id. Pierwszy kill (raz na save) daje
+## gwarantowany ANCIENT; kolejne kille podłogę MYTHIC. LootService.drop_for + GameState.cleared_world_bosses.
+@export var world_boss_id: StringName = &""
 ## EKOSYSTEM (GDD Świat §4): 0=Hostile (agresja na widok), 1=Neutral (kontratak po prowokacji),
 ## 2=Passive (nigdy nie atakuje, ucieka). Czytane przez Enemy.configure_from_resource -> AIComponent.
 @export_enum("Hostile", "Neutral", "Passive") var disposition: int = 0

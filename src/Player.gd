@@ -811,6 +811,7 @@ func write_progression_to_save(sd: SaveData) -> void:
 	if GameState != null:
 		sd.gold = GameState.gold
 		sd.orbs = GameState.orbs
+		sd.cleared_world_bosses = GameState.cleared_world_bosses.duplicate()   # LOOT Faza 6: progres world-bossów
 	# AUDYT (save): ekwipunek + plecak (LOOT = filar progresji) MUSZĄ być zapisane w trakcie gry —
 	# inaczej gracz traci CAŁY loot przy wyjściu. Schema (SaveData) i serializacja (InventoryComponent)
 	# już istniały; brakowało TYLKO tego wpięcia (write nigdy nie wołał equipment_to_save/backpack_to_save).
@@ -830,6 +831,7 @@ func read_progression_from_save(sd: SaveData) -> void:
 	if GameState != null:
 		GameState.gold = sd.gold
 		GameState.orbs = sd.orbs
+		GameState.cleared_world_bosses = sd.cleared_world_bosses.duplicate()   # LOOT Faza 6: world-bossy
 		GameState.gold_changed.emit(GameState.gold)
 		GameState.orbs_changed.emit(GameState.orbs)
 	# AUDYT (save): odtwórz ekwipunek + plecak z save'a (odwrotność write) — loot wraca po wczytaniu.

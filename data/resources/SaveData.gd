@@ -32,6 +32,9 @@ const SAVE_VERSION: int = 1
 @export var world_changes: Dictionary = {}           # chunk_key -> {voxel_edits} (delty od generacji)
 @export var discovered_chunks: Array = []
 @export var world_entities: Array = []                # trwale encje (NIE dungeonowe)
+# LOOT Faza 6 — ubite WORLD-BOSSY (po world_boss_id). Pierwszy kill daje gwarantowany ANCIENT (raz na
+# save); kolejne kille spadają do podłogi MYTHIC. Dopisywane => save round-trip dodatkowy (default []).
+@export var cleared_world_bosses: Array[StringName] = []
 @export var play_time: float = 0.0
 
 
@@ -66,6 +69,7 @@ func to_dict() -> Dictionary:
 		"world_changes": world_changes,
 		"discovered_chunks": discovered_chunks,
 		"world_entities": world_entities,
+		"cleared_world_bosses": cleared_world_bosses.map(func(s: StringName) -> String: return String(s)),
 		"play_time": play_time,
 	}
 
@@ -107,6 +111,7 @@ static func from_dict(d: Dictionary) -> SaveData:
 	s.world_changes = d.get("world_changes", {})
 	s.discovered_chunks = d.get("discovered_chunks", [])
 	s.world_entities = d.get("world_entities", [])
+	s.cleared_world_bosses = _to_sn_array(d.get("cleared_world_bosses", []))
 	s.play_time = float(d.get("play_time", 0.0))
 	return s
 

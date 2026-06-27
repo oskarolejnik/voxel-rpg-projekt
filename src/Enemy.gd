@@ -116,6 +116,9 @@ var _threat_marker_phase: float = 0.0
 # (default off): zwykłe moby i elity NIGDY nie szałują (wsteczna zgodność). Trigger w _on_health_hp_changed
 # (Enemy już słucha hp_changed z HealthComponent) — jedno źródło HP, brak osobnego pollingu.
 @export var boss_mechanics: bool = false        # czy boss ma fazę enrage (DungeonRun włącza dla bossa)
+# LOOT Faza 6 — WORLD-BOSS id (niepuste => świat-boss). Czyta LootService.drop_for: pierwszy kill (raz
+# na save, GameState.cleared_world_bosses) = gwarantowany ANCIENT; kolejne = podłoga MYTHIC.
+@export var world_boss_id: StringName = &""
 @export var enrage_hp_frac: float = 0.5         # próg HP (ułamek max) wejścia w szał
 @export var enrage_damage_mult: float = 1.5     # mnożnik dmg po szale
 @export var enrage_speed_mult: float = 1.35     # mnożnik prędkości ruchu po szale
@@ -137,6 +140,7 @@ func configure_from_resource(res: EnemyResource) -> void:
 	variant_id = res.id if res.id != &"" else variant_id
 	ai_profile = res.ai_profile
 	threat_tier = res.threat_tier
+	world_boss_id = res.world_boss_id   # LOOT Faza 6: świat-boss (pierwszy kill => ANCIENT)
 	disposition = res.disposition   # EKOSYSTEM: hostile/neutral/passive -> AIComponent (przez _build_components)
 	poise = res.poise               # COMBAT: pula poise (odporność na stagger); 0 = trash
 	_poise_current = poise

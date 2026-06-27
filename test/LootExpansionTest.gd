@@ -71,6 +71,7 @@ func _ready() -> void:
 	_phase2()
 	_phase4()
 	_phase5()
+	_phase6()
 
 	if _failures == 0:
 		print("[LOOTX] ALL OK")
@@ -447,3 +448,138 @@ func _health_of(owner_node: Node) -> HealthComponent:
 		if c is HealthComponent:
 			return c
 	return null
+
+
+## LOOT Faza 6: tablice lootu (guaranteed_rarity) + boss/world-boss podłoga + first-kill ANCIENT + zapis +
+## LootDrop glow/particles. Sprawdza: (a) SaveData round-trip cleared_world_bosses, (b) GameState helpery,
+## (c) _roll_rarity DŁUGOŚĆ 8 (tabela może rolować MYTHIC/ANCIENT), (d) guaranteed_rarity podłoga,
+## (e) boss => >= LEGENDARY, (f) world-boss first-kill => ANCIENT + oznaczenie, drugi kill => MYTHIC,
+## (g) drop_for bossa daje item >= LEGENDARY, (h) LootDrop glow(ANCIENT)>glow(LEGENDARY) + iskry od LEG.
+func _phase6() -> void:
+	# (a) SaveData round-trip: cleared_world_bosses przechodzi to_dict/from_dict.
+	var sd := SaveData.new()
+	sd.cleared_world_bosses = [&"wb_alpha", &"wb_beta"]
+	var sd2 := SaveData.from_dict(sd.to_dict())
+	_check(sd2.cleared_world_bosses.size() == 2 and sd2.cleared_world_bosses.has(&"wb_alpha") \
+		and sd2.cleared_world_bosses.has(&"wb_beta"), "cleared_world_bosses nie przeżył round-trip zapisu")
+
+	# (b) GameState helpery is/mark_world_boss_cleared.
+	var saved_cleared: Array = GameState.cleared_world_bosses.duplicate() if GameState != null else []
+	if GameState != null:
+		GameState.cleared_world_bosses = []
+		_check(not GameState.is_world_boss_cleared(&"wb_x"), "is_world_boss_cleared fałszywie dodatni")
+		GameState.mark_world_boss_cleared(&"wb_x")
+		_check(GameState.is_world_boss_cleared(&"wb_x"), "mark_world_boss_cleared nie oznaczył")
+		GameState.mark_world_boss_cleared(&"wb_x")   # idempotentne
+		_check(GameState.cleared_world_bosses.size() == 1, "mark_world_boss_cleared nie jest idempotentne")
+		GameState.cleared_world_bosses = []
+
+	# (c) _roll_rarity DŁUGOŚĆ 8 — tabela z wagami na MYTHIC(6)/ANCIENT(7) musi je rolować (był bug [0]*6).
+	var tmy := LootTableResource.new()
+	tmy.rarity_weights = { 6: 1.0 }   # tylko MYTHIC
+	_check(LootService._roll_rarity(tmy, 0.0) == ItemResource.Rarity.MYTHIC,
+		"_roll_rarity nie rolował MYTHIC z tabeli (bug długości 6)")
+	var tan := LootTableResource.new()
+	tan.rarity_weights = { 7: 1.0 }   # tylko ANCIENT
+	_check(LootService._roll_rarity(tan, 0.0) == ItemResource.Rarity.ANCIENT,
+		"_roll_rarity nie rolował ANCIENT z tabeli (bug długości 6)")
+
+	# (d) guaranteed_rarity podłoga: tabela EPIC => wynik >= EPIC nawet bez magic find.
+	var tgr := LootTableResource.new()
+	tgr.guaranteed_rarity = ItemResource.Rarity.EPIC
+	for i in 20:
+		_check(LootService._roll_rarity(tgr, 0.0, tgr.guaranteed_rarity) >= ItemResource.Rarity.EPIC,
+			"guaranteed_rarity nie podniósł do EPIC")
+
+	# (e/f) _rarity_floor: boss => LEGENDARY; world-boss first => ANCIENT + mark; drugi => MYTHIC.
+	if GameState != null:
+		GameState.cleared_world_bosses = []
+	var boss := MockEnemy.new()
+	boss.threat_tier = &"boss"
+	add_child(boss)
+	_check(LootService._rarity_floor(boss, null) == ItemResource.Rarity.LEGENDARY,
+		"boss nie ma podłogi LEGENDARY")
+	var wb := MockEnemy.new()
+	wb.world_boss_id = &"wb_test"
+	add_child(wb)
+	_check(LootService._rarity_floor(wb, null) == ItemResource.Rarity.ANCIENT,
+		"world-boss first-kill nie dał podłogi ANCIENT")
+	_check(GameState == null or GameState.is_world_boss_cleared(&"wb_test"),
+		"world-boss first-kill nie oznaczył jako cleared")
+	_check(LootService._rarity_floor(wb, null) == ItemResource.Rarity.MYTHIC,
+		"world-boss drugi kill nie spadł do podłogi MYTHIC")
+
+	# (g) drop_for bossa zwraca item o rzadkości >= LEGENDARY (pełna ścieżka z RNG, host).
+	var boss2 := MockEnemy.new()
+	boss2.threat_tier = &"boss"
+	boss2.loot_ilvl = 20
+	add_child(boss2)
+	var drops: Array = LootService.drop_for(boss2)
+	var found_item := false
+	for d in drops:
+		if d is Dictionary and d.get("kind", "") == "item":
+			var inst: ItemInstance = d["instance"]
+			if inst != null:
+				found_item = true
+				_check(inst.rarity >= ItemResource.Rarity.LEGENDARY,
+					"drop_for bossa dał item < LEGENDARY (rarity=%d)" % inst.rarity)
+	_check(found_item, "drop_for bossa nie zwrócił żadnego itemu")
+
+	# (h) LootDrop: glow(ANCIENT) > glow(LEGENDARY), iskry od LEGENDARY, brak iskier dla COMMON.
+	var leg_glow := _loot_glow(ItemResource.Rarity.LEGENDARY)
+	var anc_glow := _loot_glow(ItemResource.Rarity.ANCIENT)
+	_check(anc_glow > leg_glow, "glow(ANCIENT) (%.2f) nie > glow(LEGENDARY) (%.2f)" % [anc_glow, leg_glow])
+	_check(_loot_has_particles(ItemResource.Rarity.ANCIENT), "ANCIENT loot nie ma cząsteczek")
+	_check(not _loot_has_particles(ItemResource.Rarity.COMMON), "COMMON loot ma cząsteczki (powinien nie)")
+
+	# (i) CONTENT: world-boss EnemyResource + tabela wczytane z .tres (round-trip world_boss_id + guaranteed_rarity).
+	if EnemyDB != null:
+		EnemyDB.reload()
+		var wbres: EnemyResource = EnemyDB.enemy(&"worldboss_embertitan")
+		_check(wbres != null, "worldboss_embertitan.tres nie wczytany")
+		if wbres != null:
+			_check(wbres.world_boss_id == &"embertitan", "world_boss_id nie przeżył .tres")
+			_check(StringName(wbres.threat_tier) == &"boss", "world-boss nie ma threat_tier boss")
+			_check(wbres.loot_table != null and wbres.loot_table.guaranteed_rarity == ItemResource.Rarity.MYTHIC,
+				"world-boss tabela nie ma guaranteed_rarity MYTHIC (.tres)")
+
+	if GameState != null:
+		GameState.cleared_world_bosses = saved_cleared   # przywróć stan
+	print("[LOOTX] Faza 6: tabele(guaranteed_rarity) + boss>=LEG + world-boss first-kill ANCIENT + zapis + content + LootDrop glow/iskry OK")
+
+
+# ── Faza 6 — pomocnicze ──────────────────────────────────────────────────────
+func _mk_loot_drop(rarity: int) -> LootDrop:
+	var inst := ItemInstance.new()
+	inst.base_id = &"t_loot"
+	inst.rarity = rarity
+	var d := LootDrop.new()
+	d.item = inst
+	add_child(d)   # _ready -> _build_visual buduje _mesh/_particles
+	return d
+
+
+func _loot_glow(rarity: int) -> float:
+	var d := _mk_loot_drop(rarity)
+	var e := 0.0
+	if d._mesh != null and d._mesh.material_override is StandardMaterial3D:
+		e = (d._mesh.material_override as StandardMaterial3D).emission_energy_multiplier
+	d.queue_free()
+	return e
+
+
+func _loot_has_particles(rarity: int) -> bool:
+	var d := _mk_loot_drop(rarity)
+	var has := d._particles != null
+	d.queue_free()
+	return has
+
+
+# Lekki mock wroga: drop_for/_rarity_floor czytają tylko te właściwości (przez `"x" in enemy`).
+class MockEnemy extends Node:
+	var loot_table: LootTableResource = null
+	var loot_ilvl: int = 10
+	var loot_biome: StringName = &"verdant"
+	var loot_tier_bonus: int = 0
+	var threat_tier: StringName = &"trash"
+	var world_boss_id: StringName = &""

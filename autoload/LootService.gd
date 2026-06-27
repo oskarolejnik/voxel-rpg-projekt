@@ -197,7 +197,8 @@ func drop_for(enemy: Node) -> Array:
 	# Magic find (gracza) podbija rzadkosc — czytane z autorytetu, jesli dostepne. ETAP 4: do magic
 	# find DODAJEMY premie z loot_tier biomu wroga (_enemy_loot_tier_bonus) — bogatszy biom (ember/
 	# frost) realnie czesciej dropi wyzsza rzadkosc, nie tylko deklaratywnie (review #MAJOR).
-	var rarity := _roll_rarity(table, _player_magic_find() + _enemy_loot_tier_bonus(enemy))
+	var floor_rarity := _rarity_floor(enemy, table)
+	var rarity := _roll_rarity(table, _player_magic_find() + _enemy_loot_tier_bonus(enemy), floor_rarity)
 	if rarity >= 0:
 		var slot := _roll_slot(table)
 		var base_id := _roll_base_id(table, slot)
@@ -389,11 +390,37 @@ func _pick_set(rng: RandomNumberGenerator) -> SetResource:
 #  WEWNETRZNE: wybor "co spadnie"
 # ============================================================================
 
-func _roll_rarity(table: LootTableResource, magic_find: float) -> int:
+## LOOT Faza 6 — PODŁOGA rzadkości dropu (HOST-ONLY — drop_for już za bramką autorytetu):
+##   • tabela.guaranteed_rarity (lochy/bossy),
+##   • boss (threat_tier==&"boss") => >= LEGENDARY,
+##   • world-boss (world_boss_id != &"") => >= MYTHIC; PIERWSZY kill (raz na save) => ANCIENT + oznacz.
+## Zwraca -1 (brak podłogi) lub indeks Rarity. Side-effect (mark_world_boss_cleared) świadomy: drop_for
+## woła się raz na śmierć encji u hosta => pierwszy kill ⇒ ANCIENT, kolejne ⇒ MYTHIC.
+func _rarity_floor(enemy: Node, table: LootTableResource) -> int:
+	var floor_rarity := -1
+	if table != null and table.guaranteed_rarity >= 0:
+		floor_rarity = maxi(floor_rarity, table.guaranteed_rarity)
+	if enemy != null and "threat_tier" in enemy and StringName(enemy.threat_tier) == &"boss":
+		floor_rarity = maxi(floor_rarity, ItemResource.Rarity.LEGENDARY)
+	if enemy != null and "world_boss_id" in enemy:
+		var wbid := StringName(enemy.world_boss_id)
+		if wbid != &"":
+			floor_rarity = maxi(floor_rarity, ItemResource.Rarity.MYTHIC)
+			if GameState != null and not GameState.is_world_boss_cleared(wbid):
+				floor_rarity = ItemResource.Rarity.ANCIENT     # pierwszy kill => gwarantowany ANCIENT
+				GameState.mark_world_boss_cleared(wbid)
+	return floor_rarity
+
+
+func _roll_rarity(table: LootTableResource, magic_find: float, floor_rarity: int = -1) -> int:
 	var weights := DEFAULT_RARITY_WEIGHTS.duplicate()
 	if table != null and not table.rarity_weights.is_empty():
 		# rarity_weights: Rarity(int|String) -> waga. Nadpisujemy domyslne.
-		weights = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+		# LOOT Faza 6 (fix): zerujemy tablicę DŁUGOŚCI 8 (było [0]*6 => MYTHIC/ANCIENT idx 6,7 z tabeli
+		# były cicho ucinane przez `idx < weights.size()`). Teraz tabela może wymusić wagi Mythic/Ancient.
+		weights = DEFAULT_RARITY_WEIGHTS.duplicate()
+		for i in weights.size():
+			weights[i] = 0.0
 		for k in table.rarity_weights:
 			var idx := int(k)
 			if idx >= 0 and idx < weights.size():
@@ -402,7 +429,11 @@ func _roll_rarity(table: LootTableResource, magic_find: float) -> int:
 	if magic_find > 0.0:
 		for i in range(1, weights.size()):
 			weights[i] *= (1.0 + magic_find * float(i) * 0.5)
-	return _weighted_pick(weights)
+	var picked := _weighted_pick(weights)
+	# LOOT Faza 6 — PODŁOGA rzadkości (boss/world-boss/tabela): podnieś do floor i GWARANTUJ drop (>= floor).
+	if floor_rarity >= 0:
+		picked = maxi(picked, floor_rarity)
+	return picked
 
 
 func _roll_slot(table: LootTableResource) -> int:

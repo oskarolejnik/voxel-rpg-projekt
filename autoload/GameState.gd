@@ -81,9 +81,26 @@ var class_id: StringName = &"wojownik"
 var orbs: int = 0
 signal orbs_changed(amount: int)
 
+## LOOT Faza 6 — ubite WORLD-BOSSY w tym świecie (po world_boss_id). Runtime mirror SaveData
+## .cleared_world_bosses (Player.save/read_progression synchronizuje, jak gold/orbs). LootService.drop_for
+## (HOST-ONLY) czyta is_world_boss_cleared dla logiki PIERWSZEGO killa (gwarantowany ANCIENT raz/save).
+var cleared_world_bosses: Array[StringName] = []
+
 
 func set_local_player(p: Node) -> void:
 	local_player = p
+
+
+## Czy ten world-boss był już ubity w tym świecie (pierwszy kill = false => gwarantowany ANCIENT).
+func is_world_boss_cleared(world_boss_id: StringName) -> bool:
+	return world_boss_id != &"" and cleared_world_bosses.has(world_boss_id)
+
+
+## Oznacza world-bossa jako ubitego (idempotentne). Host woła w drop_for po pierwszym killu; trwałość
+## przez Player.save_progression (cleared_world_bosses -> SaveData).
+func mark_world_boss_cleared(world_boss_id: StringName) -> void:
+	if world_boss_id != &"" and not cleared_world_bosses.has(world_boss_id):
+		cleared_world_bosses.append(world_boss_id)
 
 
 ## Dodaje zloto (drop z LootDrop). Emituje gold_changed (HUD/UI). Etap 3 podlaczy pelna ekonomie.
