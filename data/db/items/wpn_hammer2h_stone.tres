@@ -1,0 +1,32 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_ir"]
+
+[sub_resource type="Resource" id="Resource_a"]
+script = ExtResource("1_sm")
+stat = &"damage"
+value = 26.0
+tags = Array[StringName]([&"phys"])
+source = &"gear"
+source_id = &"wpn_hammer2h_stone"
+
+[sub_resource type="Resource" id="Resource_b"]
+script = ExtResource("1_sm")
+stat = &"armor_pierce"
+value = 8.0
+tags = Array[StringName]([&"phys"])
+source = &"gear"
+source_id = &"wpn_hammer2h_stone"
+
+[resource]
+script = ExtResource("2_ir")
+id = &"wpn_hammer2h_stone"
+display_name = "Mlot Kamienny"
+visual_kind = &"mace"
+visual_tint = Color(0.6, 0.58, 0.55, 1.0)
+slot = 0
+weapon_class = &"hammer2h"
+base_modifiers = Array[ExtResource("1_sm")]([SubResource("Resource_a"), SubResource("Resource_b")])
+allowed_classes = Array[StringName]([&"wojownik", &"paladyn"])
+req_level = 14

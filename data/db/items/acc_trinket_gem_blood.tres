@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_ir"]
+
+[sub_resource type="Resource" id="Resource_a"]
+script = ExtResource("1_sm")
+stat = &"lifesteal"
+value = 0.06
+tags = Array[StringName]([&"sustain"])
+source = &"gear"
+source_id = &"acc_trinket_gem_blood"
+
+[resource]
+script = ExtResource("2_ir")
+id = &"acc_trinket_gem_blood"
+display_name = "Klejnot Krwi"
+slot = 5
+base_modifiers = Array[ExtResource("1_sm")]([SubResource("Resource_a")])
+allowed_classes = Array[StringName]([&"berserker", &"nekromanta"])
+req_level = 15
+max_sockets = 0

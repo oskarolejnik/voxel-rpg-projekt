@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_ir"]
+
+[sub_resource type="Resource" id="Resource_a"]
+script = ExtResource("1_sm")
+stat = &"armor"
+value = 16.0
+tags = Array[StringName]([&"defense"])
+source = &"gear"
+source_id = &"arm_belt_cloak_pas_zelazny"
+
+[sub_resource type="Resource" id="Resource_b"]
+script = ExtResource("1_sm")
+stat = &"max_hp"
+value = 30.0
+tags = Array[StringName]([&"vitality"])
+source = &"gear"
+source_id = &"arm_belt_cloak_pas_zelazny"
+
+[resource]
+script = ExtResource("2_ir")
+id = &"arm_belt_cloak_pas_zelazny"
+display_name = "Zelazny Pas"
+slot = 10
+base_modifiers = Array[ExtResource("1_sm")]([SubResource("Resource_a"), SubResource("Resource_b")])
+allowed_classes = Array[StringName]([&"wojownik", &"paladyn"])
+req_level = 10
+max_sockets = 1
