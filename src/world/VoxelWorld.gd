@@ -505,8 +505,8 @@ const BIOME_PROGRESSION: Array[StringName] = [
 	BIOME_FROSTHELM,   # pasmo 5 — śnieg/szczyty (wysokie, jak góry, ciut spokojniejsze)
 	BIOME_VOLCANIC,    # pasmo 6 — wulkaniczne (najwyższe, najbardziej postrzępione; koniec podróży, clamp)
 ]
-const BIOME_BAND_METERS: float = 700.0      # szerokość jednego pasma biomu (m) — wielkoskalowe przejścia
-const BIOME_BORDER_JITTER_M: float = 90.0   # warp granicy pasma z szumu klimatu (organiczne brzegi)
+const BIOME_BAND_METERS: float = 1200.0     # szerokość pasma biomu (m) — WORLDSCALE F1: regiony 1200 m (wolniejsze przejścia)
+const BIOME_BORDER_JITTER_M: float = 140.0  # warp granicy pasma — WORLDSCALE F1: proporcjonalny do szerszego pasma
 
 func get_biome(world_x: int, world_z: int) -> StringName:
 	return BIOME_PROGRESSION[_biome_band(float(world_x), float(world_z))]

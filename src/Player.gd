@@ -13,7 +13,7 @@ extends CharacterBody3D
 ##   _physics_process — fizyka: grawitacja, ruch, dash, LICZNIKI czasu walki, move_and_slide.
 
 @export var speed: float = 6.0            # prędkość chodu (m/s)
-@export var sprint_speed: float = 10.0    # prędkość biegu (shift)
+@export var sprint_speed: float = 8.0     # prędkość biegu (shift) — WORLDSCALE F1: wolniej = świat większy + mniej presji na streaming
 @export var jump_velocity: float = 7.0    # siła skoku
 @export var mouse_sensitivity: float = 0.0025
 ## ETAP 8: bazowa czulosc myszy (rad/px). mouse_sensitivity = MOUSE_SENS_BASE * mnoznik z GameSettings.
@@ -132,7 +132,7 @@ var _camera: Camera3D
 # KAMERA: sami sterujemy długością ramienia (boom) zamiast skokowego auto-pozycjonowania SpringArm —
 # eliminuje to dawne DRGANIA (SpringArm ustawiał camera.z, a bob/shake nadpisywał z=0 → bicie fizyka↔render)
 # i daje łagodny zoom na zboczu (asymetryczne wygładzanie w _update_camera).
-var _cam_dist: float = 4.8            # bieżąca (wygładzona) długość ramienia kamery
+var _cam_dist: float = 6.0            # bieżąca (wygładzona) długość ramienia kamery (WORLDSCALE F1: dłuższy boom)
 var _cam_off: Vector3 = Vector3.ZERO  # wygładzony offset x/y kamery (bob+shake); boom-Z liczony osobno
 var _combat_lock_t: float = 0.0       # >0 = TRYB WALKI (orientacja na celownik); odświeżany atakiem
 
@@ -211,7 +211,7 @@ const _LOCO_MIN_SPEED: float = 0.4
 # CEL: zgrabny bohater „pośredni" (między chibi a realizmem) — ~1,8 m, ~4,5 głowy
 # wysokości, głowa UMIARKOWANA, smukły tułów, proporcjonalne kończyny.
 @export_group("Proporcje postaci")
-@export var P_HEIGHT_M: float = 1.80          # docelowy wzrost w metrach (świat 0,5 m/voxel)
+@export var P_HEIGHT_M: float = 1.45          # docelowy wzrost (m) — WORLDSCALE F1: mniejszy gracz = większy świat (CW)
 @export var P_HEIGHT_VOX: int = 36            # pełna wysokość modelu w voxelach (czubek włosów)
                                               # NADPISYWANE w _compute_proportions realną sumą (auto=37);
                                               # 37 vox / ~8-voxelowa renderowana głowa ≈ 4,6 „głowy" — pośrednie
@@ -393,17 +393,17 @@ var _afterimage_t: float = 0.0                  # licznik do nastepnego ducha
 
 # --- JUICE RUCHU (FOV kick + walk-bob kamery + pył lądowania) ---
 # KADR „Cube World": węższe FOV = postać większa/wyraźniejsza (78 było zbyt szerokie → wszystko drobne).
-@export var base_fov: float = 66.0          # bazowe FOV kamery (CW-like, postać wyraźna)
+@export var base_fov: float = 72.0          # FOV — WORLDSCALE F1: 66 było telephoto (gracz duży); mniejszy gracz znosi głębię
 @export var sprint_fov_add: float = 10.0    # ile FOV dokładamy przy biegu
 @export var fov_lerp: float = 8.0           # szybkość zmiany FOV
 @export var cam_bob_amount: float = 0.035   # amplituda walk-bob kamery (m) — MAŁA, by nie mdliło
 # KAMERA (boom): osobne tempa wygładzania długości ramienia. „Do środka" szybko (teren wchodzi w kadr —
 # anty-clip), „na zewnątrz" wolno (po minięciu zbocza brak szarpniętego zoomu). Zob. _smooth_boom.
 @export var boom_in_speed: float = 22.0     # tempo skracania ramienia gdy teren przysłania (szybko)
-@export var boom_out_speed: float = 5.0     # tempo wysuwania ramienia gdy teren znika (łagodnie)
+@export var boom_out_speed: float = 7.0     # tempo wysuwania ramienia (łagodnie) — WORLDSCALE F1: szybszy powrót przy dłuższym boomie
 # Punkt patrzenia kamery nad stopami gracza. Wyżej = kamera celuje ponad postać -> postać NIŻEJ
 # w kadrze, a celownik (środek ekranu) ląduje NAD nią, w świecie (opcja 2 — TPS shooter).
-@export var cam_height: float = 2.6
+@export var cam_height: float = 3.0         # WORLDSCALE F1: kamera celuje wyżej -> gracz niżej w kadrze, więcej dali
 # STEROWANIE (GDD sek.7, face-movement + combat-aim): ile sekund po ostatnim ataku postać trzyma TRYB
 # WALKI (orientacja na celownik). Poza walką orientuje się w kierunku ruchu. 0 = natychmiast eksploracja.
 @export var combat_lock_time: float = 1.5
@@ -502,10 +502,10 @@ func _build_components() -> void:
 	_hurtbox.setup_as_player()
 	var hs := CollisionShape3D.new()
 	var hcap := CapsuleShape3D.new()
-	hcap.height = 1.6
+	hcap.height = P_HEIGHT_M * 0.9             # WORLDSCALE F1: hurtbox śledzi P_HEIGHT_M (nie hardcode 1.6)
 	hcap.radius = 0.45
 	hs.shape = hcap
-	hs.position = Vector3(0.0, 0.9, 0.0)
+	hs.position = Vector3(0.0, P_HEIGHT_M * 0.5, 0.0)
 	_hurtbox.add_child(hs)
 	add_child(_hurtbox)
 
@@ -1821,7 +1821,7 @@ func _build_camera() -> void:
 	# wrogów naraz), bez utraty czytelności postaci. Lekki DOMYŚLNY pitch w dół (model CW: patrzymy
 	# na bohatera i teren wokół, nie w horyzont) — daje natychmiast bardziej "action-RPG" kadr.
 	_spring = SpringArm3D.new()
-	_spring.spring_length = 4.8
+	_spring.spring_length = 6.0              # WORLDSCALE F1: dłuższy boom = gracz mniejszy, więcej świata w kadrze
 	_spring.rotation.x = deg_to_rad(-18.0)   # kadr „Cube World": kamera nad postacią, patrzy w dół ~18°
 	# Kolizja ramienia = shapecast KULĄ (gładszy na krawędziach voxeli niż raycast) + margines + jawna
 	# maska = TYLKO teren (warstwa 1; gracz=2, wrogowie=3 nie wpychają kamery). SpringArm tylko MIERZY
