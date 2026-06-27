@@ -6,6 +6,18 @@ extends Resource
 ## z GDD/ROADMAP 6 (HP 100, damage 18, attack_speed 2.2, krytyk 5%/x1.5, move_speed 6...).
 ## damage == dawne Player.attack_damage; area_radius == dawne Player.attack_range;
 ## attack_speed == 1/attack_cooldown. Klucze statow czytane przez StringName w StatsComponent.
+##
+## LOOT: STAT_KEYS = rejestr WSZYSTKICH prawidłowych kluczy statów skalarnych (get_base + elementy/odporności
+## via słowniki). ContentLint (Faza 7) sprawdza afiksy/itemy przeciw temu — literówka w `stat` jest inaczej
+## cicho nieskuteczna. Dopisując pole, dopisz tu klucz i case w get_base.
+const STAT_KEYS: Array[StringName] = [
+	&"max_hp", &"hp_regen", &"max_stamina", &"stamina_regen", &"damage", &"attack_speed", &"crit_chance",
+	&"crit_mult", &"armor", &"armor_pierce", &"move_speed", &"dodge_iframes", &"lifesteal", &"area_radius",
+	&"cdr", &"magic_find", &"pet_damage", &"pet_hp", &"rage_gen", &"mana_max",
+	&"spell_power", &"ranged_damage", &"holy", &"healing_power", &"shield", &"bleed_damage", &"dodge", &"penetration",
+	# elementy (słownik elemental) + odporności (resistances) — też prawidłowe klucze get_base:
+	&"fire", &"frost", &"poison", &"lightning", &"dark", &"str", &"dex", &"int",
+]
 
 @export var max_hp: float = 100.0
 @export var hp_regen: float = 0.0
@@ -30,6 +42,15 @@ extends Resource
 @export var rage_gen: float = 1.0                   # mnoznik generacji Furii (Wojownik; baza 1.0 = 100%)
 @export var mana_max: float = 100.0                 # pula many (Mag); zasob klasy czyta to z get_stat
 @export var primary: Dictionary = {}                # &"str"/&"dex"/&"int" -> int (skalowanie klas)
+# LOOT Faza 2 — staty itemizacji klasowej (baza 0; FLAT-afiks działa, INCREASED na bazie 0 = 0).
+@export var spell_power: float = 0.0                # Mag: moc zaklęć
+@export var ranged_damage: float = 0.0             # Łucznik: obrażenia dystansowe
+@export var holy: float = 0.0                       # Paladyn/Kapłan: obrażenia święte
+@export var healing_power: float = 0.0             # Paladyn/Kapłan: siła leczenia
+@export var shield: float = 0.0                     # Paladyn: bonus tarczy
+@export var bleed_damage: float = 0.0              # Wojownik: obrażenia krwawienia
+@export var dodge: float = 0.0                      # Łotrzyk: szansa uniku
+@export var penetration: float = 0.0               # Łucznik: przebicie pancerza
 
 
 ## Odczyt bazowej wartosci statu po kluczu StringName. Uzywane przez StatsComponent._base_value().
@@ -56,6 +77,14 @@ func get_base(stat: StringName) -> float:
 		&"pet_hp": return pet_hp
 		&"rage_gen": return rage_gen
 		&"mana_max": return mana_max
+		&"spell_power": return spell_power
+		&"ranged_damage": return ranged_damage
+		&"holy": return holy
+		&"healing_power": return healing_power
+		&"shield": return shield
+		&"bleed_damage": return bleed_damage
+		&"dodge": return dodge
+		&"penetration": return penetration
 		_:
 			# Staty zlozone (elemental/resistances/primary) nie sa skalarem -> sprawdz slowniki.
 			if elemental.has(stat):

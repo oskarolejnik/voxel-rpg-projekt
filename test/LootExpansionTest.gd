@@ -65,11 +65,58 @@ func _ready() -> void:
 		_check(n_aff >= 1, "roll_item tier %d brak afiksów" % tier)
 	print("[LOOTX] enumy stabilne, tablice=8, MYTHIC/ANCIENT kolor+nazwa+roll OK, sloty routują")
 
+	_phase2()
+
 	if _failures == 0:
 		print("[LOOTX] ALL OK")
 	else:
 		printerr("[LOOTX] FAILURES: %d" % _failures)
 	get_tree().quit(0 if _failures == 0 else 1)
+
+
+## LOOT Faza 2: staty klasowe + filtr klasy + indeks slotów + motyw biomu.
+func _phase2() -> void:
+	# (a) Nowe staty klasowe czytane przez StatBlock.get_base + obecne w STAT_KEYS.
+	var sb := StatBlock.new()
+	sb.spell_power = 42.0
+	sb.holy = 7.0
+	_check(sb.get_base(&"spell_power") == 42.0, "get_base spell_power nie czyta pola")
+	_check(sb.get_base(&"holy") == 7.0, "get_base holy nie czyta pola")
+	_check(sb.get_base(&"penetration") == 0.0, "get_base penetration default != 0")
+	_check(StatBlock.STAT_KEYS.has(&"spell_power") and StatBlock.STAT_KEYS.has(&"bleed_damage") \
+		and StatBlock.STAT_KEYS.has(&"dodge"), "STAT_KEYS nie zawiera nowych statów")
+
+	# (b) Indeks ItemDB po slocie zbudowany (są bronie => bucket WEAPON niepusty).
+	_check(ItemDB.items_by_slot.has(ItemResource.Slot.WEAPON), "items_by_slot brak indeksu WEAPON")
+
+	# (c) Motyw biomu — przecięcie tagów.
+	_check(LootService._tags_match([&"fire", &"crit"], [&"fire"]), "_tags_match nie wykrywa przecięcia")
+	_check(not LootService._tags_match([&"crit"], [&"fire"]), "_tags_match fałszywie dodatni")
+
+	# (d) FILTR KLASY: item klasowy maga NIE leci do wojownika (gdy jest też uniwersalny), ale leci do maga.
+	var orig_cls: StringName = GameState.class_id if GameState != null else &"wojownik"
+	var uni := ItemResource.new(); uni.id = &"t_uni_glove"; uni.slot = ItemResource.Slot.GLOVES
+	var mlk := ItemResource.new(); mlk.id = &"t_mag_glove"; mlk.slot = ItemResource.Slot.GLOVES
+	mlk.allowed_classes = [&"mag"]
+	ItemDB.items[uni.id] = uni; ItemDB.items[mlk.id] = mlk
+	ItemDB._reindex()
+	if GameState != null:
+		GameState.class_id = &"wojownik"
+	var saw_mag_for_war := false
+	for i in 80:
+		if LootService._roll_base_id(null, ItemResource.Slot.GLOVES) == mlk.id:
+			saw_mag_for_war = true
+	_check(not saw_mag_for_war, "wojownik dostał item klasowy maga (filtr klasy nie działa)")
+	if GameState != null:
+		GameState.class_id = &"mag"
+	var saw_mag_for_mag := false
+	for i in 80:
+		if LootService._roll_base_id(null, ItemResource.Slot.GLOVES) == mlk.id:
+			saw_mag_for_mag = true
+	_check(saw_mag_for_mag, "mag nigdy nie dostał swojego itemu (filtr za ostry)")
+	if GameState != null:
+		GameState.class_id = orig_cls   # przywróć
+	print("[LOOTX] Faza 2: staty klasowe + STAT_KEYS + indeks slotów + filtr klasy + motyw biomu OK")
 
 
 ## Tworzy syntetyczny ItemResource danego slotu, rejestruje w ItemDB i sprawdza routing _natural_slot.

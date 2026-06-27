@@ -299,6 +299,7 @@ func _weighted_affix(rng: RandomNumberGenerator, pool: Array, used: Dictionary) 
 ## Pula afiksow (Array[AffixResource]) pasujacych do slotu/ilvl/biomu. Biom: afiks z pustym
 ## `biomes` pasuje wszedzie; z niepustym tylko gdy zawiera `biome`.
 func _affix_pool(ilvl: int, biome: StringName, slot: int) -> Array:
+	var themes: Array = _biome_themes(biome)   # tagi-motywy biomu (BiomeResource.affix_themes), raz na pulę
 	var pool: Array = []
 	for id in ItemDB.affixes:
 		var a: AffixResource = ItemDB.affixes[id]
@@ -308,10 +309,31 @@ func _affix_pool(ilvl: int, biome: StringName, slot: int) -> Array:
 			continue
 		if not a.allowed_slots.is_empty() and not a.allowed_slots.has(slot):
 			continue
-		if not a.biomes.is_empty() and not a.biomes.has(biome):
+		# Faza 2 — BIOM: afiks o jawnej liście biomes pasuje, gdy zawiera ten biom LUB gdy jego TAGI
+		# przecinają się z affix_themes biomu (motyw biomowy „przepuszcza" afiks tematyczny, GDD 6.4).
+		if not a.biomes.is_empty() and not a.biomes.has(biome) and not _tags_match(a.tags, themes):
 			continue
 		pool.append(a)
 	return pool
+
+
+## Tagi-motywy biomu (BiomeResource.affix_themes via EnemyDB). Puste, gdy biom/DB nieznany.
+func _biome_themes(biome: StringName) -> Array:
+	if EnemyDB != null:
+		var br := EnemyDB.biome(biome)
+		if br != null:
+			return br.affix_themes
+	return []
+
+
+## Czy zbiory tagów się przecinają.
+func _tags_match(tags: Array, themes: Array) -> bool:
+	if themes.is_empty() or tags.is_empty():
+		return false
+	for t in tags:
+		if themes.has(t):
+			return true
+	return false
 
 
 ## Losuje liczbe socketow z zakresu tieru (SOCKETS_BY_TIER). Gdy base_id wskazuje ItemResource,
@@ -395,15 +417,21 @@ func _roll_slot(table: LootTableResource) -> int:
 
 
 func _roll_base_id(table: LootTableResource, slot: int) -> StringName:
-	# Jesli ItemDB ma itemy dla tego slotu, wybierz jeden (mesh/nazwa); inaczej pusty (proceduralny).
-	var candidates: Array = []
-	for id in ItemDB.items:
-		var ir: ItemResource = ItemDB.items[id]
-		if ir != null and ir.slot == slot:
-			candidates.append(ir.id)
-	if candidates.is_empty():
+	# Indeks po slocie (anty O(n)-per-drop). Pusty kubełek => item proceduralny (&"").
+	var bucket: Array = ItemDB.items_by_slot.get(slot, [])
+	if bucket.is_empty():
 		return &""
-	return candidates[RNGService.loot.randi_range(0, candidates.size() - 1)]
+	# Faza 2 — ITEMIZACJA KLASOWA: preferuj itemy DOZWOLONE dla klasy gracza (allowed_classes puste = każda
+	# klasa). FALLBACK do całego kubełka, gdy pula klasowa pusta (grupa co-op nadal dostaje dropy). Host-only
+	# (drop na RNGService.loot), więc filtr po lokalnej GameState.class_id (host) z gwarancją niepustości.
+	var cls: StringName = GameState.class_id if (GameState != null and "class_id" in GameState) else &""
+	var allowed: Array = []
+	for ir in bucket:
+		if ir.allowed_classes.is_empty() or (cls != &"" and ir.allowed_classes.has(cls)):
+			allowed.append(ir)
+	var pick_from: Array = allowed if not allowed.is_empty() else bucket
+	var chosen: ItemResource = pick_from[RNGService.loot.randi_range(0, pick_from.size() - 1)]
+	return chosen.id
 
 
 # ============================================================================

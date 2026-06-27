@@ -9,6 +9,7 @@ const SETS_DIR: String = "res://data/db/sets"
 const GEMS_DIR: String = "res://data/db/gems"
 
 var items: Dictionary = {}        # StringName -> ItemResource
+var items_by_slot: Dictionary = {}  # LOOT: int(slot) -> Array[ItemResource] (indeks anty O(n)-per-drop)
 var affixes: Dictionary = {}      # StringName -> AffixResource
 var sets: Dictionary = {}         # StringName -> SetResource
 var gems: Dictionary = {}         # StringName -> GemResource
@@ -23,6 +24,20 @@ func reload() -> void:
 	affixes = _scan(AFFIXES_DIR)
 	sets = _scan(SETS_DIR)
 	gems = _scan(GEMS_DIR)
+	_reindex()
+
+
+## LOOT: indeks itemów po slocie (raz na reload) — _roll_base_id robi lookup zamiast skanu po wszystkich.
+func _reindex() -> void:
+	items_by_slot = {}
+	for id in items:
+		var ir: ItemResource = items[id]
+		if ir == null:
+			continue
+		var s := int(ir.slot)
+		if not items_by_slot.has(s):
+			items_by_slot[s] = []
+		items_by_slot[s].append(ir)
 
 
 func item(id: StringName) -> ItemResource:

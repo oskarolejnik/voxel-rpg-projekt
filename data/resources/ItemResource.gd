@@ -20,6 +20,9 @@ enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET, MYTHIC, ANCIENT }   
 @export var max_sockets: int = 0
 @export var set_id: StringName = &""
 @export var req_level: int = 1
+# LOOT Faza 2 — restrykcja klasowa (puste = każda klasa). Filtr w LootService._roll_base_id z fallbackiem
+# do nieograniczonych, gdy pula klasowa pusta (grupa co-op nadal dostaje dropy). Definicyjne => save-free.
+@export var allowed_classes: Array[StringName] = []
 @export var stack_size: int = 1
 # Konsumpcyjne (slot CONSUMABLE): efekt użycia (mikstury). 0/&"" = brak danego efektu.
 @export var heal_amount: float = 0.0            # ile HP leczy po użyciu
