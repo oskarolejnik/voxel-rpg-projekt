@@ -1,0 +1,65 @@
+[gd_resource type="Resource" script_class="SetResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_fw"]
+[ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_fw"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_fw"]
+
+[sub_resource type="Resource" id="Resource_fw2"]
+script = ExtResource("1_fw")
+stat = &"frost_damage"
+value = 8.0
+tags = Array[StringName]([&"set", &"frost"])
+source = &"set"
+source_id = &"frost_whisper"
+
+[sub_resource type="Resource" id="Resource_fw4"]
+script = ExtResource("1_fw")
+stat = &"attack_speed"
+op = 1
+value = 0.3
+tags = Array[StringName]([&"set", &"frost"])
+source = &"set"
+source_id = &"frost_whisper"
+
+[sub_resource type="Resource" id="Resource_fw6"]
+script = ExtResource("1_fw")
+stat = &"frost_damage"
+op = 2
+value = 0.20
+tags = Array[StringName]([&"set", &"frost"])
+source = &"set"
+source_id = &"frost_whisper"
+
+[sub_resource type="Resource" id="Resource_fw_fix"]
+script = ExtResource("1_fw")
+stat = &"frost_damage"
+value = 5.0
+tags = Array[StringName]([&"set", &"frost"])
+source = &"set"
+source_id = &"frost_whisper"
+
+[sub_resource type="Resource" id="Resource_fw_proc"]
+script = ExtResource("3_fw")
+id = &"frost_whisper_6pc"
+trigger = 2
+chance = 1.0
+cooldown = 0.0
+magnitude = 16.0
+duration = 3.0
+radius = 6.0
+payload = &"frost_nova"
+tags = Array[StringName]([&"set", &"frost"])
+
+[resource]
+script = ExtResource("2_fw")
+id = &"frost_whisper"
+display_name = "Szept Mrozu"
+fixed_modifiers = Array[ExtResource("1_fw")]([SubResource("Resource_fw_fix")])
+bonuses = {
+2: [SubResource("Resource_fw2")],
+4: [SubResource("Resource_fw4")],
+6: [SubResource("Resource_fw6")]
+}
+procs = {
+6: [SubResource("Resource_fw_proc")]
+}

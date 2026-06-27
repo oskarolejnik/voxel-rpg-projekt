@@ -1,9 +1,13 @@
 class_name EffectComponent
 extends Node
-## EffectComponent.gd — LOOT Faza 4: wykonawca PROCÓW wyposażenia (EffectResource). Sibling encji,
-## bliźniak StatusEffectComponent. HOST-AUTHORITATIVE.
+## EffectComponent.gd — LOOT Faza 4+5: wykonawca PROCÓW wyposażenia i setów (EffectResource). Sibling
+## encji, bliźniak StatusEffectComponent. HOST-AUTHORITATIVE.
 ##
-## Subskrybuje DamageService.hit_resolved => ON_HIT / ON_CRIT (was_crit) / ON_KILL (cel padł od ciosu).
+## Trzy szyny wyzwalaczy:
+##   • DamageService.hit_resolved => ON_HIT / ON_CRIT (was_crit) / ON_KILL (cel padł od ciosu).
+##   • HealthComponent.damaged WŁAŚCICIELA => ON_HURT (np. tarcza setu Mur Obrońcy przy niskim HP).
+##   • _process (host) => ON_EQUIP_AURA — periodiczny HoT party (Światło Przymierza), bez zdarzenia.
+##
 ## Determinizm co-op: bramka has_state_authority => proki rozstrzyga TYLKO host; szansa z RNGService.combat
 ## (jeden strumień, jeden autorytet => każdy peer widzi ten sam wynik przez replikację HP/statusów).
 ## Cooldowny żyją w PAMIĘCI (_cooldowns) — NIGDY w SaveData => zapis round-trip nie niesie stanu proka.
@@ -14,15 +18,19 @@ extends Node
 const PAYLOAD_ELEMENT := {
 	&"burn": &"fire", &"poison": &"poison", &"bleed": &"bleed", &"chill": &"frost", &"frost": &"frost",
 }
+const AURA_INTERVAL: float = 1.0          # s między tykami aury (ON_EQUIP_AURA HoT)
+const SHIELD_HP_FRACTION: float = 0.35    # "tarcza" (payload shield) odpala tylko poniżej tego ułamka HP
 
 var _owner: Node = null
 var _inv: Node = null
 var _effects: Array[EffectResource] = []          # świeżo z InventoryComponent.collect_effects()
+var _auras: Array[EffectResource] = []            # podzbiór ON_EQUIP_AURA (tyka w _process)
 var _cooldowns: Dictionary = {}                   # EffectResource -> sekunda gotowości (monotoniczna)
+var _aura_accum: float = 0.0
 
 
-## Wołane przez Main po stworzeniu InventoryComponent. Podpina rebuild listy efektów (na zmianę ekwipunku)
-## i globalną szynę trafień. Idempotentne (bezpieczne przy ponownym wywołaniu).
+## Wołane przez Main po stworzeniu InventoryComponent. Podpina rebuild listy efektów (na zmianę ekwipunku),
+## szynę trafień i szynę obrażeń właściciela (ON_HURT). Idempotentne (bezpieczne przy ponownym wywołaniu).
 func setup(owner_node: Node, inv: Node) -> void:
 	_owner = owner_node
 	_inv = inv
@@ -30,6 +38,10 @@ func setup(owner_node: Node, inv: Node) -> void:
 		inv.inventory_changed.connect(_rebuild)
 	if DamageService != null and not DamageService.hit_resolved.is_connected(_on_hit_resolved):
 		DamageService.hit_resolved.connect(_on_hit_resolved)
+	# ON_HURT — szyna OBRAŻEŃ WŁAŚCICIELA (HealthComponent.damaged), NIE hit_resolved.
+	var owner_hp := _find_health(_owner)
+	if owner_hp != null and not owner_hp.damaged.is_connected(_on_owner_damaged):
+		owner_hp.damaged.connect(_on_owner_damaged)
 	_rebuild()
 
 
@@ -38,9 +50,16 @@ func _rebuild() -> void:
 		_effects = _inv.collect_effects()
 	else:
 		_effects = []
+	# Podzbiór aur (ON_EQUIP_AURA) — tykają w _process, nie na zdarzeniu. Reset akumulatora przy zmianie.
+	_auras = []
+	for e in _effects:
+		if e != null and e.trigger == EffectResource.Trigger.ON_EQUIP_AURA:
+			_auras.append(e)
+	_aura_accum = 0.0
+	set_process(not _auras.is_empty())
 
 
-# ── Szyna trafień ────────────────────────────────────────────────────────────
+# ── Szyna trafień (ON_HIT / ON_CRIT / ON_KILL) ───────────────────────────────
 func _on_hit_resolved(source: Node, target: Node, _dmg: float, was_crit: bool) -> void:
 	if source != _owner or _effects.is_empty():
 		return
@@ -53,13 +72,58 @@ func _on_hit_resolved(source: Node, target: Node, _dmg: float, was_crit: bool) -
 	for e in _effects:
 		if e == null or not _trigger_matches(e, was_crit, killed):
 			continue
-		if not _off_cooldown(e):
+		if not _try_fire(e):
 			continue
-		# chance==1.0 NIE losuje (oszczędza strumień). <1.0 => jeden draw u hosta (determinizm per-seed).
-		if e.chance < 1.0 and RNGService != null and RNGService.combat.randf() > e.chance:
-			continue
-		_arm_cooldown(e)
 		_dispatch(e, target)
+
+
+# ── Szyna obrażeń właściciela (ON_HURT) ──────────────────────────────────────
+func _on_owner_damaged(_amount: float, from: Node, _current_hp: float) -> void:
+	if _effects.is_empty():
+		return
+	if NetManager != null and not NetManager.has_state_authority(_owner):
+		return
+	for e in _effects:
+		if e == null or e.trigger != EffectResource.Trigger.ON_HURT:
+			continue
+		if not _try_fire(e):
+			continue
+		# Cel = napastnik `from` (thorns/retaliacja); shield/heal działają na właściciela niezależnie od celu.
+		_dispatch(e, from)
+
+
+# ── Szyna aury (ON_EQUIP_AURA) — periodiczny HoT, host-only ──────────────────
+func _process(delta: float) -> void:
+	if _auras.is_empty():
+		return
+	if NetManager != null and not NetManager.has_state_authority(_owner):
+		return
+	_aura_accum += delta
+	if _aura_accum < AURA_INTERVAL:
+		return
+	_aura_accum -= AURA_INTERVAL
+	_aura_tick()
+
+
+## Jeden tyk wszystkich aur (wydzielone, by test mógł wywołać bez czekania na klatki).
+func _aura_tick() -> void:
+	for e in _auras:
+		if e != null:
+			_apply_aura(e)
+
+
+func _apply_aura(e: EffectResource) -> void:
+	# Party HoT: leczy właściciela + sojuszników (grupa "player") w promieniu. magnitude = HP/tyk.
+	_heal_owner(e.magnitude)
+	if e.radius > 0.0 and _owner is Node3D:
+		var center: Vector3 = (_owner as Node3D).global_position
+		for node in get_tree().get_nodes_in_group("player"):
+			if node == _owner or not (node is Node3D) or not is_instance_valid(node):
+				continue
+			if (node as Node3D).global_position.distance_to(center) <= e.radius:
+				var hp := _find_health(node)
+				if hp != null:
+					hp.heal(e.magnitude)
 
 
 func _trigger_matches(e: EffectResource, was_crit: bool, killed: bool) -> bool:
@@ -71,10 +135,21 @@ func _trigger_matches(e: EffectResource, was_crit: bool, killed: bool) -> bool:
 		EffectResource.Trigger.ON_KILL:
 			return killed
 		_:
-			return false    # ON_HURT / ON_DASH / ON_EQUIP_AURA — osobne hooki (poza szyną trafień)
+			return false    # ON_HURT (osobna szyna) / ON_DASH / ON_EQUIP_AURA (aura) — nie na szynie trafień
 
 
-# ── Cooldowny (w pamięci, zegar monotoniczny, niezależny od FPS) ──────────────
+# ── Cooldown + szansa (jeden punkt decyzji, współdzielony przez wszystkie szyny) ──
+## Zwraca true i UZBRAJA cooldown gdy efekt ma wystrzelić; false gdy na cooldownie lub szansa nie wyszła.
+## chance==1.0 NIE losuje (oszczędza strumień). <1.0 => jeden draw u hosta (determinizm per-seed).
+func _try_fire(e: EffectResource) -> bool:
+	if not _off_cooldown(e):
+		return false
+	if e.chance < 1.0 and RNGService != null and RNGService.combat.randf() > e.chance:
+		return false
+	_arm_cooldown(e)
+	return true
+
+
 func _now() -> float:
 	return float(Time.get_ticks_msec()) / 1000.0
 
@@ -95,12 +170,16 @@ func _dispatch(e: EffectResource, target: Node) -> void:
 			_apply_status(target, e.payload, e.magnitude, e.duration)
 		&"heal":
 			_heal_owner(e.magnitude)
+		&"shield":
+			_shield_owner(e.magnitude)
 		&"frost_nova":
 			_aoe_status(target, &"frost", e.magnitude, e.duration, e.radius)
+		&"fire_nova":
+			_aoe_status(target, &"fire", e.magnitude, e.duration, e.radius)
 		&"earthquake":
 			_aoe_status(target, &"bleed", e.magnitude, e.duration, e.radius)
 		_:
-			pass    # multishot / dash_charge / aura_crit / shield — rozszerzenia kolejnych faz
+			pass    # multishot / dash_charge / aura_crit / haste — rozszerzenia kolejnych faz
 
 
 func _apply_status(target: Node, payload: StringName, mag: float, dur: float) -> void:
@@ -109,7 +188,7 @@ func _apply_status(target: Node, payload: StringName, mag: float, dur: float) ->
 		status.apply_element(PAYLOAD_ELEMENT.get(payload, &"fire"), mag, dur, _owner)
 
 
-## AoE: ten sam status na wszystkich wrogach w promieniu od trafionego celu (frost_nova/earthquake).
+## AoE: ten sam status na wszystkich wrogach w promieniu od trafionego celu (fire/frost_nova/earthquake).
 func _aoe_status(center_target: Node, element: StringName, mag: float, dur: float, radius: float) -> void:
 	if radius <= 0.0 or not (center_target is Node3D):
 		return
@@ -129,6 +208,18 @@ func _heal_owner(amount: float) -> void:
 		return
 	var hp := _find_health(_owner)
 	if hp != null:
+		hp.heal(amount)
+
+
+## "Tarcza" v1 (payload shield) = defensywny burst leczenia, TYLKO gdy właściciel nisko (<35% HP).
+## Replikowane przez standardowy broadcast HP. (Pełny system absorbcji to późniejsze rozszerzenie.)
+func _shield_owner(amount: float) -> void:
+	if amount <= 0.0 or _owner == null:
+		return
+	var hp := _find_health(_owner)
+	if hp == null or hp.max_hp() <= 0.0:
+		return
+	if hp.current_hp / hp.max_hp() < SHIELD_HP_FRACTION:
 		hp.heal(amount)
 
 

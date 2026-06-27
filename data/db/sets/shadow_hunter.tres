@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sdcu0"]
 [ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_y2sdq"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_sh"]
 
 [sub_resource type="Resource" id="Resource_d2tmb"]
 script = ExtResource("1_sdcu0")
@@ -13,9 +14,17 @@ source_id = &"shadow_hunter"
 
 [sub_resource type="Resource" id="Resource_mgnlp"]
 script = ExtResource("1_sdcu0")
-stat = &"crit_damage"
-op = 1
+stat = &"crit_mult"
+op = 0
 value = 1.0
+tags = Array[StringName]([&"set", &"crit"])
+source = &"set"
+source_id = &"shadow_hunter"
+
+[sub_resource type="Resource" id="Resource_sh6"]
+script = ExtResource("1_sdcu0")
+stat = &"crit_chance"
+value = 0.05
 tags = Array[StringName]([&"set", &"crit"])
 source = &"set"
 source_id = &"shadow_hunter"
@@ -28,6 +37,18 @@ tags = Array[StringName]([&"set", &"crit"])
 source = &"set"
 source_id = &"shadow_hunter"
 
+[sub_resource type="Resource" id="Resource_sh_proc"]
+script = ExtResource("3_sh")
+id = &"shadow_hunter_6pc"
+trigger = 1
+chance = 1.0
+cooldown = 0.0
+magnitude = 18.0
+duration = 4.0
+radius = 4.0
+payload = &"earthquake"
+tags = Array[StringName]([&"set", &"crit", &"bleed"])
+
 [resource]
 script = ExtResource("2_y2sdq")
 id = &"shadow_hunter"
@@ -35,5 +56,9 @@ display_name = "Lowca Cieni"
 fixed_modifiers = Array[ExtResource("1_sdcu0")]([SubResource("Resource_tuae0")])
 bonuses = {
 2: [SubResource("Resource_d2tmb")],
-4: [SubResource("Resource_mgnlp")]
+4: [SubResource("Resource_mgnlp")],
+6: [SubResource("Resource_sh6")]
+}
+procs = {
+6: [SubResource("Resource_sh_proc")]
 }

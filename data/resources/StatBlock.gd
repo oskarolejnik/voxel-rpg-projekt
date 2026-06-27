@@ -15,6 +15,9 @@ const STAT_KEYS: Array[StringName] = [
 	&"crit_mult", &"armor", &"armor_pierce", &"move_speed", &"dodge_iframes", &"lifesteal", &"area_radius",
 	&"cdr", &"magic_find", &"pet_damage", &"pet_hp", &"rage_gen", &"mana_max",
 	&"spell_power", &"ranged_damage", &"holy", &"healing_power", &"shield", &"bleed_damage", &"dodge", &"penetration",
+	# obrażenia żywiołowe ADDYTYWNE — czytane przez Player._try_attack (fire/frost/poison/lightning_damage);
+	# baza 0 (get_base default), liczą się tylko z modyfikatorów. Rejestrujemy, by afiksy/sety nie były "ciche".
+	&"fire_damage", &"frost_damage", &"poison_damage", &"lightning_damage",
 	# elementy (słownik elemental) + odporności (resistances) — też prawidłowe klucze get_base:
 	&"fire", &"frost", &"poison", &"lightning", &"dark", &"str", &"dex", &"int",
 ]

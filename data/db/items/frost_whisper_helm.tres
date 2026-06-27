@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_ir"]
+
+[sub_resource type="Resource" id="Resource_a"]
+script = ExtResource("1_sm")
+stat = &"spell_power"
+value = 14.0
+tags = Array[StringName]([&"caster", &"frost"])
+source = &"gear"
+source_id = &"frost_whisper_helm"
+
+[sub_resource type="Resource" id="Resource_b"]
+script = ExtResource("1_sm")
+stat = &"crit_chance"
+value = 0.05
+tags = Array[StringName]([&"crit"])
+source = &"gear"
+source_id = &"frost_whisper_helm"
+
+[resource]
+script = ExtResource("2_ir")
+id = &"frost_whisper_helm"
+display_name = "Korona Lodowego Wichru"
+slot = 1
+base_modifiers = Array[ExtResource("1_sm")]([SubResource("Resource_a"), SubResource("Resource_b")])
+allowed_classes = Array[StringName]([&"mag", &"lucznik"])
+set_id = &"frost_whisper"
+req_level = 12

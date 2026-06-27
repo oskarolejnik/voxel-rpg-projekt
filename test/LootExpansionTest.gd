@@ -70,6 +70,7 @@ func _ready() -> void:
 
 	_phase2()
 	_phase4()
+	_phase5()
 
 	if _failures == 0:
 		print("[LOOTX] ALL OK")
@@ -256,3 +257,193 @@ func _target_has_burn(t: Node) -> bool:
 		if c is StatusEffectComponent:
 			return (c as StatusEffectComponent).has(StatusEffectComponent.Kind.BURN)
 	return false
+
+
+## LOOT Faza 5: sety + procy setów (SetResource.procs) + active_set_thresholds + EffectComponent ON_HURT/aura.
+## Sprawdza: (a) 6 setów wczytanych z procem 6-cz (.tres), (b) WALIDACJA kluczy statów (martwe staty),
+## (c) active_set_thresholds zlicza, proc 6-cz pojawia się przy 6 a NIE 5 (recompute z liczby części),
+## (d) 6pc bonus STAT przez collect_modifiers, (e) proc setu (fire_nova) FIRES przez EffectComponent,
+## (f) ON_HURT shield leczy tylko przy niskim HP, (g) ON_EQUIP_AURA HoT leczy właściciela.
+func _phase5() -> void:
+	var set_ids: Array[StringName] = [&"desert_flame", &"shadow_hunter", &"wall_defender",
+		&"mountain_wrath", &"frost_whisper", &"covenant_light"]
+
+	# (a) Wszystkie 6 setów wczytane z procem 6-cz => serializacja SetResource.procs w .tres działa.
+	for sid in set_ids:
+		var sdef := ItemDB.set_def(sid)
+		_check(sdef != null, "set %s nie wczytany" % sid)
+		if sdef != null:
+			_check(sdef.procs.has(6), "set %s nie ma proca 6-cz" % sid)
+			if sdef.procs.has(6):
+				var arr: Array = sdef.procs[6]
+				_check(arr.size() >= 1 and arr[0] is EffectResource, "set %s proc 6-cz nie jest EffectResource" % sid)
+
+	# (b) WALIDACJA kluczy statów — żaden bonus/fixed setu nie celuje w martwy stat (jak dawne crit_damage).
+	for sid in set_ids:
+		var sdef := ItemDB.set_def(sid)
+		if sdef == null:
+			continue
+		for m in sdef.fixed_modifiers:
+			if m is StatModifier:
+				_check(StatBlock.STAT_KEYS.has((m as StatModifier).stat),
+					"set %s fixed stat '%s' spoza STAT_KEYS (martwy)" % [sid, (m as StatModifier).stat])
+		for thr in sdef.bonuses:
+			for m in sdef.bonuses[thr]:
+				if m is StatModifier:
+					_check(StatBlock.STAT_KEYS.has((m as StatModifier).stat),
+						"set %s %dpc stat '%s' spoza STAT_KEYS (martwy)" % [sid, thr, (m as StatModifier).stat])
+
+	# (c) active_set_thresholds + collect_effects: proc 6-cz przy 6 częściach, znika przy 5 (recompute).
+	var setC := SetResource.new()
+	setC.id = &"t_set_c"
+	var procC := _mk_effect(EffectResource.Trigger.ON_HIT, &"fire_nova", 1.0, 0.0)
+	procC.radius = 6.0
+	var pcarr: Array[EffectResource] = [procC]
+	setC.procs = { 6: pcarr }
+	ItemDB.sets[&"t_set_c"] = setC
+	var invC := _mk_set_inv(&"t_set_c", [0, 1, 2, 8, 4, 12])
+	_check(int(invC.active_set_thresholds().get(&"t_set_c", 0)) == 6, "active_set_thresholds nie zliczył 6 części")
+	_check(_has_proc(invC.collect_effects(), &"fire_nova"), "collect_effects: brak proca setu przy 6 częściach")
+	invC.equipment.erase(12)   # 6 -> 5
+	_check(not _has_proc(invC.collect_effects(), &"fire_nova"), "proc setu został przy 5 częściach (zła recompute)")
+	invC.queue_free()
+
+	# (d) 6pc bonus STAT zbierany przez collect_modifiers (kumulatywne 2/4/6).
+	var setD := SetResource.new()
+	setD.id = &"t_set_d"
+	var m6 := StatModifier.new()
+	m6.stat = &"damage"
+	m6.value = 99.0   # unikalny znacznik (collect_modifiers przepuszcza wartość przez _tag, source_id zmienia)
+	setD.bonuses = { 2: [], 4: [], 6: [m6] }
+	ItemDB.sets[&"t_set_d"] = setD
+	var invD := _mk_set_inv(&"t_set_d", [0, 1, 2, 8, 4, 12])
+	var has6 := false
+	for sm in invD.collect_modifiers():
+		if sm is StatModifier and (sm as StatModifier).stat == &"damage" and is_equal_approx((sm as StatModifier).value, 99.0):
+			has6 = true
+	_check(has6, "collect_modifiers nie dodał bonusu 6-cz setu")
+	invD.queue_free()
+
+	# (e) Proc setu (fire_nova) FIRES przez EffectComponent — pełny set => fire/burn na wrogu w AoE.
+	var setE := SetResource.new()
+	setE.id = &"t_set_e"
+	var procE := _mk_effect(EffectResource.Trigger.ON_HIT, &"fire_nova", 1.0, 0.0)
+	procE.radius = 6.0
+	var pearr: Array[EffectResource] = [procE]
+	setE.procs = { 6: pearr }
+	ItemDB.sets[&"t_set_e"] = setE
+	var ownerE := _mk_set_owner(&"t_set_e", [0, 1, 2, 8, 4, 12])
+	_mk_effect_comp(ownerE, _inv_of(ownerE))
+	var enemyE := _mk_target()
+	enemyE.add_to_group("enemies")
+	DamageService.hit_resolved.emit(ownerE, enemyE, 10.0, false)
+	_check(_target_has_burn(enemyE), "proc setu (fire_nova) nie nałożył fire/burn na wroga w AoE")
+
+	# (f) ON_HURT shield — leczy TYLKO przy niskim HP (<35%), inaczej no-op.
+	var ownerF := _mk_stat_entity(100.0)
+	var shieldEff := _mk_effect(EffectResource.Trigger.ON_HURT, &"shield", 1.0, 0.0)
+	shieldEff.magnitude = 45.0
+	var invF := _mk_inv_on(ownerF, &"t_shield", shieldEff)
+	_mk_effect_comp(ownerF, invF)
+	var hpF := _health_of(ownerF)
+	hpF.current_hp = 20.0   # 20% < 35% => tarcza odpala
+	hpF.damaged.emit(5.0, null, 20.0)
+	_check(hpF.current_hp > 20.0, "ON_HURT shield nie zadziałał przy niskim HP")
+	hpF.current_hp = 90.0   # 90% > 35% => no-op
+	hpF.damaged.emit(5.0, null, 90.0)
+	_check(is_equal_approx(hpF.current_hp, 90.0), "shield odpalił powyżej progu HP (powinien no-op)")
+
+	# (g) ON_EQUIP_AURA HoT — tyk aury leczy właściciela.
+	var ownerG := _mk_stat_entity(100.0)
+	var auraEff := _mk_effect(EffectResource.Trigger.ON_EQUIP_AURA, &"heal", 1.0, 0.0)
+	auraEff.magnitude = 6.0
+	var invG := _mk_inv_on(ownerG, &"t_aura", auraEff)
+	var ecG := _mk_effect_comp(ownerG, invG)
+	_check(ecG._auras.size() == 1, "aura nie trafiła do _auras po rebuild")
+	var hpG := _health_of(ownerG)
+	hpG.current_hp = 50.0
+	ecG._aura_tick()
+	_check(hpG.current_hp > 50.0, "ON_EQUIP_AURA HoT nie uleczył właściciela")
+
+	# (h) OSIĄGALNOŚĆ 6 części: każdy realny set ma >=6 itemów w ItemDB, w >=6 RÓŻNYCH slotach (inaczej
+	# proc 6-cz nigdy nie wystrzeli w grze). Liczymy z prawdziwych .tres (po set_id z DEFINICJI bazy).
+	var real_counts: Dictionary = {}     # set_id -> { count:int, slots:Dictionary }
+	for iid in ItemDB.items:
+		var ir: ItemResource = ItemDB.items[iid]
+		if ir == null or ir.set_id == &"":
+			continue
+		if not real_counts.has(ir.set_id):
+			real_counts[ir.set_id] = { "count": 0, "slots": {} }
+		real_counts[ir.set_id]["count"] += 1
+		real_counts[ir.set_id]["slots"][int(ir.slot)] = true
+	for sid in set_ids:
+		var rc: Dictionary = real_counts.get(sid, { "count": 0, "slots": {} })
+		_check(int(rc["count"]) >= 6, "set %s ma %d części (<6, proc 6-cz nieosiągalny)" % [sid, int(rc["count"])])
+		_check((rc["slots"] as Dictionary).size() >= 6, "set %s pokrywa %d różnych slotów (<6)" % [sid, (rc["slots"] as Dictionary).size()])
+
+	print("[LOOTX] Faza 5: 6 setów+proc(.tres) + walidacja statów + thresholds + 6pc stat + fire_nova FIRES + ON_HURT + aura + osiągalność 6cz OK")
+
+
+# ── Faza 5 — pomocnicze ──────────────────────────────────────────────────────
+func _has_proc(effs: Array, payload: StringName) -> bool:
+	for e in effs:
+		if e is EffectResource and (e as EffectResource).payload == payload:
+			return true
+	return false
+
+
+## Buduje InventoryComponent z N syntetycznymi częściami setu w podanych slotach (do testów thresholds).
+func _mk_set_inv(set_id: StringName, slots: Array) -> InventoryComponent:
+	var inv := InventoryComponent.new()
+	add_child(inv)
+	_populate_set_pieces(inv, set_id, slots)
+	return inv
+
+
+func _mk_set_owner(set_id: StringName, slots: Array) -> Node3D:
+	var owner_node := _mk_entity()
+	var inv := InventoryComponent.new()
+	owner_node.add_child(inv)
+	_populate_set_pieces(inv, set_id, slots)
+	return owner_node
+
+
+func _populate_set_pieces(inv: InventoryComponent, set_id: StringName, slots: Array) -> void:
+	for i in range(slots.size()):
+		var ir := ItemResource.new()
+		ir.id = StringName("%s_p%d" % [set_id, i])
+		ir.slot = int(slots[i])
+		ir.set_id = set_id
+		ItemDB.items[ir.id] = ir
+		var inst := ItemInstance.new()
+		inst.base_id = ir.id
+		inv.equipment[int(slots[i])] = inst
+	ItemDB._reindex()
+
+
+func _inv_of(owner_node: Node) -> InventoryComponent:
+	for c in owner_node.get_children():
+		if c is InventoryComponent:
+			return c
+	return null
+
+
+## Encja z StatsComponent(max_hp) + HealthComponent (current_hp = max na starcie). Do testów shield/aura.
+func _mk_stat_entity(max_hp: float) -> Node3D:
+	var n := Node3D.new()
+	add_child(n)
+	var stats := StatsComponent.new()
+	var block := StatBlock.new()
+	block.max_hp = max_hp
+	stats.base = block
+	n.add_child(stats)
+	var health := HealthComponent.new()
+	n.add_child(health)
+	return n
+
+
+func _health_of(owner_node: Node) -> HealthComponent:
+	for c in owner_node.get_children():
+		if c is HealthComponent:
+			return c
+	return null

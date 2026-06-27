@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_sm"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_ir"]
+
+[sub_resource type="Resource" id="Resource_a"]
+script = ExtResource("1_sm")
+stat = &"move_speed"
+op = 1
+value = 0.08
+tags = Array[StringName]([&"mobility"])
+source = &"gear"
+source_id = &"covenant_light_boots"
+
+[resource]
+script = ExtResource("2_ir")
+id = &"covenant_light_boots"
+display_name = "Trzewiki Swietlanego Poslannika"
+slot = 4
+base_modifiers = Array[ExtResource("1_sm")]([SubResource("Resource_a")])
+allowed_classes = Array[StringName]([&"paladyn", &"kaplan"])
+set_id = &"covenant_light"
+req_level = 12

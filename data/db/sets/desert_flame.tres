@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_xghn0"]
 [ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_bbpui"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_df"]
 
 [sub_resource type="Resource" id="Resource_tw7pw"]
 script = ExtResource("1_xghn0")
@@ -21,6 +22,15 @@ tags = Array[StringName]([&"set", &"fire"])
 source = &"set"
 source_id = &"desert_flame"
 
+[sub_resource type="Resource" id="Resource_df6"]
+script = ExtResource("1_xghn0")
+stat = &"fire_damage"
+op = 2
+value = 0.20
+tags = Array[StringName]([&"set", &"fire"])
+source = &"set"
+source_id = &"desert_flame"
+
 [sub_resource type="Resource" id="Resource_rar1d"]
 script = ExtResource("1_xghn0")
 stat = &"fire_damage"
@@ -29,6 +39,18 @@ tags = Array[StringName]([&"set", &"fire"])
 source = &"set"
 source_id = &"desert_flame"
 
+[sub_resource type="Resource" id="Resource_df_proc"]
+script = ExtResource("3_df")
+id = &"desert_flame_6pc"
+trigger = 0
+chance = 0.15
+cooldown = 0.0
+magnitude = 14.0
+duration = 3.0
+radius = 5.0
+payload = &"fire_nova"
+tags = Array[StringName]([&"set", &"fire"])
+
 [resource]
 script = ExtResource("2_bbpui")
 id = &"desert_flame"
@@ -36,5 +58,9 @@ display_name = "Plomien Pustyni"
 fixed_modifiers = Array[ExtResource("1_xghn0")]([SubResource("Resource_rar1d")])
 bonuses = {
 2: [SubResource("Resource_tw7pw")],
-4: [SubResource("Resource_ckt7q")]
+4: [SubResource("Resource_ckt7q")],
+6: [SubResource("Resource_df6")]
+}
+procs = {
+6: [SubResource("Resource_df_proc")]
 }

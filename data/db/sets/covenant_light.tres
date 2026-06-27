@@ -1,0 +1,64 @@
+[gd_resource type="Resource" script_class="SetResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_cl"]
+[ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_cl"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_cl"]
+
+[sub_resource type="Resource" id="Resource_cl2"]
+script = ExtResource("1_cl")
+stat = &"healing_power"
+value = 12.0
+tags = Array[StringName]([&"set", &"holy"])
+source = &"set"
+source_id = &"covenant_light"
+
+[sub_resource type="Resource" id="Resource_cl4"]
+script = ExtResource("1_cl")
+stat = &"max_hp"
+op = 1
+value = 0.15
+tags = Array[StringName]([&"set", &"holy"])
+source = &"set"
+source_id = &"covenant_light"
+
+[sub_resource type="Resource" id="Resource_cl6"]
+script = ExtResource("1_cl")
+stat = &"holy"
+value = 8.0
+tags = Array[StringName]([&"set", &"holy"])
+source = &"set"
+source_id = &"covenant_light"
+
+[sub_resource type="Resource" id="Resource_cl_fix"]
+script = ExtResource("1_cl")
+stat = &"holy"
+value = 6.0
+tags = Array[StringName]([&"set", &"holy"])
+source = &"set"
+source_id = &"covenant_light"
+
+[sub_resource type="Resource" id="Resource_cl_proc"]
+script = ExtResource("3_cl")
+id = &"covenant_light_6pc"
+trigger = 5
+chance = 1.0
+cooldown = 0.0
+magnitude = 6.0
+duration = 0.0
+radius = 8.0
+payload = &"heal"
+tags = Array[StringName]([&"set", &"holy", &"aura"])
+
+[resource]
+script = ExtResource("2_cl")
+id = &"covenant_light"
+display_name = "Swiatlo Przymierza"
+fixed_modifiers = Array[ExtResource("1_cl")]([SubResource("Resource_cl_fix")])
+bonuses = {
+2: [SubResource("Resource_cl2")],
+4: [SubResource("Resource_cl4")],
+6: [SubResource("Resource_cl6")]
+}
+procs = {
+6: [SubResource("Resource_cl_proc")]
+}

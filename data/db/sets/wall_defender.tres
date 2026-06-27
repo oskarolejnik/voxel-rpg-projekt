@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_qk48r"]
 [ext_resource type="Script" path="res://data/resources/SetResource.gd" id="2_ai5n2"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_wd"]
 
 [sub_resource type="Resource" id="Resource_7wjng"]
 script = ExtResource("1_qk48r")
@@ -21,6 +22,15 @@ tags = Array[StringName]([&"set"])
 source = &"set"
 source_id = &"wall_defender"
 
+[sub_resource type="Resource" id="Resource_wd6"]
+script = ExtResource("1_qk48r")
+stat = &"armor"
+op = 2
+value = 0.15
+tags = Array[StringName]([&"set", &"defense"])
+source = &"set"
+source_id = &"wall_defender"
+
 [sub_resource type="Resource" id="Resource_sbio4"]
 script = ExtResource("1_qk48r")
 stat = &"armor"
@@ -29,6 +39,18 @@ tags = Array[StringName]([&"set", &"defense"])
 source = &"set"
 source_id = &"wall_defender"
 
+[sub_resource type="Resource" id="Resource_wd_proc"]
+script = ExtResource("3_wd")
+id = &"wall_defender_6pc"
+trigger = 3
+chance = 1.0
+cooldown = 8.0
+magnitude = 45.0
+duration = 0.0
+radius = 0.0
+payload = &"shield"
+tags = Array[StringName]([&"set", &"defense"])
+
 [resource]
 script = ExtResource("2_ai5n2")
 id = &"wall_defender"
@@ -36,5 +58,9 @@ display_name = "Mur Obroncy"
 fixed_modifiers = Array[ExtResource("1_qk48r")]([SubResource("Resource_sbio4")])
 bonuses = {
 2: [SubResource("Resource_7wjng")],
-4: [SubResource("Resource_te7gb")]
+4: [SubResource("Resource_te7gb")],
+6: [SubResource("Resource_wd6")]
+}
+procs = {
+6: [SubResource("Resource_wd_proc")]
 }

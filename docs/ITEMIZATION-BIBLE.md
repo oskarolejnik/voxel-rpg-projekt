@@ -152,18 +152,27 @@ only), no proc channel.
 
 Planned sets (2/4/6, FLAT→INCREASED→MORE grammar; 6pc = a proc):
 
-| Set | Class | 2pc | 4pc | 6pc proc |
+| Set | Class | 2pc | 4pc | 6pc proc (SHIPPED) |
 |---|---|---|---|---|
-| **Płomień Pustyni** | Mage/fire | +15% fire dmg | +25% MORE fire | ON_HIT 15% fire-nova |
-| **Łowca Cieni** | Rogue | +0.08 crit chance | +1.0 crit dmg | ON_CRIT +atk-speed 4s |
-| **Mur Obrońcy** | Warrior/Paladin | +20% armor | +20% MORE hp | ON_HURT <30% hp shield |
-| **Gniew Gór** | Warrior | +bleed | +crit_mult | ON_HIT earthquake AoE (1.5s cd) |
-| **Szept Mrozu** | Mage/Ranger | +frost | +cdr | ON_KILL frost-nova |
-| **Światło Przymierza** | Paladin/Cleric | +holy | +healing | ON_EQUIP_AURA party HoT |
+| **Płomień Pustyni** `desert_flame` | Mage/fire | +15% fire dmg | +25% MORE fire | +20% MORE fire; ON_HIT 15% **fire-nova** |
+| **Łowca Cieni** `shadow_hunter` | Rogue/Ranger | +0.08 crit chance | +1.0 crit_mult¹ | +0.05 crit; ON_CRIT **bleed-nova**² |
+| **Mur Obrońcy** `wall_defender` | Warrior/Paladin | +20% armor | +20% MORE hp | +15% MORE armor; ON_HURT **shield-heal** <35% hp (8s cd) |
+| **Gniew Gór** `mountain_wrath` | Warrior/Berserker | +8 bleed | +0.5 crit_mult | +15% MORE dmg; ON_HIT **earthquake** AoE (1.5s cd) |
+| **Szept Mrozu** `frost_whisper` | Mage/Ranger | +8 frost | +30% atk-speed | +20% MORE frost; ON_KILL **frost-nova** |
+| **Światło Przymierza** `covenant_light` | Paladin/Cleric | +12 healing | +15% hp | +8 holy; ON_EQUIP_AURA **party HoT** (6 hp/s, r8) |
 
-Phase 2 adds `procs: Dictionary{piece_count → Array[EffectResource]}` to `SetResource`, factors the
-count loop into `active_set_thresholds()` (shared by stats + procs), and wires set procs through the
-same `EffectComponent`. Add `get_active_set_bonuses()` for the UI.
+¹ Old 4pc targeted `crit_damage` — a **dead stat** (combat reads `crit_mult`); fixed during the extend.
+² Bible originally specced an atk-speed buff; the player has **no `BuffComponent`** (only Stats/Health/Status),
+so a buff-dispatch path would ship unverified. Shadow Hunter instead procs a thematic crit-triggered bleed
+AoE (`earthquake` payload). Re-add the haste buff when a player `BuffComponent` lands (separate follow-up).
+
+Phase 5 (shipped) adds `procs: Dictionary{piece_count → Array[EffectResource]}` to `SetResource`, factors the
+count loop into `active_set_thresholds()` (shared by stats + procs), wires set procs through `collect_effects()`,
+and adds `get_active_set_bonuses()` for the UI. **`EffectComponent` gained three trigger rails:** the existing
+hit bus (ON_HIT/ON_CRIT/ON_KILL) + a new **owner-damage bus** (`HealthComponent.damaged` → ON_HURT) + a
+host-only **aura tick** (`_process` → ON_EQUIP_AURA periodic HoT over group `"player"`). New payloads:
+`fire_nova` (fire AoE) and `shield` (defensive heal gated <35% hp). All host-authoritative, save-free.
+**Sets ship with 6 reachable pieces each** (the 6pc proc is the capstone) — exceeds the ~4/set estimate in §7.
 
 ---
 

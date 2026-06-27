@@ -162,12 +162,13 @@ func collect_modifiers() -> Array[StatModifier]:
 	return out
 
 
-## LOOT Faza 4 — zbiera AKTYWNE efekty (procy) z założonych itemów. Bliźniak collect_modifiers, ale
-## zwraca EffectResource (definicyjne, referowane => save-free). Wykonuje host-only EffectComponent,
-## który subskrybuje rebuild ekwipunku i pobiera świeżą listę. Plecak NIE liczy się. Bonusy setów
-## (SetResource.procs) dojdą w Fazie 5 — tu czytamy tylko ItemResource.equip_effects.
+## LOOT Faza 4+5 — zbiera AKTYWNE efekty (procy) z założonych itemów ORAZ z setów przy osiągniętym
+## progu. Bliźniak collect_modifiers, ale kanał EFEKTÓW (EffectResource, definicyjne/referowane =>
+## save-free). Wykonuje host-only EffectComponent (subskrybuje rebuild ekwipunku, pobiera świeżą listę).
+## Plecak NIE liczy się. Set odtwarza się z liczby założonych części (active_set_thresholds), NIE z zapisu.
 func collect_effects() -> Array[EffectResource]:
 	var out: Array[EffectResource] = []
+	# 1) procy z definicji założonych itemów (ItemResource.equip_effects) — legendy/mythic.
 	for slot in equipment:
 		var item: ItemInstance = equipment[slot]
 		if item == null:
@@ -178,6 +179,64 @@ func collect_effects() -> Array[EffectResource]:
 		for ef in ir.equip_effects:
 			if ef is EffectResource:
 				out.append(ef)
+	# 2) procy setów (SetResource.procs) przy osiągniętym progu — kumulatywnie, jak bonuses (2/4/6).
+	var counts := active_set_thresholds()
+	for set_id in counts:
+		var sdef := ItemDB.set_def(set_id)
+		if sdef == null:
+			continue
+		var have := int(counts[set_id])
+		for threshold in sdef.procs:
+			if have >= int(threshold):
+				for pe in sdef.procs[threshold]:
+					if pe is EffectResource:
+						out.append(pe)
+	return out
+
+
+## LOOT Faza 5 — liczba ZAŁOŻONYCH części każdego setu (set_id(StringName) -> int). Wspólne źródło dla
+## bonusów statów (collect_modifiers), procy (collect_effects) i UI (get_active_set_bonuses). Przynależność:
+## najpierw ROLLED instancja (ItemInstance.set_id), fallback na definicję bazy (ItemResource.set_id).
+func active_set_thresholds() -> Dictionary:
+	var counts: Dictionary = {}
+	for slot in equipment:
+		var item: ItemInstance = equipment[slot]
+		if item == null:
+			continue
+		var eff_set_id: StringName = item.set_id
+		if eff_set_id == &"":
+			var ir := ItemDB.item(item.base_id)
+			if ir != null:
+				eff_set_id = ir.set_id
+		if eff_set_id != &"":
+			counts[eff_set_id] = int(counts.get(eff_set_id, 0)) + 1
+	return counts
+
+
+## LOOT Faza 5 — akcesor UI: aktywne sety z liczbą części i osiągniętymi progami (do tooltipów/panelu).
+## Zwraca Array[Dictionary] { set_id, display_name, have:int, thresholds_met:Array[int] }.
+func get_active_set_bonuses() -> Array:
+	var out: Array = []
+	var counts := active_set_thresholds()
+	for set_id in counts:
+		var sdef := ItemDB.set_def(set_id)
+		if sdef == null:
+			continue
+		var have := int(counts[set_id])
+		var thr_met: Array = []
+		for t in sdef.bonuses:
+			if have >= int(t) and not thr_met.has(int(t)):
+				thr_met.append(int(t))
+		for t in sdef.procs:
+			if have >= int(t) and not thr_met.has(int(t)):
+				thr_met.append(int(t))
+		thr_met.sort()
+		out.append({
+			"set_id": set_id,
+			"display_name": sdef.display_name,
+			"have": have,
+			"thresholds_met": thr_met,
+		})
 	return out
 
 
