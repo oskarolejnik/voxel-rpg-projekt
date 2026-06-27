@@ -228,6 +228,22 @@ consumables}/` subfolders (auto-scanned). **Ship a `ContentLint`** (boot/CI): du
 int, `weapon_class` whitelist, non-dangling `set_id`, stat keys vs a central `STAT_KEYS` registry — the
 `last-wins` silent collision is the #1 scale risk.
 
+**Phase 7 (shipped):**
+- **`ContentLint`** (`autoload/ContentLint.gd`, static) — lints items/affixes/sets/gems against the
+  registries (stat keys, `WEAPON_CLASSES`, `EFFECT_PAYLOADS`, slot/rarity ranges, non-dangling `set_id`,
+  valid classes). Run by `LootExpansionTest._phase7`; zero issues across the whole DB.
+- **Items 45 → 142** (clears 100+, exceeds the 131 taxonomy): 97 authored via a 16-batch workflow,
+  slot distribution matching §7 exactly (40 weapons / 45 armor / 12 accessories), all class-restricted,
+  weapons with `visual_kind`/`visual_tint`/`weapon_class`. No id collisions (142 files = 142 ids).
+- **Affixes 21 → 91** (clears ~90): ~40 class + ~30 biome via a 10-batch workflow; biome affixes carry
+  the right biome ids for `_biome_themes` regional surfacing.
+- **Co-op equip replication** (Phase 7c): owner broadcasts an equipment snapshot
+  (`PlayerNetSync.broadcast_equipment` → `@rpc _recv_equipment`); replicas rebuild the Phase-3 visible
+  gear via `Player.apply_remote_equipment`. Visual-only; HP/stats stay on their authoritative channels.
+- **Balance** reviewed: weapon damage 16–30 (base 18), armor 8–20, max_hp 25–65, spell_power 12–24,
+  percent mods ≤ 0.6 — no outliers. Adversarial verify caught + fixed the real bugs (FLAT-vs-INCREASED
+  on `move_speed`/`area_radius`; 1H-axe `visual_kind` rendering as swords).
+
 ---
 
 ## Phased roadmap
