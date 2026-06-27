@@ -69,6 +69,7 @@ func _ready() -> void:
 	print("[LOOTX] enumy stabilne, tablice=8, MYTHIC/ANCIENT kolor+nazwa+roll OK, sloty routują")
 
 	_phase2()
+	_phase4()
 
 	if _failures == 0:
 		print("[LOOTX] ALL OK")
@@ -135,3 +136,123 @@ func _route_check(item_slot: int, expected_equip: int, label: String) -> void:
 	var got := comp._natural_slot(inst)
 	_check(got == expected_equip, "_natural_slot(%s) = %d, oczekiwano %d" % [label, got, expected_equip])
 	comp.queue_free()
+
+
+## LOOT Faza 4: efekty wyposażenia (procy) — EffectResource + collect_effects + host-only EffectComponent.
+## Sprawdza: (a) Trigger enum append-only, (b) ember_heart.tres wczytany z proc'iem (serializacja .tres),
+## (c) collect_effects zbiera proc z założonego itemu, (d) ON_HIT (chance=1.0) nakłada burn na cel,
+## (e) cooldown blokuje natychmiastowe powtórzenie, (f) ON_CRIT odpala TYLKO na krytyku,
+## (g) bramka autorytetu — na kliencie (nie-host) proc to no-op.
+func _phase4() -> void:
+	# (a) Trigger enum append-only (.tres zapisuje trigger jako surowy int => reorder = ciche przemapowanie).
+	_check(EffectResource.Trigger.ON_HIT == 0 and EffectResource.Trigger.ON_CRIT == 1 \
+		and EffectResource.Trigger.ON_KILL == 2, "EffectResource.Trigger indeksy przestawione")
+
+	# (b) ember_heart.tres wczytany z proc'iem => serializacja Array[EffectResource] w .tres działa.
+	var emb := ItemDB.item(&"ember_heart")
+	_check(emb != null, "ember_heart.tres nie wczytany")
+	if emb != null:
+		_check(emb.equip_effects.size() == 1 and emb.equip_effects[0] is EffectResource,
+			"ember_heart nie ma equip_effects")
+		if emb.equip_effects.size() == 1:
+			var pe: EffectResource = emb.equip_effects[0]
+			_check(pe.payload == &"burn" and pe.trigger == EffectResource.Trigger.ON_HIT,
+				"ember_heart proc ma zły payload/trigger")
+
+	# (c) collect_effects() zbiera proc z założonego itemu.
+	var owner_c0 := _mk_entity()
+	var inv0 := _mk_inv_on(owner_c0, &"t_proc_item", _mk_effect(EffectResource.Trigger.ON_HIT, &"burn", 1.0, 0.0))
+	var got := inv0.collect_effects()
+	_check(got.size() == 1 and got[0].payload == &"burn", "collect_effects nie zebrał proc'a")
+
+	# (d) EffectComponent: ON_HIT (chance=1.0) => burn na celu.
+	var owner_a := _mk_entity()
+	var ia := _mk_inv_on(owner_a, &"t_hit", _mk_effect(EffectResource.Trigger.ON_HIT, &"burn", 1.0, 60.0))
+	_mk_effect_comp(owner_a, ia)
+	var ta := _mk_target()
+	DamageService.hit_resolved.emit(owner_a, ta, 10.0, false)
+	_check(_target_has_burn(ta), "ON_HIT proc nie nałożył burn na cel")
+	# (e) cooldown blokuje natychmiastowe powtórzenie (drugi cel nie dostaje burn).
+	var tb := _mk_target()
+	DamageService.hit_resolved.emit(owner_a, tb, 10.0, false)
+	_check(not _target_has_burn(tb), "cooldown nie zablokował drugiego proc'a")
+
+	# (f) ON_CRIT: nie odpala na nie-krytyku, odpala na krytyku.
+	var owner_cr := _mk_entity()
+	var icr := _mk_inv_on(owner_cr, &"t_crit", _mk_effect(EffectResource.Trigger.ON_CRIT, &"burn", 1.0, 0.0))
+	_mk_effect_comp(owner_cr, icr)
+	var tc := _mk_target()
+	DamageService.hit_resolved.emit(owner_cr, tc, 10.0, false)   # nie-krytyk
+	_check(not _target_has_burn(tc), "ON_CRIT odpalił na nie-krytyku")
+	DamageService.hit_resolved.emit(owner_cr, tc, 10.0, true)    # krytyk
+	_check(_target_has_burn(tc), "ON_CRIT nie odpalił na krytyku")
+
+	# (g) BRAMKA AUTORYTETU: na kliencie (nie-host) proc to no-op (skutek przyjdzie przez replikację).
+	var owner_g := _mk_entity()
+	var ig := _mk_inv_on(owner_g, &"t_gate", _mk_effect(EffectResource.Trigger.ON_HIT, &"burn", 1.0, 0.0))
+	_mk_effect_comp(owner_g, ig)
+	var tg := _mk_target()
+	var prev_mode: int = NetManager.mode
+	NetManager.mode = NetManager.Mode.CLIENT
+	DamageService.hit_resolved.emit(owner_g, tg, 10.0, false)
+	NetManager.mode = prev_mode
+	_check(not _target_has_burn(tg), "proc odpalił na NIE-autorytecie (klient) — bramka nie działa")
+
+	print("[LOOTX] Faza 4: EffectResource + .tres + collect_effects + ON_HIT/ON_CRIT + cooldown + bramka autorytetu OK")
+
+
+# ── Faza 4 — pomocnicze ──────────────────────────────────────────────────────
+func _mk_effect(trigger: int, payload: StringName, chance: float, cooldown: float) -> EffectResource:
+	var e := EffectResource.new()
+	e.trigger = trigger
+	e.payload = payload
+	e.chance = chance
+	e.cooldown = cooldown
+	e.magnitude = 5.0
+	e.duration = 3.0
+	return e
+
+
+func _mk_entity() -> Node3D:
+	var n := Node3D.new()
+	add_child(n)
+	return n
+
+
+## Rejestruje syntetyczną definicję z equip_effects w ItemDB i zakłada jej instancję w slot WEAPON.
+func _mk_inv_on(owner_node: Node, base_id: StringName, eff: EffectResource) -> InventoryComponent:
+	var ir := ItemResource.new()
+	ir.id = base_id
+	ir.slot = ItemResource.Slot.WEAPON
+	var arr: Array[EffectResource] = [eff]
+	ir.equip_effects = arr
+	ItemDB.items[base_id] = ir
+	ItemDB._reindex()
+	var inv := InventoryComponent.new()
+	owner_node.add_child(inv)
+	var inst := ItemInstance.new()
+	inst.base_id = base_id
+	inv.equipment[InventoryComponent.EquipSlot.WEAPON] = inst
+	return inv
+
+
+func _mk_effect_comp(owner_node: Node, inv: InventoryComponent) -> EffectComponent:
+	var ec := EffectComponent.new()
+	owner_node.add_child(ec)
+	ec.setup(owner_node, inv)
+	return ec
+
+
+func _mk_target() -> Node3D:
+	var t := Node3D.new()
+	add_child(t)
+	var st := StatusEffectComponent.new()
+	t.add_child(st)
+	return t
+
+
+func _target_has_burn(t: Node) -> bool:
+	for c in t.get_children():
+		if c is StatusEffectComponent:
+			return (c as StatusEffectComponent).has(StatusEffectComponent.Kind.BURN)
+	return false

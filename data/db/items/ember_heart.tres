@@ -1,0 +1,39 @@
+[gd_resource type="Resource" script_class="ItemResource" format=3]
+
+[ext_resource type="Script" path="res://data/resources/StatModifier.gd" id="1_emb"]
+[ext_resource type="Script" path="res://data/resources/ItemResource.gd" id="2_emb"]
+[ext_resource type="Script" path="res://data/resources/EffectResource.gd" id="3_emb"]
+
+[sub_resource type="Resource" id="Resource_emb_sp"]
+script = ExtResource("1_emb")
+stat = &"spell_power"
+value = 18.0
+tags = Array[StringName]([&"fire", &"caster"])
+source = &"gear"
+source_id = &"ember_heart"
+
+[sub_resource type="Resource" id="Resource_emb_proc"]
+script = ExtResource("3_emb")
+id = &"ember_heart_ignite"
+trigger = 0
+chance = 0.25
+cooldown = 1.0
+magnitude = 12.0
+duration = 3.0
+radius = 0.0
+payload = &"burn"
+tags = Array[StringName]([&"fire"])
+
+[resource]
+script = ExtResource("2_emb")
+id = &"ember_heart"
+display_name = "Serce Żaru"
+visual_kind = &"staff"
+visual_tint = Color(0.95, 0.38, 0.12, 1.0)
+visual_glow = Color(1.0, 0.45, 0.1, 1.0)
+slot = 0
+weapon_class = &"staff"
+base_modifiers = Array[ExtResource("1_emb")]([SubResource("Resource_emb_sp")])
+allowed_classes = Array[StringName]([&"mag"])
+equip_effects = Array[ExtResource("3_emb")]([SubResource("Resource_emb_proc")])
+req_level = 12

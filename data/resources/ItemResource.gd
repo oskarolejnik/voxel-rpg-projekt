@@ -29,6 +29,9 @@ enum Rarity { COMMON, UNCOMMON, RARE, EPIC, LEGENDARY, SET, MYTHIC, ANCIENT }   
 # LOOT Faza 2 — restrykcja klasowa (puste = każda klasa). Filtr w LootService._roll_base_id z fallbackiem
 # do nieograniczonych, gdy pula klasowa pusta (grupa co-op nadal dostaje dropy). Definicyjne => save-free.
 @export var allowed_classes: Array[StringName] = []
+# LOOT Faza 4 — EFEKTY WYPOSAŻENIA (procy: poison-on-hit, frost-nova, heal-on-kill...). Implicit (legendy/
+# mythic). Referowane => save-free. Wykonuje host-only EffectComponent. Patrz EffectResource.
+@export var equip_effects: Array[EffectResource] = []
 @export var stack_size: int = 1
 # Konsumpcyjne (slot CONSUMABLE): efekt użycia (mikstury). 0/&"" = brak danego efektu.
 @export var heal_amount: float = 0.0            # ile HP leczy po użyciu

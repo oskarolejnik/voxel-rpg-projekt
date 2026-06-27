@@ -162,6 +162,25 @@ func collect_modifiers() -> Array[StatModifier]:
 	return out
 
 
+## LOOT Faza 4 — zbiera AKTYWNE efekty (procy) z założonych itemów. Bliźniak collect_modifiers, ale
+## zwraca EffectResource (definicyjne, referowane => save-free). Wykonuje host-only EffectComponent,
+## który subskrybuje rebuild ekwipunku i pobiera świeżą listę. Plecak NIE liczy się. Bonusy setów
+## (SetResource.procs) dojdą w Fazie 5 — tu czytamy tylko ItemResource.equip_effects.
+func collect_effects() -> Array[EffectResource]:
+	var out: Array[EffectResource] = []
+	for slot in equipment:
+		var item: ItemInstance = equipment[slot]
+		if item == null:
+			continue
+		var ir := ItemDB.item(item.base_id)
+		if ir == null:
+			continue
+		for ef in ir.equip_effects:
+			if ef is EffectResource:
+				out.append(ef)
+	return out
+
+
 # ============================================================================
 #  EQUIP / UNEQUIP / SOCKET (DoD: zmieniaja get_stat przez rebuild)
 # ============================================================================

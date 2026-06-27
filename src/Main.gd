@@ -986,6 +986,12 @@ func _spawn_player() -> void:
 	# gear na pivotach modelu. (Dotąd sygnał item_equipped nie był podłączony nigdzie => zero modeli gearu.)
 	if _player_ref.has_method("connect_equipment_visuals"):
 		_player_ref.connect_equipment_visuals(_inventory)
+	# LOOT Faza 4: wykonawca PROCÓW wyposażenia (poison-on-hit, frost-nova, heal-on-kill...).
+	# HOST-AUTHORITATIVE — subskrybuje DamageService.hit_resolved + rebuild listy na zmianę ekwipunku.
+	# Klient też go ma, lecz bramka has_state_authority czyni go no-op (skutki przyjdą przez replikację).
+	var _effect_exec := EffectComponent.new()
+	_player_ref.add_child(_effect_exec)
+	_effect_exec.setup(_player_ref, _inventory)
 	if GameState != null:
 		GameState.set_local_player(_player_ref)
 
