@@ -1290,6 +1290,12 @@ func _build_coarse(world: VoxelWorld) -> void:
 			var wz := _coord.y * CHUNK_SIZE + cz * step
 			hm[cx + cells * cz] = world.surface_height(wx, wz)
 
+	# WORLDSCALE: ZGRUBNE DRZEWA na pierścieniu FAR — las sięga HORYZONTU (NEAR ma fine-leaf clustery;
+	# FAR dostaje tanie pudełka pień+korona, BEZ kolizji, ~12 ścian/drzewo). Gęstość per biom (jeden
+	# get_biome/chunk, jak NEAR). Pozycja w rogu komórki (co `step` voxeli) — drobny offset kryje mgła.
+	var cwx := _coord.x * CHUNK_SIZE + CHUNK_SIZE / 2
+	var cwz := _coord.y * CHUNK_SIZE + CHUNK_SIZE / 2
+	var far_tree_prob := TREE_PROB * _tree_density_mul(world.get_biome(cwx, cwz))
 	var emitted := 0
 	for cx in cells:
 		for cz in cells:
@@ -1324,6 +1330,13 @@ func _build_coarse(world: VoxelWorld) -> void:
 				var nh_mz := hm[cx + cells * (cz - 1)]
 				if nh_mz < sy: _emit_coarse_side(st, lx, lz, sy, nh_mz, step, 5, col)
 
+			# Zgrubne drzewo na trawie (ta sama szansa/wariant co NEAR => spójna gęstość lasu).
+			if t == Blocks.Type.GRASS:
+				var twx := _coord.x * CHUNK_SIZE + lx
+				var twz := _coord.y * CHUNK_SIZE + lz
+				if world.feature_hash(twx, twz, SALT_TREE) < far_tree_prob:
+					_emit_coarse_tree(st, world, lx, sy, lz, twx, twz)
+
 			emitted += 1
 
 	# 3) SKIRTY na 4 krawędziach chunku (zakrywają szwy LOD↔LOD i LOD↔NEAR).
@@ -1335,6 +1348,52 @@ func _build_coarse(world: VoxelWorld) -> void:
 	# _r_water_mesh / _r_props_mesh / _r_collision_shape pozostają null (FAR ich nie ma).
 	# Woda FAR pominięta świadomie: w dali i tak rozpływa się w mgle (cz. 3) => mniej draw-calli
 	# i zero kosztu DEPTH_TEXTURE wody w dali. Dorzucić dopiero gdyby brzegi jezior w dali raziły.
+
+
+## WORLDSCALE: zgrubne drzewo FAR — pień (wąskie pudło) + korona (zielone pudło). ~10 ścian, BEZ
+## fine-leaf (to NEAR), BEZ kolizji (FAR). Wariant/giganty z tych samych hashy co NEAR => spójna sylwetka
+## i gęstość przez granicę LOD. Współrzędne w METRACH (voxel × VOXEL_SIZE), jak reszta zgrubnego mesha.
+func _emit_coarse_tree(st: SurfaceTool, world: VoxelWorld, lx: int, sy: int, lz: int, wx: int, wz: int) -> void:
+	var variant := int(world.feature_hash(wx, wz, SALT_TREE_VARIANT) * 3.0)
+	var trunk_h := 10
+	var r := 4
+	match variant:
+		1:
+			trunk_h = 14; r = 5
+		2, 3:
+			trunk_h = 18; r = 6
+	if world.feature_hash(wx, wz, SALT_TREE_GIANT) < 0.02:
+		trunk_h = 24; r = 6   # gigant-landmark widoczny z dali
+	var cx := (float(lx) + 0.5) * VOXEL_SIZE
+	var cz := (float(lz) + 0.5) * VOXEL_SIZE
+	var base_y := float(sy + 1) * VOXEL_SIZE
+	var top_y := base_y + float(trunk_h) * VOXEL_SIZE
+	var trunk_col := Blocks.color_of(Blocks.Type.WOOD)
+	var leaf_col := Blocks.color_of(Blocks.Type.LEAVES)
+	var tw := VOXEL_SIZE                              # pień ±1 voxel
+	_emit_coarse_box(st, cx - tw, base_y, cz - tw, cx + tw, top_y, cz + tw, trunk_col)
+	var ch := float(r) * VOXEL_SIZE                   # korona ~2r szerokości na wierzchołku pnia
+	_emit_coarse_box(st, cx - ch, top_y - ch, cz - ch, cx + ch, top_y + ch, cz + ch, leaf_col)
+
+
+## Pudło [min..max] w METRACH — 5 ścian (dół -Y pominięty, schowany), CW od zewnątrz. Do zgrubnych drzew.
+func _emit_coarse_box(st: SurfaceTool, x0: float, y0: float, z0: float, x1: float, y1: float, z1: float, col: Color) -> void:
+	_coarse_quad(st, Vector3(x0, y1, z1), Vector3(x1, y1, z1), Vector3(x1, y1, z0), Vector3(x0, y1, z0), Vector3(0, 1, 0), col)    # +Y
+	_coarse_quad(st, Vector3(x1, y0, z0), Vector3(x1, y1, z0), Vector3(x1, y1, z1), Vector3(x1, y0, z1), Vector3(1, 0, 0), col)    # +X
+	_coarse_quad(st, Vector3(x0, y0, z1), Vector3(x0, y1, z1), Vector3(x0, y1, z0), Vector3(x0, y0, z0), Vector3(-1, 0, 0), col)   # -X
+	_coarse_quad(st, Vector3(x1, y0, z1), Vector3(x1, y1, z1), Vector3(x0, y1, z1), Vector3(x0, y0, z1), Vector3(0, 0, 1), col)    # +Z
+	_coarse_quad(st, Vector3(x0, y0, z0), Vector3(x0, y1, z0), Vector3(x1, y1, z0), Vector3(x1, y0, z0), Vector3(0, 0, -1), col)   # -Z
+
+
+## Quad a,b,c,d (CCW od zewnątrz) -> trójkąty CW: a,c,b / a,d,c (ten sam fold co _emit_coarse_top/side).
+func _coarse_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3, col: Color) -> void:
+	st.set_normal(n)
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(c)
+	st.set_color(col); st.add_vertex(b)
+	st.set_color(col); st.add_vertex(a)
+	st.set_color(col); st.add_vertex(d)
+	st.set_color(col); st.add_vertex(c)
 
 
 ## Górna ściana zgrubnej komórki (step×step voxeli) na wierzchu kolumny sy. Normalna +Y,
