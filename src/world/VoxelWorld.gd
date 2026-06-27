@@ -59,6 +59,11 @@ const MAX_IN_FLIGHT: int = 3
 # Limituje koszt finalize na głównym (add_child + rejestracja kolizji w PhysicsServer),
 # żeby odbiór kilku gotowych chunków naraz nie dał mikro-zacięcia.
 const MAX_FINALIZE_PER_FRAME: int = 1
+# WORLDSCALE F2: bias kolejki budowy ku kierunkowi ruchu (w jednostkach chunków). Maszyna jest
+# core-bound (profilowanie: MAX_IN_FLIGHT 5 oversubskrybuje CPU, FPS 190->90), więc NIE zwiększamy
+# throughputu — zamiast tego priorytetujemy chunki PRZED graczem (wiodąca krawędź gotowa wcześniej).
+# Czysto kolejność budowy => zero wpływu na treść/determinizm/zapis.
+const FORWARD_BIAS: float = 2.0
 
 # --- Parametry terenu (w VOXELACH) ---
 # NAPRAWA SKALI BIOMÓW (review #MAJOR): poprzednio BASE=20, AMP=40 dawało
@@ -743,6 +748,20 @@ func _dist2(coord: Vector2i, center: Vector2i) -> int:
 	return dx * dx + dz * dz
 
 
+## WORLDSCALE F2: odległość² Z BIASEM kierunku ruchu — chunki PRZED graczem dostają mniejszy effective
+## (budowane wcześniej), za graczem większy. move_dir==ZERO => zwykła odległość². Tylko kolejność budowy.
+func _biased_d2(coord: Vector2i, center: Vector2i, move_dir: Vector2) -> float:
+	var d2 := float(_dist2(coord, center))
+	if move_dir == Vector2.ZERO:
+		return d2
+	var off := Vector2(float(coord.x - center.x), float(coord.y - center.y))
+	var dist := off.length()
+	if dist < 0.01:
+		return d2
+	var fwd := (off / dist).dot(move_dir)        # 1 = dokładnie na wprost, -1 = za plecami
+	return d2 - fwd * FORWARD_BIAS * dist         # na wprost => mniejszy effective => wcześniej w kolejce
+
+
 ## Czy coord jest już w kolejce budowania (_build_queue trzyma teraz same coordy).
 func _queued(coord: Vector2i) -> bool:
 	return _build_queue.has(coord)
@@ -844,9 +863,18 @@ func _update_chunks(center: Vector2i) -> void:
 			filtered.append(coord)
 	_build_queue = filtered
 
-	# Posortuj CAŁĄ kolejkę względem AKTUALNEGO środka — najbliżej budujemy najpierw.
+	# Posortuj CAŁĄ kolejkę — najbliżej najpierw, Z BIASEM KIERUNKU RUCHU (WORLDSCALE F2): chunki PRZED
+	# graczem budujemy wcześniej. Kierunek z DELTY środka (_last_center jeszcze NIE zaktualizowany w tym
+	# _process => mamy poprzedni środek; działa też dla teleport-stressu, gdzie velocity=0). Zmienia
+	# wyłącznie KOLEJNOŚĆ budowy => zero wpływu na determinizm/treść/zapis.
+	var move_dir := Vector2.ZERO
+	if _last_center.x != 2147483647:
+		var d := Vector2(float(center.x - _last_center.x), float(center.y - _last_center.y))
+		var dl := d.length()
+		if dl > 0.01 and dl < 8.0:
+			move_dir = d / dl
 	_build_queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		return _dist2(a, center) < _dist2(b, center)
+		return _biased_d2(a, center, move_dir) < _biased_d2(b, center, move_dir)
 	)
 
 	# Usuń (queue_free) chunki poza zasięgiem — te SĄ w drzewie i sfinalizowane, więc bezpiecznie.
