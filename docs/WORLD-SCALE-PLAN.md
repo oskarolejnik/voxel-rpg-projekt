@@ -92,3 +92,37 @@ regresses below the ~190 baseline and chunk-leak stays zero.
 
 Files: `src/Player.gd`, `src/world/VoxelWorld.gd`, `src/world/Chunk.gd`, `src/world/DungeonEntrance.gd`,
 `src/DayNight.gd`/`src/Main.gd` (fog).
+
+---
+
+## OUTCOMES (implemented)
+
+Branch `world-scale`. Baselines pinned at `PROBE_SEED=1337`.
+
+| Phase | Commit | Result | Verify |
+|---|---|---|---|
+| Plan | d09680d | analysis + baselines | — |
+| 1 player/camera/biome | 74a2e13 | player 1.8→1.45 m, FOV 66→72, boom 4.8→6.0, cam_height 2.6→3.0, sprint 10→8, biome band 700→1200 m | A/B gold: player smaller + deeper vista; walk: traversal safe (isolated the stick to biome-terrain, not physics) |
+| 2 streaming | cdd1007 | forward-bias build order | **Finding: machine is CORE-BOUND** — MAX_IN_FLIGHT 3→5 halves FPS (190→90). Constants kept; prioritize leading edge instead |
+| 3 view distance | 2545ada | far_dist 5→7 (80→112 m); fog auto-recedes | stress FPS holds ~150, no leak |
+| 4A terrain | fc984b7 | noise freq 0.007→0.004 (wider), mountains amp 78→100 + freq_mul 1.3→0.9 + contrast 1.9→2.3, WORLD_HEIGHT 96→128 (peaks ~61 m) | gold: mountains tower over player; FPS holds (surface-bound fill = cheap); walk smooth |
+| 4B trees | b62139e | trunk 8/10/12→10/14/18, rare giants 22-28 (landmarks), biome density (verdant ×3 … volcanic ×0) | FPS holds; player dwarfed by terrain+trees |
+
+### Key engineering finding
+Render perf is NOT the bottleneck (~150-190 FPS, RTX 3050). **Streaming is CORE-BOUND**: the
+WorkerThreadPool is saturated by 3 workers + main on ~4 cores, so adding threads *regresses*
+(oversubscription). The lever for more view distance is therefore **faster per-chunk meshing**, not
+more concurrency. (Measurement caveat: the stress `loaded` metric is dominated by run-order/thermal
+state — the 2nd back-to-back run is always worse regardless of variant.)
+
+### Deferred (need a meshing-speed pass first, or are larger features)
+- **LOD3 ultra ring (~160 m silhouettes):** ~2× tracked chunks — the core-bound streamer can't fill it
+  while moving. Unlock by speeding up meshing (greedy meshing / fewer faces) first.
+- **FAR-ring trees:** world is currently bald past the 48 m NEAR ring (features are NEAR-only). Add a
+  trees-only pass to `_build_coarse` so forests reach the horizon.
+- **Obelisk/spire landmarks** on dungeon entrances (mesh-based, cheap) — clearest "go there" beacon.
+- **Meshing-speed pass** (the real unlock): greedy meshing, noise caching — funds the above on 4GB.
+
+### Save note
+Phases 4A shift `surface_y` (terrain regen). Character saves (level/loot/inventory) are unaffected;
+only saved voxel EDITS on an old world float — acceptable pre-release. Start a fresh world to see it.
