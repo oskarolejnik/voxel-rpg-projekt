@@ -56,7 +56,7 @@ const SKIRT_DEPTH: int = 12
 # 2×2 (+1) = 7 voxeli (review #minor). Przy TREE_MARGIN=6 najdalszy liść trafiał DOKŁADNIE
 # w ostatni rząd chunku, więc każdy wzrost perturbacji ścinałby korony na szwach chunków.
 const TREE_CROWN_RADIUS: int = 4     # bazowy promień korony (warianty: 3..5)
-const TREE_MARGIN: int = 7           # margines od krawędzi chunku (max r=5 + perturbacja +1 + trzon +1)
+const TREE_MARGIN: int = 9           # WORLDSCALE F4B: 7 -> 9 (większe korony r=6 + giganty mieszczą się bez clipu na szwie)
 # Prawdopodobieństwa /4 względem wersji 1 m: kafli XZ jest teraz 4× więcej na ten sam metr,
 # więc bez tego świat byłby przeładowany roślinnością (estetyka + wydajność).
 const TREE_PROB: float = 0.006      # było 0.025
@@ -93,6 +93,7 @@ const SALT_ROCK_VARIANT: int = 6         # wariant rozmiaru głazu
 const SALT_TREE_HEIGHT: int = 7          # ±1 wysokość pnia
 const SALT_TREE_CROWN: int = 30          # perturbacja brzegu korony: SALT_TREE_CROWN+dy
 const SALT_TREE_AUTUMN: int = 9          # czy liście jesienne
+const SALT_TREE_GIANT: int = 61          # WORLDSCALE F4B: rzadkie olbrzymie drzewo (landmark)
 const SALT_ROCK_EDGE: int = 40           # perturbacja brzegu głazu: SALT_ROCK_EDGE+dy
 const SALT_BUSH_EDGE: int = 50           # perturbacja brzegu krzaka: SALT_BUSH_EDGE+dy
 const SALT_ROCK_MOSSY: int = 17          # czy głaz z porostem
@@ -493,12 +494,41 @@ func _block_for(world_y: int, surface_y: int) -> int:
 
 
 # --- Roślinność, obiekty i propy: wpis do _voxels TYLKO w obrębie tego chunku ---
+## WORLDSCALE F4B: mnożnik gęstości drzew per biom (× TREE_PROB). verdant = gęsty las, równiny/pustynia
+## rzadkie, wulkan łysy. Deterministyczne (czysta tabela). Biom z get_biome (funkcja seeda+pozycji).
+func _tree_density_mul(biome: StringName) -> float:
+	match biome:
+		&"verdant":
+			return 3.0
+		&"swamp":
+			return 0.9
+		&"mountains":
+			return 0.5
+		&"plains":
+			return 0.35
+		&"frosthelm":
+			return 0.3
+		&"emberwaste":
+			return 0.2
+		&"volcanic":
+			return 0.0
+		_:
+			return 1.0
+
+
 func _place_features(world: VoxelWorld) -> void:
 	# Jeden SurfaceTool na CAŁY chunk zbiera wszystkie drobne propy do jednego mesha
 	# (1 draw call/chunk, bez kolizji). Budujemy go równolegle z rozmieszczaniem.
 	var st_props := SurfaceTool.new()
 	st_props.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_prop_count = 0
+
+	# WORLDSCALE F4B: gęstość drzew SKALOWANA BIOMEM — verdant gęsty las, równiny/pustynia rzadkie,
+	# wulkan łysy. Jeden get_biome na CHUNK (środek), NIE per-kafel (taniej). Czyste odczyty => bez wpływu
+	# na determinizm (biom jest funkcją seeda+pozycji).
+	var cwx := _coord.x * CHUNK_SIZE + CHUNK_SIZE / 2
+	var cwz := _coord.y * CHUNK_SIZE + CHUNK_SIZE / 2
+	var tree_prob := TREE_PROB * _tree_density_mul(world.get_biome(cwx, cwz))
 
 	# Propy stawiamy z marginesem 1 od krawędzi chunku (review #minor): największy
 	# prop (kapelusz grzyba 0,5 m + offset) wystaje wtedy najwyżej na styk z sąsiadem,
@@ -516,7 +546,7 @@ func _place_features(world: VoxelWorld) -> void:
 			if on_grass \
 			and x >= TREE_MARGIN and x <= CHUNK_SIZE - 1 - TREE_MARGIN \
 			and z >= TREE_MARGIN and z <= CHUNK_SIZE - 1 - TREE_MARGIN:
-				if world.feature_hash(wx, wz, SALT_TREE) < TREE_PROB:
+				if world.feature_hash(wx, wz, SALT_TREE) < tree_prob:
 					_place_tree(world, x, sy, z, wx, wz)
 					continue   # nie stawiaj krzaka/kamienia/propa na tym samym kaflu
 
@@ -575,11 +605,17 @@ func _place_tree(world: VoxelWorld, x: int, sy: int, z: int, wx: int, wz: int) -
 	var fat := false   # trzon 2×2?
 	match variant:
 		0:
-			trunk_h = 8;  r = 3; fat = false
+			trunk_h = 10; r = 4; fat = false   # WORLDSCALE F4B: drzewa wyższe (8/10/12 -> 10/14/18), korony większe (3/4/5 -> 4/5/6)
 		1:
-			trunk_h = 10; r = 4; fat = true
+			trunk_h = 14; r = 5; fat = true
 		_:
-			trunk_h = 12; r = 5; fat = true
+			trunk_h = 18; r = 6; fat = true
+	# WORLDSCALE F4B: rzadkie OLBRZYMIE drzewo (~2% kafli-drzew) — pień 22-28 voxeli (11-14 m), landmark
+	# "idź tam" widoczny z daleka. Korona r=6 mieści się w TREE_MARGIN=9. Rozłączny salt => deterministyczne.
+	if world.feature_hash(wx, wz, SALT_TREE_GIANT) < 0.02:
+		trunk_h = 22 + int(world.feature_hash(wx, wz, SALT_TREE_HEIGHT) * 7.0)   # 22..28
+		r = 6
+		fat = true
 	# ±1 voxel wysokości pnia (SALT_TREE_HEIGHT), żeby drzewa tego samego typu się różniły.
 	trunk_h += int(world.feature_hash(wx, wz, SALT_TREE_HEIGHT) * 3.0) - 1   # -1,0,+1
 
