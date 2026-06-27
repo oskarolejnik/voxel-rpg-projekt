@@ -72,6 +72,7 @@ func _ready() -> void:
 	_phase4()
 	_phase5()
 	_phase6()
+	_phase7()
 
 	if _failures == 0:
 		print("[LOOTX] ALL OK")
@@ -573,6 +574,21 @@ func _loot_has_particles(rarity: int) -> bool:
 	var has := d._particles != null
 	d.queue_free()
 	return has
+
+
+## LOOT Faza 7: ContentLint — WSZYSTKIE itemy/afiksy/sety/gemy w DB muszą być czyste (stat ∈ STAT_KEYS,
+## weapon_class ∈ whitelist, set_id niezawisły, payload obsługiwany, klasa istnieje). Łapie martwą treść.
+func _phase7() -> void:
+	if ItemDB != null:
+		ItemDB.reload()
+	var issues: Array = ContentLint.lint_all()
+	if not issues.is_empty():
+		for it in issues:
+			printerr("[LOOTX] ContentLint: %s" % it)
+	_check(issues.is_empty(), "ContentLint znalazł %d problemów w treści (patrz wyżej)" % issues.size())
+	print("[LOOTX] Faza 7: ContentLint — %d itemów / %d afiksów / %d setów / %d gemów %s" % [
+		ItemDB.items.size(), ItemDB.affixes.size(), ItemDB.sets.size(), ItemDB.gems.size(),
+		"CZYSTE" if issues.is_empty() else "= %d PROBLEMÓW" % issues.size()])
 
 
 # Lekki mock wroga: drop_for/_rarity_floor czytają tylko te właściwości (przez `"x" in enemy`).
